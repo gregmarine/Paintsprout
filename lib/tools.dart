@@ -3,9 +3,6 @@ import 'package:flutter/material.dart';
 /// The drawing tools available in Phase 0.
 enum Tool { pencil, pen, brush, marker, spray, eraser }
 
-/// Which grain texture (if any) modulates a tool's ribbon.
-enum GrainStyle { none, pencil, marker }
-
 /// How a stroke is rendered.
 enum RenderStyle {
   /// Crisp constant-color ribbon (pen, eraser).
@@ -67,7 +64,8 @@ class ToolProfile {
     required this.maxDensity,
     required this.opacity,
     required this.blurFactor,
-    required this.grainStyle,
+    required this.toothFloor,
+    required this.toothBias,
     required this.renderStyle,
   });
 
@@ -94,8 +92,17 @@ class ToolProfile {
   /// Soft-edge blur as a fraction of stroke width (0 = crisp).
   final double blurFactor;
 
-  /// Which grain texture modulates the stroke ribbon (none = smooth tool).
-  final GrainStyle grainStyle;
+  /// How the tool reacts to the surface tooth. The surface supplies a raw tooth
+  /// field; these remap it into the alpha mask that breaks up the mark.
+  /// [toothFloor] is the ink kept at the deepest tooth valley — low = high
+  /// sensitivity (grooves punch through to bare surface, gritty), high =
+  /// near-solid with only a hint of tooth, 1.0 = ignores the surface entirely.
+  /// [toothBias] > 1 skews toward the valleys for more speckle.
+  final double toothFloor;
+  final double toothBias;
+
+  /// Whether this tool's mark is broken up by the surface tooth at all.
+  bool get reactsToTooth => toothFloor < 1.0;
 
   /// How the stroke is rendered.
   final RenderStyle renderStyle;
@@ -113,7 +120,8 @@ class ToolProfile {
     maxDensity: 0.95,
     opacity: 1.0,
     blurFactor: 0.0,
-    grainStyle: GrainStyle.pencil,
+    toothFloor: 0.0, // gritty: grooves show bare surface
+    toothBias: 1.4,
     renderStyle: RenderStyle.grain,
   );
 
@@ -128,7 +136,8 @@ class ToolProfile {
     maxDensity: 0.95,
     opacity: 1.0,
     blurFactor: 0.0,
-    grainStyle: GrainStyle.marker,
+    toothFloor: 0.62, // even: soft, near-solid ink
+    toothBias: 1.0,
     renderStyle: RenderStyle.grain,
   );
 
@@ -142,7 +151,8 @@ class ToolProfile {
     maxDensity: 1.0,
     opacity: 1.0,
     blurFactor: 0.0,
-    grainStyle: GrainStyle.none,
+    toothFloor: 0.85, // gel pen: mostly fills, faint tooth on rough surfaces
+    toothBias: 1.0,
     renderStyle: RenderStyle.solid,
   );
 
@@ -158,7 +168,8 @@ class ToolProfile {
     maxDensity: 1.0,
     opacity: 0.9,
     blurFactor: 0.08, // slight smear so bristles read as paint, not hard combs
-    grainStyle: GrainStyle.none,
+    toothFloor: 0.7, // medium: dry-brush skips over the tooth
+    toothBias: 1.0,
     renderStyle: RenderStyle.bristle,
   );
 
@@ -173,7 +184,8 @@ class ToolProfile {
     maxDensity: 1.0,
     opacity: 0.92,
     blurFactor: 0.25,
-    grainStyle: GrainStyle.none,
+    toothFloor: 0.78, // droplets settle a touch more on the crests
+    toothBias: 1.0,
     renderStyle: RenderStyle.soft,
   );
 
@@ -187,7 +199,8 @@ class ToolProfile {
     maxDensity: 1.0,
     opacity: 1.0,
     blurFactor: 0.0,
-    grainStyle: GrainStyle.none,
+    toothFloor: 0.85, // erasing leaves faint residue down in the tooth valleys
+    toothBias: 1.0,
     renderStyle: RenderStyle.solid,
   );
 

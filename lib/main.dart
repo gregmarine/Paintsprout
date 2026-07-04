@@ -4,6 +4,7 @@ import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 
 import 'drawing_canvas.dart';
 import 'stroke.dart';
+import 'surface.dart';
 import 'tools.dart';
 
 Future<void> main() async {
@@ -43,6 +44,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
 
   Tool _tool = Tool.pencil;
   Color _color = Colors.black;
+  SurfaceKind _surfaceKind = SurfaceKind.paper;
   bool _railVisible = true;
 
   // Each tool remembers its own base size.
@@ -64,6 +66,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
               tool: _tool,
               color: _color,
               baseSize: _size,
+              surface: _surfaceKind,
             ),
           ),
           Positioned(
@@ -75,9 +78,11 @@ class _CanvasScreenState extends State<CanvasScreen> {
                     tool: _tool,
                     color: _color,
                     size: _size,
+                    surface: _surfaceKind,
                     onToolChanged: (t) => setState(() => _tool = t),
                     onPickColor: _pickColor,
                     onPickSize: _pickSize,
+                    onPickSurface: _pickSurface,
                     onSave: _save,
                     onClear: _clear,
                     onHide: () => setState(() => _railVisible = false),
@@ -173,6 +178,42 @@ class _CanvasScreenState extends State<CanvasScreen> {
     );
   }
 
+  Future<void> _pickSurface() async {
+    final chosen = await showModalBottomSheet<SurfaceKind>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Surface',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  for (final s in kAvailableSurfaces)
+                    ChoiceChip(
+                      avatar: Icon(s.icon, size: 18),
+                      label: Text(s.label),
+                      selected: s == _surfaceKind,
+                      onSelected: (_) => Navigator.pop(context, s),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (chosen != null && chosen != _surfaceKind) {
+      setState(() => _surfaceKind = chosen);
+    }
+  }
+
   Future<void> _save() async {
     final messenger = ScaffoldMessenger.of(context);
     try {
@@ -229,9 +270,11 @@ class _ToolRail extends StatelessWidget {
     required this.tool,
     required this.color,
     required this.size,
+    required this.surface,
     required this.onToolChanged,
     required this.onPickColor,
     required this.onPickSize,
+    required this.onPickSurface,
     required this.onSave,
     required this.onClear,
     required this.onHide,
@@ -240,9 +283,11 @@ class _ToolRail extends StatelessWidget {
   final Tool tool;
   final Color color;
   final double size;
+  final SurfaceKind surface;
   final ValueChanged<Tool> onToolChanged;
   final VoidCallback onPickColor;
   final VoidCallback onPickSize;
+  final VoidCallback onPickSurface;
   final VoidCallback onSave;
   final VoidCallback onClear;
   final VoidCallback onHide;
@@ -297,6 +342,12 @@ class _ToolRail extends StatelessWidget {
                   style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
               ),
+            ),
+            // Surface picker shows the current surface.
+            IconButton(
+              tooltip: 'Surface: ${surface.label}',
+              onPressed: onPickSurface,
+              icon: Icon(surface.icon),
             ),
             const Divider(height: 12, indent: 8, endIndent: 8),
             IconButton(

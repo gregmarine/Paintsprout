@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import 'surface.dart';
 import 'tools.dart';
 
 /// One captured sample along a stroke. Width and density are resolved at
@@ -20,25 +21,28 @@ class StrokePoint {
   final double density;
 }
 
-/// Tileable grain textures (alpha = paper tooth), one per [GrainStyle].
-/// Built once at startup via [initGrains].
-final Map<GrainStyle, ui.Image> _grains = {};
-ui.Image? grainFor(GrainStyle style) => _grains[style];
+/// Tileable tooth textures (alpha = how much ink survives), keyed by the
+/// surface being painted on and the tool biting into it. Built up front via
+/// [initGrains] so [paintStroke] can stay synchronous. A pencil on canvas and a
+/// pencil on paper are different textures here — the surface supplies the tooth,
+/// the tool decides how hard it bites.
+final Map<(SurfaceKind, Tool), ui.Image> _tooth = {};
 
-/// How many device pixels one grain texel spans (coarser than 1:1 reads more
-/// like paper tooth than fine video noise).
-const double kGrainScale = 1.8;
+/// The tooth texture for [tool] on [surface], or null for tools that don't
+/// react to the surface at all.
+ui.Image? toothFor(SurfaceKind surface, Tool tool) =>
+    ToolProfile.of(tool).reactsToTooth ? _tooth[(surface, tool)] : null;
 
-/// Builds a tileable grain image. [floor] is the minimum alpha (0 = holes punch
-/// through to bare paper for gritty graphite; higher = gentler, even tooth) and
-/// [bias] > 1 skews toward the floor for more speckle.
-Future<ui.Image> _makeGrain(int size, double floor, double bias, int seed) {
-  final rnd = math.Random(seed);
+/// Bakes a surface's raw tooth [field] through a tool's response into a tileable
+/// alpha texture: `alpha = floor + (1 - floor) * pow(tooth, bias)`.
+Future<ui.Image> _bakeTooth(Float64List field, Tool tool, int size) {
+  final profile = ToolProfile.of(tool);
+  final floor = profile.toothFloor, bias = profile.toothBias;
   final px = Uint8List(size * size * 4);
-  for (var i = 0; i < size * size; i++) {
-    final n = math.pow(rnd.nextDouble(), bias).toDouble();
+  for (var i = 0; i < field.length; i++) {
+    final n = math.pow(field[i], bias).toDouble();
     final a = floor + (1 - floor) * n;
-    px[i * 4 + 3] = (a * 255).round();
+    px[i * 4 + 3] = (a * 255).round().clamp(0, 255);
   }
   final completer = Completer<ui.Image>();
   ui.decodeImageFromPixels(
@@ -46,11 +50,37 @@ Future<ui.Image> _makeGrain(int size, double floor, double bias, int seed) {
   return completer.future;
 }
 
+/// Pre-bakes every (surface, reacting-tool) tooth texture so switching surfaces
+/// mid-drawing is instant. Called once at startup. The raw tooth field is built
+/// once per surface and shared across that surface's tools.
 Future<void> initGrains({int size = 128}) async {
-  // Pencil: low floor + strong bias -> gritty, broken graphite tooth.
-  _grains[GrainStyle.pencil] = await _makeGrain(size, 0.0, 1.4, 7);
-  // Marker: high floor, even -> soft, near-solid ink with a hint of texture.
-  _grains[GrainStyle.marker] = await _makeGrain(size, 0.62, 1.0, 11);
+  for (final surface in SurfaceKind.values) {
+    final field = buildToothField(surface, size);
+    for (final tool in Tool.values) {
+      if (ToolProfile.of(tool).reactsToTooth) {
+        _tooth[(surface, tool)] = await _bakeTooth(field, tool, size);
+      }
+    }
+  }
+}
+
+/// Multiplies whatever is in the current layer by the surface tooth (dstIn), so
+/// the mark is broken up by the surface roughness. [scale] is logical px per
+/// tooth texel — see `SurfaceKind.toothScale`.
+void _applyTooth(Canvas canvas, Rect bounds, ui.Image tooth, double scale) {
+  final matrix = Float64List.fromList([
+    scale, 0, 0, 0, //
+    0, scale, 0, 0, //
+    0, 0, 1, 0, //
+    0, 0, 0, 1, //
+  ]);
+  canvas.drawRect(
+    bounds,
+    Paint()
+      ..shader =
+          ui.ImageShader(tooth, TileMode.repeated, TileMode.repeated, matrix)
+      ..blendMode = BlendMode.dstIn,
+  );
 }
 
 /// A single continuous stroke (pointer-down to pointer-up).
@@ -159,11 +189,17 @@ double resolveDensity({required Tool tool, required double pressureNorm}) {
 
 /// Paints a single stroke onto [canvas]. Shared by the live preview and the
 /// bake-into-buffer step so what you see while drawing is exactly what commits.
-void paintStroke(Canvas canvas, Stroke stroke) {
+/// [surface] selects which tooth the grain tools bite into.
+void paintStroke(Canvas canvas, Stroke stroke,
+    {SurfaceKind surface = SurfaceKind.paper}) {
   if (stroke.isEmpty) return;
 
   final profile = ToolProfile.of(stroke.tool);
   final rgb = stroke.color.withAlpha(255);
+
+  // Surface tooth this tool bites into (null if the tool ignores the surface).
+  final tooth = toothFor(surface, stroke.tool);
+  final toothScale = surface.toothScale;
 
   // Representative width (for blur) and stroke bounds (to keep any layer tight).
   var maxWidth = 0.0;
@@ -221,22 +257,7 @@ void paintStroke(Canvas canvas, Stroke stroke) {
       canvas.drawVertices(vertices, BlendMode.modulate,
           Paint()..color = const Color(0xFFFFFFFF));
     }
-    final grain = grainFor(profile.grainStyle);
-    if (grain != null) {
-      final matrix = Float64List.fromList([
-        kGrainScale, 0, 0, 0, //
-        0, kGrainScale, 0, 0, //
-        0, 0, 1, 0, //
-        0, 0, 0, 1, //
-      ]);
-      canvas.drawRect(
-        bounds,
-        Paint()
-          ..shader = ui.ImageShader(
-              grain, TileMode.repeated, TileMode.repeated, matrix)
-          ..blendMode = BlendMode.dstIn,
-      );
-    }
+    if (tooth != null) _applyTooth(canvas, bounds, tooth, toothScale);
     canvas.restore();
     return;
   }
@@ -299,18 +320,23 @@ void paintStroke(Canvas canvas, Stroke stroke) {
         );
       }
     }
+    if (tooth != null) _applyTooth(canvas, bounds, tooth, toothScale);
     canvas.restore();
     return;
   }
 
-  // A single isolated layer gives uniform opacity (no darker seams where
-  // round-cap segments overlap) AND a one-pass soft edge — far cheaper than
-  // blurring every segment individually, which is what made the brush lag.
-  final needsLayer = profile.opacity < 1.0 || blurSigma > 0;
+  // Everything else (pen, spray, eraser) shares one isolated-layer path. A layer
+  // gives uniform opacity (no darker seams where round caps overlap) AND a
+  // one-pass soft edge — far cheaper than blurring every segment individually,
+  // which is what made the brush lag — and is where the surface tooth is
+  // multiplied in.
+  final isEraser = stroke.tool == Tool.eraser;
+  final needsLayer = profile.opacity < 1.0 || blurSigma > 0 || tooth != null;
+
+  final pad = maxWidth / 2 + blurSigma * 3 + 1;
+  final bounds = Rect.fromLTRB(minX - pad, minY - pad, maxX + pad, maxY + pad);
+
   if (needsLayer) {
-    final pad = maxWidth / 2 + blurSigma * 3 + 1;
-    final bounds =
-        Rect.fromLTRB(minX - pad, minY - pad, maxX + pad, maxY + pad);
     final layerPaint = Paint();
     if (profile.opacity < 1.0) {
       layerPaint.color = Colors.black.withValues(alpha: profile.opacity);
@@ -324,13 +350,19 @@ void paintStroke(Canvas canvas, Stroke stroke) {
         tileMode: TileMode.decal,
       );
     }
+    // Eraser with tooth: build a tooth-masked stamp and subtract it (dstOut) on
+    // restore, so it erases fully on the crests but leaves residue in the
+    // valleys — an eraser can't reach down into the tooth.
+    if (isEraser && tooth != null) layerPaint.blendMode = BlendMode.dstOut;
     canvas.saveLayer(bounds, layerPaint);
   }
 
-  // The eraser removes paint (revealing the surface layer) rather than
-  // depositing color.
+  // The eraser removes paint (revealing the surface). Without a tooth it clears
+  // directly; with a tooth it stamps an opaque mask that dstOut subtracts on
+  // restore, so it is drawn opaque here either way.
   final blend =
-      stroke.tool == Tool.eraser ? BlendMode.clear : BlendMode.srcOver;
+      (isEraser && tooth == null) ? BlendMode.clear : BlendMode.srcOver;
+  final drawColor = isEraser ? const Color(0xFFFFFFFF) : rgb;
 
   if (stroke.points.length == 1) {
     final p = stroke.points.first;
@@ -338,7 +370,7 @@ void paintStroke(Canvas canvas, Stroke stroke) {
       p.position,
       p.width / 2,
       Paint()
-        ..color = rgb
+        ..color = drawColor
         ..blendMode = blend
         ..style = PaintingStyle.fill
         ..isAntiAlias = true,
@@ -349,7 +381,7 @@ void paintStroke(Canvas canvas, Stroke stroke) {
     canvas.drawPath(
       smoothPath(stroke.points),
       Paint()
-        ..color = rgb
+        ..color = drawColor
         ..blendMode = blend
         ..style = PaintingStyle.stroke
         ..strokeWidth = stroke.points.first.width
@@ -360,7 +392,8 @@ void paintStroke(Canvas canvas, Stroke stroke) {
   } else {
     // Variable width (spray): per-segment so the width can track pressure.
     final segPaint = Paint()
-      ..color = rgb
+      ..color = drawColor
+      ..blendMode = blend
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
@@ -372,6 +405,11 @@ void paintStroke(Canvas canvas, Stroke stroke) {
       canvas.drawLine(a.position, b.position, segPaint);
     }
   }
+
+  // Break the mark up by the surface tooth. For the eraser this masks the
+  // subtract-stamp (less erase in the valleys); for deposit tools it thins the
+  // ink over the tooth. dstIn needs the tool's own layer, guaranteed above.
+  if (tooth != null) _applyTooth(canvas, bounds, tooth, toothScale);
 
   if (needsLayer) canvas.restore();
 }

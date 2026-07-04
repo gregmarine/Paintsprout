@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
 
 import 'stroke.dart';
+import 'surface.dart';
 import 'tools.dart';
 
 /// Backing buffer resolution multiplier over the logical canvas. 2x sits above
@@ -42,6 +43,7 @@ class DrawingCanvas extends StatefulWidget {
     required this.tool,
     required this.color,
     required this.baseSize,
+    this.surface = SurfaceKind.paper,
     this.paperColor = Colors.white,
     this.debugPencilSample = false,
   });
@@ -50,6 +52,7 @@ class DrawingCanvas extends StatefulWidget {
   final Tool tool;
   final Color color;
   final double baseSize;
+  final SurfaceKind surface;
   final Color paperColor;
 
   /// When true, bakes synthetic pencil sample strokes on init so the pencil
@@ -72,6 +75,11 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
   /// Strokes finished but not yet baked into [_paint].
   final List<Stroke> _unbaked = [];
 
+  /// Every stroke already baked into [_paint], in paint order. Kept as vectors
+  /// so the whole drawing can be re-rendered against a new surface's tooth when
+  /// the surface changes (existing marks take on the new substrate).
+  final List<Stroke> _committed = [];
+
   /// Stroke currently under the pointer.
   Stroke? _active;
 
@@ -87,6 +95,37 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
   void initState() {
     super.initState();
     widget.controller._state = this;
+  }
+
+  @override
+  void didUpdateWidget(DrawingCanvas old) {
+    super.didUpdateWidget(old);
+    // Switching surfaces re-renders the base but keeps the paint.
+    if (widget.surface != old.surface && _paint != null) {
+      unawaited(_regenerateSurface());
+    }
+  }
+
+  Future<void> _regenerateSurface() async {
+    final surfaceImg = await buildSurfaceVisual(widget.surface, _bufW, _bufH);
+    // Re-render every committed stroke against the new surface so existing marks
+    // pick up the new tooth (a pencil sketch becomes pencil-on-canvas, etc.).
+    final blank = await _blankPaint();
+    final paintImg = await _composite(blank, _committed);
+    blank.dispose();
+    if (!mounted) {
+      surfaceImg.dispose();
+      paintImg.dispose();
+      return;
+    }
+    final oldS = _surface;
+    final oldP = _paint;
+    setState(() {
+      _surface = surfaceImg;
+      _paint = paintImg;
+    });
+    oldS?.dispose();
+    oldP?.dispose();
   }
 
   @override
@@ -116,46 +155,55 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
 
   Future<void> _bakeDebugSample() async {
     if (_paint == null) return;
-    final img = await _composite(_paint!, _buildPencilSamples());
+    final samples = _buildToolSamples();
+    final img = await _composite(_paint!, samples);
     if (!mounted) {
       img.dispose();
       return;
     }
     final old = _paint;
-    setState(() => _paint = img);
+    setState(() {
+      _paint = img;
+      _committed.addAll(samples);
+    });
     old?.dispose();
   }
 
-  List<Stroke> _buildPencilSamples() {
-    // Layer test: a black marker band, then an eraser stroke crossing it. The
-    // eraser must cut a clean gap revealing the surface (white here), proving
-    // strokes deposit on the paint layer and the eraser clears to the surface.
+  List<Stroke> _buildToolSamples() {
+    // Tooth test: one broad band per deposit tool so each tool's reaction to the
+    // surface is visible, plus a marker patch crossed by an eraser to show the
+    // eraser leaving residue down in the tooth valleys.
     final w = _logicalSize.width, h = _logicalSize.height;
-    final band = Stroke(Tool.marker, Colors.black, seed: 1);
-    for (var x = 200.0; x <= w - 200; x += 6) {
-      band.add(StrokePoint(Offset(x, h / 2), 60));
+    final strokes = <Stroke>[];
+    const tools = [Tool.pencil, Tool.pen, Tool.brush, Tool.marker, Tool.spray];
+    Stroke band(Tool tool, double y, double width, {int seed = 1}) {
+      final s = Stroke(tool, Colors.black, seed: seed);
+      for (var x = 240.0; x <= w - 160; x += 5) {
+        s.add(StrokePoint(Offset(x, y), width, 0.9));
+      }
+      return s;
     }
-    final erase = Stroke(Tool.eraser, Colors.black, seed: 2);
-    for (var y = h / 2 - 160; y <= h / 2 + 160; y += 6) {
-      erase.add(StrokePoint(Offset(w / 2, y), 34));
+
+    for (var t = 0; t < tools.length; t++) {
+      strokes.add(band(tools[t], h * (0.14 + t * 0.13), 40, seed: t + 1));
     }
-    return [band, erase];
+    // Eraser test: a dense marker patch, then an eraser crossing it vertically.
+    final eraseY = h * (0.14 + tools.length * 0.13);
+    strokes.add(band(Tool.marker, eraseY, 64, seed: 20));
+    final erase = Stroke(Tool.eraser, Colors.black, seed: 21);
+    for (var y = eraseY - 48; y <= eraseY + 48; y += 5) {
+      erase.add(StrokePoint(Offset(w / 2, y), 40));
+    }
+    strokes.add(erase);
+    return strokes;
   }
 
   int get _bufW => (_logicalSize.width * kSuperSample).round();
   int get _bufH => (_logicalSize.height * kSuperSample).round();
 
-  /// The base surface. For now a flat fill; procedural surface textures land
-  /// in the next step.
-  Future<ui.Image> _blankSurface() {
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder);
-    canvas.drawRect(
-      Rect.fromLTWH(0, 0, _bufW.toDouble(), _bufH.toDouble()),
-      Paint()..color = widget.paperColor,
-    );
-    return recorder.endRecording().toImage(_bufW, _bufH);
-  }
+  /// The base surface texture (procedural) for the selected surface.
+  Future<ui.Image> _blankSurface() =>
+      buildSurfaceVisual(widget.surface, _bufW, _bufH);
 
   /// A fully transparent paint layer (an empty recording rasterizes to clear).
   Future<ui.Image> _blankPaint() {
@@ -233,6 +281,7 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
       setState(() {
         _paint = newPaint;
         _unbaked.removeRange(0, batch.length);
+        _committed.addAll(batch);
       });
       old?.dispose();
     } finally {
@@ -251,7 +300,7 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
     canvas.drawImage(base, Offset.zero, Paint());
     canvas.scale(kSuperSample);
     for (final s in strokes) {
-      paintStroke(canvas, s);
+      paintStroke(canvas, s, surface: widget.surface);
     }
     return recorder.endRecording().toImage(_bufW, _bufH);
   }
@@ -266,6 +315,7 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
     final old = _paint;
     setState(() {
       _unbaked.clear();
+      _committed.clear();
       _active = null;
       _paint = blank;
     });
@@ -345,6 +395,7 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
             size: size,
             painter: _CanvasPainter(
               surface: _surface!,
+              surfaceKind: widget.surface,
               paintLayer: _paint!,
               unbaked: _unbaked,
               active: _active,
@@ -359,12 +410,14 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
 class _CanvasPainter extends CustomPainter {
   _CanvasPainter({
     required this.surface,
+    required this.surfaceKind,
     required this.paintLayer,
     required this.unbaked,
     required this.active,
   });
 
   final ui.Image surface;
+  final SurfaceKind surfaceKind;
   final ui.Image paintLayer;
   final List<Stroke> unbaked;
   final Stroke? active;
@@ -392,15 +445,16 @@ class _CanvasPainter extends CustomPainter {
         dst,
         hq);
     for (final s in unbaked) {
-      paintStroke(canvas, s);
+      paintStroke(canvas, s, surface: surfaceKind);
     }
-    if (active != null) paintStroke(canvas, active!);
+    if (active != null) paintStroke(canvas, active!, surface: surfaceKind);
     canvas.restore();
   }
 
   @override
   bool shouldRepaint(_CanvasPainter old) =>
       old.surface != surface ||
+      old.surfaceKind != surfaceKind ||
       old.paintLayer != paintLayer ||
       old.active != active ||
       old.unbaked.length != unbaked.length ||
