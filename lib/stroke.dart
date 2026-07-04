@@ -327,6 +327,11 @@ void paintStroke(Canvas canvas, Stroke stroke) {
     canvas.saveLayer(bounds, layerPaint);
   }
 
+  // The eraser removes paint (revealing the surface layer) rather than
+  // depositing color.
+  final blend =
+      stroke.tool == Tool.eraser ? BlendMode.clear : BlendMode.srcOver;
+
   if (stroke.points.length == 1) {
     final p = stroke.points.first;
     canvas.drawCircle(
@@ -334,6 +339,7 @@ void paintStroke(Canvas canvas, Stroke stroke) {
       p.width / 2,
       Paint()
         ..color = rgb
+        ..blendMode = blend
         ..style = PaintingStyle.fill
         ..isAntiAlias = true,
     );
@@ -344,6 +350,7 @@ void paintStroke(Canvas canvas, Stroke stroke) {
       smoothPath(stroke.points),
       Paint()
         ..color = rgb
+        ..blendMode = blend
         ..style = PaintingStyle.stroke
         ..strokeWidth = stroke.points.first.width
         ..strokeCap = StrokeCap.round

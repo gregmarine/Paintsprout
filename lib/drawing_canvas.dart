@@ -17,7 +17,7 @@ const double kSuperSample = 2.0;
 class DrawingController {
   _DrawingCanvasState? _state;
 
-  bool get isReady => _state?._image != null;
+  bool get isReady => _state?._paint != null;
 
   Future<void> clear() async => _state?._clear();
 
@@ -63,10 +63,13 @@ class DrawingCanvas extends StatefulWidget {
 class _DrawingCanvasState extends State<DrawingCanvas> {
   final math.Random _rng = math.Random();
 
-  /// Committed pixels, sized to the logical canvas (1:1 with pointer coords).
-  ui.Image? _image;
+  /// The base layer you paint on (paper/canvas/etc.), buffer resolution.
+  ui.Image? _surface;
 
-  /// Strokes finished but not yet baked into [_image].
+  /// Committed paint, transparent where unpainted so the surface shows through.
+  ui.Image? _paint;
+
+  /// Strokes finished but not yet baked into [_paint].
   final List<Stroke> _unbaked = [];
 
   /// Stroke currently under the pointer.
@@ -89,69 +92,75 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
   @override
   void dispose() {
     if (widget.controller._state == this) widget.controller._state = null;
-    _image?.dispose();
+    _surface?.dispose();
+    _paint?.dispose();
     super.dispose();
   }
 
   Future<void> _ensureBuffer(Size logical) async {
-    if (_image != null) return;
+    if (_paint != null) return;
     _logicalSize = logical;
-    final img = await _blankImage();
+    final surface = await _blankSurface();
+    final paint = await _blankPaint();
     if (!mounted) {
-      img.dispose();
+      surface.dispose();
+      paint.dispose();
       return;
     }
-    setState(() => _image = img);
+    setState(() {
+      _surface = surface;
+      _paint = paint;
+    });
     if (widget.debugPencilSample) await _bakeDebugSample();
   }
 
   Future<void> _bakeDebugSample() async {
-    if (_image == null) return;
-    final img = await _composite(_image!, _buildPencilSamples());
+    if (_paint == null) return;
+    final img = await _composite(_paint!, _buildPencilSamples());
     if (!mounted) {
       img.dispose();
       return;
     }
-    final old = _image;
-    setState(() => _image = img);
+    final old = _paint;
+    setState(() => _paint = img);
     old?.dispose();
   }
 
   List<Stroke> _buildPencilSamples() {
-    // Alignment + crispness test: a pen border hugging the canvas edges and an
-    // X to the corners. If the supersample bake scale is right, these span the
-    // full canvas; wrong scale would shrink them into a corner. Thin pen lines
-    // also reveal edge crispness.
+    // Layer test: a black marker band, then an eraser stroke crossing it. The
+    // eraser must cut a clean gap revealing the surface (white here), proving
+    // strokes deposit on the paint layer and the eraser clears to the surface.
     final w = _logicalSize.width, h = _logicalSize.height;
-    const m = 14.0;
-    StrokePoint pt(double x, double y) => StrokePoint(Offset(x, y), 3.0);
-    Stroke pen(int seed) => Stroke(Tool.pen, Colors.black, seed: seed);
-
-    final border = pen(1)
-      ..add(pt(m, m))
-      ..add(pt(w - m, m))
-      ..add(pt(w - m, h - m))
-      ..add(pt(m, h - m))
-      ..add(pt(m, m));
-    final d1 = pen(2)
-      ..add(pt(m, m))
-      ..add(pt(w - m, h - m));
-    final d2 = pen(3)
-      ..add(pt(w - m, m))
-      ..add(pt(m, h - m));
-    return [border, d1, d2];
+    final band = Stroke(Tool.marker, Colors.black, seed: 1);
+    for (var x = 200.0; x <= w - 200; x += 6) {
+      band.add(StrokePoint(Offset(x, h / 2), 60));
+    }
+    final erase = Stroke(Tool.eraser, Colors.black, seed: 2);
+    for (var y = h / 2 - 160; y <= h / 2 + 160; y += 6) {
+      erase.add(StrokePoint(Offset(w / 2, y), 34));
+    }
+    return [band, erase];
   }
 
   int get _bufW => (_logicalSize.width * kSuperSample).round();
   int get _bufH => (_logicalSize.height * kSuperSample).round();
 
-  Future<ui.Image> _blankImage() {
+  /// The base surface. For now a flat fill; procedural surface textures land
+  /// in the next step.
+  Future<ui.Image> _blankSurface() {
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
     canvas.drawRect(
       Rect.fromLTWH(0, 0, _bufW.toDouble(), _bufH.toDouble()),
       Paint()..color = widget.paperColor,
     );
+    return recorder.endRecording().toImage(_bufW, _bufH);
+  }
+
+  /// A fully transparent paint layer (an empty recording rasterizes to clear).
+  Future<ui.Image> _blankPaint() {
+    final recorder = ui.PictureRecorder();
+    Canvas(recorder);
     return recorder.endRecording().toImage(_bufW, _bufH);
   }
 
@@ -211,18 +220,18 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
   // --- Baking -------------------------------------------------------------
 
   Future<void> _bake() async {
-    if (_baking || _image == null || _unbaked.isEmpty) return;
+    if (_baking || _paint == null || _unbaked.isEmpty) return;
     _baking = true;
     try {
       final batch = List<Stroke>.from(_unbaked);
-      final newImage = await _composite(_image!, batch);
+      final newPaint = await _composite(_paint!, batch);
       if (!mounted) {
-        newImage.dispose();
+        newPaint.dispose();
         return;
       }
-      final old = _image;
+      final old = _paint;
       setState(() {
-        _image = newImage;
+        _paint = newPaint;
         _unbaked.removeRange(0, batch.length);
       });
       old?.dispose();
@@ -247,19 +256,29 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
     return recorder.endRecording().toImage(_bufW, _bufH);
   }
 
+  /// Clears painted strokes but keeps the chosen surface.
   Future<void> _clear() async {
-    final blank = await _blankImage();
+    final blank = await _blankPaint();
     if (!mounted) {
       blank.dispose();
       return;
     }
-    final old = _image;
+    final old = _paint;
     setState(() {
       _unbaked.clear();
       _active = null;
-      _image = blank;
+      _paint = blank;
     });
     old?.dispose();
+  }
+
+  /// Flattens surface + paint into a single image for export.
+  Future<ui.Image> _flatten() {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    if (_surface != null) canvas.drawImage(_surface!, Offset.zero, Paint());
+    if (_paint != null) canvas.drawImage(_paint!, Offset.zero, Paint());
+    return recorder.endRecording().toImage(_bufW, _bufH);
   }
 
   Future<String> _savePng() async {
@@ -268,10 +287,11 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
       await _bake();
       if (_baking) await Future<void>.delayed(const Duration(milliseconds: 8));
     }
-    final image = _image;
-    if (image == null) throw StateError('Nothing to save yet');
+    if (_paint == null) throw StateError('Nothing to save yet');
 
+    final image = await _flatten();
     final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+    image.dispose();
     if (bytes == null) throw StateError('PNG encode failed');
 
     final ts = DateTime.now()
@@ -307,7 +327,7 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
-        if (_image == null) {
+        if (_paint == null || _surface == null) {
           WidgetsBinding.instance
               .addPostFrameCallback((_) => _ensureBuffer(size));
           return ColoredBox(
@@ -324,7 +344,8 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
           child: CustomPaint(
             size: size,
             painter: _CanvasPainter(
-              image: _image!,
+              surface: _surface!,
+              paintLayer: _paint!,
               unbaked: _unbaked,
               active: _active,
             ),
@@ -337,34 +358,50 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
 
 class _CanvasPainter extends CustomPainter {
   _CanvasPainter({
-    required this.image,
+    required this.surface,
+    required this.paintLayer,
     required this.unbaked,
     required this.active,
   });
 
-  final ui.Image image;
+  final ui.Image surface;
+  final ui.Image paintLayer;
   final List<Stroke> unbaked;
   final Stroke? active;
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Scale the supersampled buffer down to fill the logical surface.
-    final src =
-        Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
     final dst = Rect.fromLTWH(0, 0, size.width, size.height);
-    canvas.drawImageRect(
-        image, src, dst, Paint()..filterQuality = FilterQuality.high);
+    final hq = Paint()..filterQuality = FilterQuality.high;
 
-    // Pending + active strokes ride on top in the same logical coordinates.
+    // Base surface, scaled down from the supersampled buffer.
+    canvas.drawImageRect(
+        surface,
+        Rect.fromLTWH(0, 0, surface.width.toDouble(), surface.height.toDouble()),
+        dst,
+        hq);
+
+    // Paint layer + pending edits, composited in an isolated layer so an
+    // eraser stroke (BlendMode.clear) punches through to reveal the surface
+    // rather than the widget behind the canvas.
+    canvas.saveLayer(dst, Paint());
+    canvas.drawImageRect(
+        paintLayer,
+        Rect.fromLTWH(
+            0, 0, paintLayer.width.toDouble(), paintLayer.height.toDouble()),
+        dst,
+        hq);
     for (final s in unbaked) {
       paintStroke(canvas, s);
     }
     if (active != null) paintStroke(canvas, active!);
+    canvas.restore();
   }
 
   @override
   bool shouldRepaint(_CanvasPainter old) =>
-      old.image != image ||
+      old.surface != surface ||
+      old.paintLayer != paintLayer ||
       old.active != active ||
       old.unbaked.length != unbaked.length ||
       (active != null && active!.points.length != (old.active?.points.length ?? -1));
