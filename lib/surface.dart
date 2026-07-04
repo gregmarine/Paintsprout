@@ -387,16 +387,18 @@ Future<ui.Image> _woodTile() {
 Future<ui.Image> _watercolorTile() {
   const size = 256;
   const baseR = 0.98, baseG = 0.97, baseB = 0.93;
-  final dimple = _noiseGrid(28, 28, 51);
-  final fine = _noiseGrid(64, 64, 52);
+  final dimple = _noiseGrid(27, 27, 51);
+  final fine = _noiseGrid(61, 61, 52);
   final rnd = math.Random(53);
   final px = Uint8List(size * size * 4);
   for (var y = 0; y < size; y++) {
     for (var x = 0; x < size; x++) {
-      final d = _noise2(dimple, 28, 28, x / size * 28, y / size * 28);
-      final f = _noise2(fine, 64, 64, x / size * 64, y / size * 64);
+      final d = _noise2(dimple, 27, 27, x / size * 27, y / size * 27);
+      final f = _noise2(fine, 61, 61, x / size * 61, y / size * 61);
       final grain = (rnd.nextDouble() - 0.5) * 0.03;
-      final shade = 0.9 + 0.08 * d + 0.05 * (f - 0.5) + grain;
+      // Deeper dimples than before so the cold-press tooth is visible on the
+      // bare page, while the paper still reads bright.
+      final shade = 0.87 + 0.12 * d + 0.06 * (f - 0.5) + grain;
       final i = (y * size + x) * 4;
       _setPixel(px, i, baseR * shade, baseG * shade, baseB * shade);
     }
