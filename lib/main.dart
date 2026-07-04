@@ -45,6 +45,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
   Tool _tool = Tool.pencil;
   Color _color = Colors.black;
   SurfaceKind _surfaceKind = SurfaceKind.paper;
+  Color _plainColor = Colors.white;
   bool _railVisible = true;
 
   // Each tool remembers its own base size.
@@ -67,6 +68,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
               color: _color,
               baseSize: _size,
               surface: _surfaceKind,
+              plainColor: _plainColor,
             ),
           ),
           Positioned(
@@ -209,9 +211,43 @@ class _CanvasScreenState extends State<CanvasScreen> {
         ),
       ),
     );
-    if (chosen != null && chosen != _surfaceKind) {
-      setState(() => _surfaceKind = chosen);
+    if (chosen != null) {
+      // Plain always opens the color chooser (so you can recolor it too);
+      // other surfaces just switch.
+      if (chosen == SurfaceKind.plain) {
+        setState(() => _surfaceKind = chosen);
+        await _pickPlainColor();
+      } else if (chosen != _surfaceKind) {
+        setState(() => _surfaceKind = chosen);
+      }
     }
+  }
+
+  Future<void> _pickPlainColor() async {
+    Color working = _plainColor;
+    final chosen = await showDialog<Color>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Background color'),
+        content: SingleChildScrollView(
+          child: ColorPicker(
+            pickerColor: working,
+            enableAlpha: false,
+            labelTypes: const [],
+            onColorChanged: (c) => working = c,
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, working),
+              child: const Text('Use')),
+        ],
+      ),
+    );
+    if (chosen != null) setState(() => _plainColor = chosen);
   }
 
   Future<void> _save() async {

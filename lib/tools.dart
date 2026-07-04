@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 /// The drawing tools available in Phase 0.
-enum Tool { pencil, pen, brush, marker, spray, eraser }
+enum Tool { pencil, pen, brush, watercolor, marker, spray, eraser }
 
 /// How a stroke is rendered.
 enum RenderStyle {
@@ -16,6 +16,10 @@ enum RenderStyle {
 
   /// Multiple bristle streaks following the path with dry-brush gaps (brush).
   bristle,
+
+  /// Translucent pigment wash: soft bleeding edges, darker pooled rim, grainy
+  /// granulation in the surface tooth, building up where strokes overlap.
+  wash,
 }
 
 extension ToolInfo on Tool {
@@ -23,6 +27,7 @@ extension ToolInfo on Tool {
         Tool.pencil => 'Pencil',
         Tool.pen => 'Pen',
         Tool.brush => 'Brush',
+        Tool.watercolor => 'Watercolor',
         Tool.marker => 'Marker',
         Tool.spray => 'Spray',
         Tool.eraser => 'Eraser',
@@ -32,6 +37,7 @@ extension ToolInfo on Tool {
         Tool.pencil => Icons.edit,
         Tool.pen => Icons.create,
         Tool.brush => Icons.brush,
+        Tool.watercolor => Icons.water_drop,
         Tool.marker => Icons.border_color,
         Tool.spray => Icons.blur_on,
         Tool.eraser => Icons.cleaning_services,
@@ -46,6 +52,7 @@ extension ToolInfo on Tool {
         Tool.pencil => 1,
         Tool.pen => 3,
         Tool.brush => 18,
+        Tool.watercolor => 26,
         Tool.marker => 4,
         Tool.spray => 28,
         Tool.eraser => 24,
@@ -173,6 +180,25 @@ class ToolProfile {
     renderStyle: RenderStyle.bristle,
   );
 
+  // Watercolor: a translucent pigment wash. Low opacity so strokes are
+  // see-through and build up where they overlap; a soft blur for bleeding edges;
+  // a moderate tooth response so pigment granulates in the surface. Pressure
+  // loads the brush (wider). The wash renderer adds the pooled edge rim.
+  static const _watercolor = ToolProfile(
+    minPressureFactor: 0.5,
+    maxPressureFactor: 2.0,
+    pressureAffectsWidth: true,
+    tiltGain: 0.3,
+    pressureAffectsDensity: false,
+    minDensity: 1.0,
+    maxDensity: 1.0,
+    opacity: 0.5,
+    blurFactor: 0.12, // soft bleed, but not so strong it erases the pooled rim
+    toothFloor: 0.6, // granulation: pigment settles into the tooth
+    toothBias: 1.0,
+    renderStyle: RenderStyle.wash,
+  );
+
   // Spray can: soft, translucent, builds up on overlap (the old brush look).
   static const _spray = ToolProfile(
     minPressureFactor: 0.25,
@@ -208,6 +234,7 @@ class ToolProfile {
         Tool.pencil => _pencil,
         Tool.pen => _pen,
         Tool.brush => _brush,
+        Tool.watercolor => _watercolor,
         Tool.marker => _marker,
         Tool.spray => _spray,
         Tool.eraser => _eraser,

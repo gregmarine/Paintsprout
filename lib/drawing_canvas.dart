@@ -44,6 +44,7 @@ class DrawingCanvas extends StatefulWidget {
     required this.color,
     required this.baseSize,
     this.surface = SurfaceKind.paper,
+    this.plainColor = Colors.white,
     this.paperColor = Colors.white,
     this.debugPencilSample = false,
   });
@@ -53,6 +54,9 @@ class DrawingCanvas extends StatefulWidget {
   final Color color;
   final double baseSize;
   final SurfaceKind surface;
+
+  /// Background color for the Plain surface (ignored by textured surfaces).
+  final Color plainColor;
   final Color paperColor;
 
   /// When true, bakes synthetic pencil sample strokes on init so the pencil
@@ -100,14 +104,19 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
   @override
   void didUpdateWidget(DrawingCanvas old) {
     super.didUpdateWidget(old);
-    // Switching surfaces re-renders the base but keeps the paint.
-    if (widget.surface != old.surface && _paint != null) {
+    // Switching surfaces — or recoloring the Plain background — re-renders the
+    // base but keeps the paint.
+    final surfaceChanged = widget.surface != old.surface;
+    final plainRecolored = widget.surface == SurfaceKind.plain &&
+        widget.plainColor != old.plainColor;
+    if ((surfaceChanged || plainRecolored) && _paint != null) {
       unawaited(_regenerateSurface());
     }
   }
 
   Future<void> _regenerateSurface() async {
-    final surfaceImg = await buildSurfaceVisual(widget.surface, _bufW, _bufH);
+    final surfaceImg = await buildSurfaceVisual(widget.surface, _bufW, _bufH,
+        plainColor: widget.plainColor);
     // Re-render every committed stroke against the new surface so existing marks
     // pick up the new tooth (a pencil sketch becomes pencil-on-canvas, etc.).
     final blank = await _blankPaint();
@@ -170,12 +179,18 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
   }
 
   List<Stroke> _buildToolSamples() {
-    // Tooth test: one broad band per deposit tool so each tool's reaction to the
-    // surface is visible, plus a marker patch crossed by an eraser to show the
-    // eraser leaving residue down in the tooth valleys.
+    // One broad band per deposit tool so each tool's reaction to the surface is
+    // visible, plus two overlapping watercolor washes to show build-up.
     final w = _logicalSize.width, h = _logicalSize.height;
     final strokes = <Stroke>[];
-    const tools = [Tool.pencil, Tool.pen, Tool.brush, Tool.marker, Tool.spray];
+    const tools = [
+      Tool.pencil,
+      Tool.pen,
+      Tool.brush,
+      Tool.watercolor,
+      Tool.marker,
+      Tool.spray,
+    ];
     Stroke band(Tool tool, double y, double width, {int seed = 1}) {
       final s = Stroke(tool, Colors.black, seed: seed);
       for (var x = 240.0; x <= w - 160; x += 5) {
@@ -185,16 +200,21 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
     }
 
     for (var t = 0; t < tools.length; t++) {
-      strokes.add(band(tools[t], h * (0.14 + t * 0.13), 40, seed: t + 1));
+      strokes.add(band(tools[t], h * (0.10 + t * 0.105), 40, seed: t + 1));
     }
-    // Eraser test: a dense marker patch, then an eraser crossing it vertically.
-    final eraseY = h * (0.14 + tools.length * 0.13);
-    strokes.add(band(Tool.marker, eraseY, 64, seed: 20));
-    final erase = Stroke(Tool.eraser, Colors.black, seed: 21);
-    for (var y = eraseY - 48; y <= eraseY + 48; y += 5) {
-      erase.add(StrokePoint(Offset(w / 2, y), 40));
+    // Watercolor build-up: two crossing diagonal washes; the overlap darkens.
+    final baseY = h * 0.82;
+    Stroke wash(double y0, double y1, int seed) {
+      final s = Stroke(Tool.watercolor, Colors.black, seed: seed);
+      for (var x = 300.0; x <= w - 240; x += 6) {
+        final t = (x - 300) / (w - 540);
+        s.add(StrokePoint(Offset(x, y0 + (y1 - y0) * t), 48));
+      }
+      return s;
     }
-    strokes.add(erase);
+
+    strokes.add(wash(baseY, baseY + 80, 40));
+    strokes.add(wash(baseY + 80, baseY, 41));
     return strokes;
   }
 
@@ -203,7 +223,8 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
 
   /// The base surface texture (procedural) for the selected surface.
   Future<ui.Image> _blankSurface() =>
-      buildSurfaceVisual(widget.surface, _bufW, _bufH);
+      buildSurfaceVisual(widget.surface, _bufW, _bufH,
+          plainColor: widget.plainColor);
 
   /// A fully transparent paint layer (an empty recording rasterizes to clear).
   Future<ui.Image> _blankPaint() {

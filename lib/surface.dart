@@ -7,7 +7,20 @@ import 'package:flutter/material.dart';
 
 /// The base layer you paint on. Procedural for now; the generator is behind an
 /// interface so image-based surfaces can be added later.
-enum SurfaceKind { paper, canvas, metal, stone, wood, watercolor, chalkboard, concrete }
+enum SurfaceKind {
+  paper,
+  canvas,
+  metal,
+  stone,
+  wood,
+  watercolor,
+  chalkboard,
+  concrete,
+
+  /// A flat, textureless background in a user-chosen color (default white).
+  /// No tooth — tools deposit cleanly, as on a smooth screen.
+  plain,
+}
 
 extension SurfaceInfo on SurfaceKind {
   String get label => switch (this) {
@@ -19,6 +32,7 @@ extension SurfaceInfo on SurfaceKind {
         SurfaceKind.watercolor => 'Watercolor',
         SurfaceKind.chalkboard => 'Chalkboard',
         SurfaceKind.concrete => 'Concrete',
+        SurfaceKind.plain => 'Plain',
       };
 
   /// Logical px spanned by one tooth texel when the surface breaks up a stroke.
@@ -45,11 +59,13 @@ extension SurfaceInfo on SurfaceKind {
         SurfaceKind.watercolor => Icons.water_drop_outlined,
         SurfaceKind.chalkboard => Icons.rectangle_outlined,
         SurfaceKind.concrete => Icons.dashboard_outlined,
+        SurfaceKind.plain => Icons.format_color_fill,
       };
 }
 
 /// Surfaces wired into the picker so far. Grows as recipes are added.
 const List<SurfaceKind> kAvailableSurfaces = [
+  SurfaceKind.plain,
   SurfaceKind.paper,
   SurfaceKind.canvas,
   SurfaceKind.watercolor,
@@ -61,15 +77,22 @@ const List<SurfaceKind> kAvailableSurfaces = [
 ];
 
 /// Builds the visual (color) layer for a surface at [w]x[h] buffer pixels.
-/// Textures are designed at buffer-pixel scale and tiled.
-Future<ui.Image> buildSurfaceVisual(SurfaceKind kind, int w, int h) async {
-  final tile = await _visualTile(kind);
+/// Textures are designed at buffer-pixel scale and tiled. The Plain surface is
+/// a flat fill in [plainColor] instead of a texture.
+Future<ui.Image> buildSurfaceVisual(SurfaceKind kind, int w, int h,
+    {Color plainColor = const Color(0xFFFFFFFF)}) async {
   final recorder = ui.PictureRecorder();
   final canvas = Canvas(recorder);
+  final full = Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble());
+  if (kind == SurfaceKind.plain) {
+    canvas.drawRect(full, Paint()..color = plainColor);
+    return recorder.endRecording().toImage(w, h);
+  }
+  final tile = await _visualTile(kind);
   // Tile the seamless texture across the whole surface (identity scale: the
   // tile is authored at final resolution).
   canvas.drawRect(
-    Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+    full,
     Paint()
       ..shader = ui.ImageShader(
           tile, TileMode.repeated, TileMode.repeated, _identity),

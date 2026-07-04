@@ -55,6 +55,7 @@ Future<ui.Image> _bakeTooth(Float64List field, Tool tool, int size) {
 /// once per surface and shared across that surface's tools.
 Future<void> initGrains({int size = 128}) async {
   for (final surface in SurfaceKind.values) {
+    if (surface == SurfaceKind.plain) continue; // flat, no tooth
     final field = buildToothField(surface, size);
     for (final tool in Tool.values) {
       if (ToolProfile.of(tool).reactsToTooth) {
@@ -137,6 +138,26 @@ List<Offset> _strokeNormals(List<StrokePoint> pts) {
     normals.add(Offset(-dir.dy, dir.dx));
   }
   return normals;
+}
+
+/// A single closed polygon covering the whole variable-width stroke: down the
+/// left edge (position + normal*halfWidth) and back up the right edge. Filling
+/// this once gives an even wash with no per-segment seams; stroking its outline
+/// gives the pooled watercolor rim.
+Path _ribbonPath(List<StrokePoint> pts, List<Offset> normals) {
+  final path = Path();
+  for (var i = 0; i < pts.length; i++) {
+    final hw = math.max(0.5, pts[i].width / 2);
+    final o = pts[i].position + normals[i] * hw;
+    i == 0 ? path.moveTo(o.dx, o.dy) : path.lineTo(o.dx, o.dy);
+  }
+  for (var i = pts.length - 1; i >= 0; i--) {
+    final hw = math.max(0.5, pts[i].width / 2);
+    final o = pts[i].position - normals[i] * hw;
+    path.lineTo(o.dx, o.dy);
+  }
+  path.close();
+  return path;
 }
 
 /// A held stylus never reaches 0 (perpendicular) or pi/2 (flat) tilt in
@@ -256,6 +277,58 @@ void paintStroke(Canvas canvas, Stroke stroke,
       // modulate with opaque white keeps each vertex's own color+alpha.
       canvas.drawVertices(vertices, BlendMode.modulate,
           Paint()..color = const Color(0xFFFFFFFF));
+    }
+    if (tooth != null) _applyTooth(canvas, bounds, tooth, toothScale);
+    canvas.restore();
+    return;
+  }
+
+  // Watercolor: one translucent wash layer. The whole stroke is a single filled
+  // ribbon (even, seam-free body) with a darker stroked outline for the pooled
+  // rim; the layer is blurred for soft bleeding edges, multiplied by the surface
+  // tooth for granulation, and composited at low opacity so overlaps build up.
+  if (profile.renderStyle == RenderStyle.wash) {
+    final bleed = blurSigma;
+    final pad = maxWidth / 2 + bleed * 3 + 2;
+    final bounds =
+        Rect.fromLTRB(minX - pad, minY - pad, maxX + pad, maxY + pad);
+    final layerPaint = Paint()
+      ..color = Colors.black.withValues(alpha: profile.opacity);
+    if (bleed > 0.3) {
+      layerPaint.imageFilter = ui.ImageFilter.blur(
+          sigmaX: bleed, sigmaY: bleed, tileMode: TileMode.decal);
+    }
+    canvas.saveLayer(bounds, layerPaint);
+    final pts = stroke.points;
+    if (pts.length == 1) {
+      final p = pts.first;
+      final r = math.max(1.0, p.width / 2);
+      canvas.drawCircle(p.position, r,
+          Paint()..color = rgb.withValues(alpha: 0.6)..isAntiAlias = true);
+      canvas.drawCircle(
+        p.position,
+        r,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.5, r * 0.4)
+          ..color = rgb.withValues(alpha: 0.95)
+          ..isAntiAlias = true,
+      );
+    } else {
+      final ribbon = _ribbonPath(pts, _strokeNormals(pts));
+      // Translucent body.
+      canvas.drawPath(ribbon,
+          Paint()..color = rgb.withValues(alpha: 0.6)..isAntiAlias = true);
+      // Pooled rim: a darker outline that the blur feathers into an edge bloom.
+      canvas.drawPath(
+        ribbon,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.5, maxWidth * 0.16)
+          ..strokeJoin = StrokeJoin.round
+          ..color = rgb.withValues(alpha: 0.95)
+          ..isAntiAlias = true,
+      );
     }
     if (tooth != null) _applyTooth(canvas, bounds, tooth, toothScale);
     canvas.restore();
