@@ -11,6 +11,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initGrains();
   await initPigmentShader();
+  await initSelectionShader();
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
@@ -49,6 +50,12 @@ class _CanvasScreenState extends State<CanvasScreen> {
   Color _plainColor = Colors.white;
   bool _railVisible = true;
 
+  // Magic wand settings and whether a selection is active.
+  double _wandTolerance = 0.15; // color spread from the tapped pixel
+  double _wandEdgeSensitivity = 0.5; // how faint a line still stops the fill
+  int _wandGap = 3; // gap-closing radius (buffer px)
+  bool _hasSelection = false;
+
   // Undo/redo: snapshots of the whole document (surface, background color, and
   // strokes). Every undoable action pushes one; undo/redo walk [_histIndex].
   final List<_Snapshot> _history = [];
@@ -79,7 +86,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
     if (_histIndex < _history.length - 1) {
       _history.removeRange(_histIndex + 1, _history.length);
     }
-    _history.add(_Snapshot(_surfaceKind, _plainColor, _controller.strokes()));
+    _history.add(_Snapshot(_surfaceKind, _plainColor, _controller.ops()));
     _histIndex = _history.length - 1;
     setState(() {}); // refresh undo/redo affordances
   }
@@ -102,7 +109,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
       _surfaceKind = s.surface;
       _plainColor = s.plainColor;
     });
-    await _controller.restore(s.surface, s.plainColor, s.strokes);
+    await _controller.restore(s.surface, s.plainColor, s.ops);
     _applyingHistory = false;
     if (mounted) setState(() {}); // refresh undo/redo affordances
   }
@@ -121,9 +128,13 @@ class _CanvasScreenState extends State<CanvasScreen> {
               baseSize: _size,
               surface: _surfaceKind,
               plainColor: _plainColor,
+              wandTolerance: _wandTolerance,
+              wandEdgeSensitivity: _wandEdgeSensitivity,
+              wandGap: _wandGap,
               onCommitted: _record,
               onUndoGesture: _undo,
               onRedoGesture: _redo,
+              onSelectionChanged: (v) => setState(() => _hasSelection = v),
             ),
           ),
           Positioned(
@@ -136,12 +147,18 @@ class _CanvasScreenState extends State<CanvasScreen> {
                     color: _color,
                     size: _size,
                     surface: _surfaceKind,
+                    tolerance: _wandTolerance,
+                    hasSelection: _hasSelection,
                     canUndo: _canUndo,
                     canRedo: _canRedo,
                     onToolChanged: (t) => setState(() => _tool = t),
                     onPickColor: _pickColor,
                     onPickSize: _pickSize,
                     onPickSurface: _pickSurface,
+                    onPickTolerance: _pickTolerance,
+                    onFillSelection: () => _controller.fillSelection(_color),
+                    onDeleteSelection: () => _controller.deleteSelection(),
+                    onDeselect: () => _controller.clearSelection(),
                     onUndo: _undo,
                     onRedo: _redo,
                     onSave: _save,
@@ -230,6 +247,67 @@ class _CanvasScreenState extends State<CanvasScreen> {
           FilledButton(
             onPressed: () {
               setState(() => _sizes[_tool] = working);
+              Navigator.pop(context);
+            },
+            child: const Text('Done'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _pickTolerance() async {
+    double tolerance = _wandTolerance;
+    double edge = _wandEdgeSensitivity;
+    double gap = _wandGap.toDouble();
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Magic wand'),
+        content: StatefulBuilder(
+          builder: (context, setInner) => SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text('Tolerance  ${(tolerance * 100).round()}%'),
+                Slider(
+                  value: tolerance,
+                  onChanged: (v) => setInner(() => tolerance = v),
+                ),
+                const Text('Higher = matches a wider range of colors.',
+                    style: TextStyle(fontSize: 12, color: Colors.black54)),
+                const SizedBox(height: 12),
+                Text('Edge sensitivity  ${(edge * 100).round()}%'),
+                Slider(
+                  value: edge,
+                  onChanged: (v) => setInner(() => edge = v),
+                ),
+                const Text('Higher = fainter lines (soft pencil) stop the fill.',
+                    style: TextStyle(fontSize: 12, color: Colors.black54)),
+                const SizedBox(height: 12),
+                Text('Close gaps  ${gap.round()} px'),
+                Slider(
+                  value: gap,
+                  min: 0,
+                  max: 8,
+                  divisions: 8,
+                  onChanged: (v) => setInner(() => gap = v),
+                ),
+                const Text('Bridges holes in a grainy/broken boundary.',
+                    style: TextStyle(fontSize: 12, color: Colors.black54)),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () {
+              setState(() {
+                _wandTolerance = tolerance;
+                _wandEdgeSensitivity = edge;
+                _wandGap = gap.round();
+              });
               Navigator.pop(context);
             },
             child: const Text('Done'),
@@ -367,13 +445,13 @@ class _CanvasScreenState extends State<CanvasScreen> {
 }
 
 /// One entry in the undo/redo history: a full document snapshot. Committed
-/// strokes are immutable, so the list just shares their instances.
+/// paint ops are immutable, so the list just shares their instances.
 class _Snapshot {
-  const _Snapshot(this.surface, this.plainColor, this.strokes);
+  const _Snapshot(this.surface, this.plainColor, this.ops);
 
   final SurfaceKind surface;
   final Color plainColor;
-  final List<Stroke> strokes;
+  final List<PaintOp> ops;
 }
 
 class _ToolRail extends StatelessWidget {
@@ -382,12 +460,18 @@ class _ToolRail extends StatelessWidget {
     required this.color,
     required this.size,
     required this.surface,
+    required this.tolerance,
+    required this.hasSelection,
     required this.canUndo,
     required this.canRedo,
     required this.onToolChanged,
     required this.onPickColor,
     required this.onPickSize,
     required this.onPickSurface,
+    required this.onPickTolerance,
+    required this.onFillSelection,
+    required this.onDeleteSelection,
+    required this.onDeselect,
     required this.onUndo,
     required this.onRedo,
     required this.onSave,
@@ -399,12 +483,18 @@ class _ToolRail extends StatelessWidget {
   final Color color;
   final double size;
   final SurfaceKind surface;
+  final double tolerance;
+  final bool hasSelection;
   final bool canUndo;
   final bool canRedo;
   final ValueChanged<Tool> onToolChanged;
   final VoidCallback onPickColor;
   final VoidCallback onPickSize;
   final VoidCallback onPickSurface;
+  final VoidCallback onPickTolerance;
+  final VoidCallback onFillSelection;
+  final VoidCallback onDeleteSelection;
+  final VoidCallback onDeselect;
   final VoidCallback onUndo;
   final VoidCallback onRedo;
   final VoidCallback onSave;
@@ -419,9 +509,10 @@ class _ToolRail extends StatelessWidget {
       color: Colors.white.withValues(alpha: 0.94),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
             for (final t in Tool.values)
               IconButton(
                 tooltip: t.label,
@@ -449,25 +540,59 @@ class _ToolRail extends StatelessWidget {
                   ),
                 ),
               ),
-            // Size control shows the current base size for this tool.
-            IconButton(
-              tooltip: '${tool.label} size',
-              onPressed: onPickSize,
-              icon: SizedBox(
-                width: 28,
-                child: Text(
-                  size.toStringAsFixed(0),
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+            // Size control (or wand tolerance) shows the current value.
+            if (tool == Tool.wand)
+              IconButton(
+                tooltip: 'Wand tolerance',
+                onPressed: onPickTolerance,
+                icon: SizedBox(
+                  width: 30,
+                  child: Text(
+                    '${(tolerance * 100).round()}%',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 11),
+                  ),
+                ),
+              )
+            else
+              IconButton(
+                tooltip: '${tool.label} size',
+                onPressed: onPickSize,
+                icon: SizedBox(
+                  width: 28,
+                  child: Text(
+                    size.toStringAsFixed(0),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
                 ),
               ),
-            ),
             // Surface picker shows the current surface.
             IconButton(
               tooltip: 'Surface: ${surface.label}',
               onPressed: onPickSurface,
               icon: Icon(surface.icon),
             ),
+            // Selection actions appear only while a magic-wand selection is
+            // active: fill it with the current color, erase inside it, deselect.
+            if (hasSelection) ...[
+              IconButton(
+                tooltip: 'Fill selection with color',
+                onPressed: onFillSelection,
+                icon: Icon(Icons.format_color_fill, color: color),
+              ),
+              IconButton(
+                tooltip: 'Erase inside selection',
+                onPressed: onDeleteSelection,
+                icon: const Icon(Icons.layers_clear),
+              ),
+              IconButton(
+                tooltip: 'Deselect',
+                onPressed: onDeselect,
+                icon: const Icon(Icons.deselect),
+              ),
+            ],
             const Divider(height: 12, indent: 8, endIndent: 8),
             IconButton(
                 tooltip: 'Undo (two-finger double-tap)',
@@ -490,7 +615,8 @@ class _ToolRail extends StatelessWidget {
                 tooltip: 'Hide toolbar',
                 onPressed: onHide,
                 icon: const Icon(Icons.chevron_left)),
-          ],
+            ],
+          ),
         ),
       ),
     );

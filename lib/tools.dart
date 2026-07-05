@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 
 /// The drawing tools available in Phase 0.
-enum Tool { pencil, pen, brush, watercolor, marker, spray, eraser }
+///
+/// [wand] is not a drawing tool — it's the magic-wand selection tool. It never
+/// creates a stroke; a tap flood-fills a selection instead.
+enum Tool { pencil, pen, brush, watercolor, marker, spray, eraser, wand }
 
 /// How a stroke is rendered.
 enum RenderStyle {
@@ -31,6 +34,7 @@ extension ToolInfo on Tool {
         Tool.marker => 'Marker',
         Tool.spray => 'Spray',
         Tool.eraser => 'Eraser',
+        Tool.wand => 'Magic Wand',
       };
 
   IconData get icon => switch (this) {
@@ -41,7 +45,11 @@ extension ToolInfo on Tool {
         Tool.marker => Icons.border_color,
         Tool.spray => Icons.blur_on,
         Tool.eraser => Icons.cleaning_services,
+        Tool.wand => Icons.auto_fix_high,
       };
+
+  /// Whether this tool paints strokes at all. The wand only selects.
+  bool get isDrawing => this != Tool.wand;
 
   /// Whether the tool's stroke width reacts to stylus pressure and tilt.
   /// Pen and eraser strictly honor the base size; the rest grow.
@@ -56,6 +64,7 @@ extension ToolInfo on Tool {
         Tool.marker => 4,
         Tool.spray => 28,
         Tool.eraser => 24,
+        Tool.wand => 1,
       };
 }
 
@@ -238,5 +247,6 @@ class ToolProfile {
         Tool.marker => _marker,
         Tool.spray => _spray,
         Tool.eraser => _eraser,
+        Tool.wand => _pen, // unused: the wand never draws
       };
 }

@@ -84,6 +84,45 @@ void _applyTooth(Canvas canvas, Rect bounds, ui.Image tooth, double scale) {
   );
 }
 
+/// Fills the region marked by [mask] (alpha = coverage) with [color], broken up
+/// by the surface tooth so it reads like laid-down paint rather than a flat
+/// digital bucket-fill. Uses the marker's response to the surface (soft, opaque
+/// paint). [dst] maps the mask into the current canvas (buffer) coordinates;
+/// [toothTexelScale] is buffer px per tooth texel (surface.toothScale * the
+/// supersample). On a tooth-less surface (Plain) the fill is simply flat.
+void paintToothedFill(
+  Canvas canvas,
+  ui.Image mask,
+  Rect dst,
+  Color color, {
+  required SurfaceKind surface,
+  required double toothTexelScale,
+}) {
+  final tooth = toothFor(surface, Tool.marker);
+  final src =
+      Rect.fromLTWH(0, 0, mask.width.toDouble(), mask.height.toDouble());
+  canvas.saveLayer(dst, Paint());
+  // Lay the opaque color everywhere the mask covers (tinting the mask alpha).
+  canvas.drawImageRect(
+    mask,
+    src,
+    dst,
+    Paint()
+      ..colorFilter =
+          ColorFilter.mode(color.withValues(alpha: 1.0), BlendMode.srcIn),
+  );
+  if (tooth != null) _applyTooth(canvas, dst, tooth, toothTexelScale);
+  canvas.restore();
+}
+
+/// Erases paint within the region marked by [mask] (revealing the surface),
+/// leaving other paint untouched. [dst] maps the mask into buffer coordinates.
+void paintMaskedErase(Canvas canvas, ui.Image mask, Rect dst) {
+  final src =
+      Rect.fromLTWH(0, 0, mask.width.toDouble(), mask.height.toDouble());
+  canvas.drawImageRect(mask, src, dst, Paint()..blendMode = BlendMode.dstOut);
+}
+
 /// A single continuous stroke (pointer-down to pointer-up).
 class Stroke {
   Stroke(this.tool, this.color, {this.seed = 0}) : points = <StrokePoint>[];

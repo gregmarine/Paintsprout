@@ -66,6 +66,7 @@ flutter:
   # Fragment shaders (compiled to the app bundle).
   shaders:
     - shaders/pigment_mix.frag
+    - shaders/selection_overlay.frag
 
   # To add assets to your application, add an assets section, like this:
   # assets:
