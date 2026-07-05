@@ -47,6 +47,33 @@ Future<void> initSelectionShader() async {
   }
 }
 
+/// One committed edit to the paint layer, kept in order so the whole paint can
+/// be rebuilt on demand — re-toothed when the surface changes, and replayed for
+/// undo/redo. Either a drawn [Stroke], or a magic-wand region fill/erase.
+sealed class PaintOp {}
+
+/// A drawn stroke (pencil, pen, brush, watercolor, …). Re-rendered against the
+/// current surface's tooth when replayed.
+class StrokeOp extends PaintOp {
+  StrokeOp(this.stroke);
+  final Stroke stroke;
+}
+
+/// Fills a magic-wand region with [color], broken up by the surface tooth.
+/// [mask] (white = selected) is an independent clone, so it survives the live
+/// selection being cleared or replaced.
+class FillOp extends PaintOp {
+  FillOp(this.mask, this.color);
+  final ui.Image mask;
+  final Color color;
+}
+
+/// Erases paint (revealing the surface) within a magic-wand region.
+class EraseOp extends PaintOp {
+  EraseOp(this.mask);
+  final ui.Image mask;
+}
+
 /// Handle the toolbar uses to drive the canvas (clear / save / history).
 class DrawingController {
   _DrawingCanvasState? _state;
@@ -63,15 +90,22 @@ class DrawingController {
   /// Drops the current magic-wand selection.
   void clearSelection() => _state?._clearSelection();
 
-  /// A snapshot of the committed strokes, for the undo/redo history. Strokes are
+  /// Fills the current magic-wand selection with [color] (toothed like paint).
+  Future<void> fillSelection(Color color) async =>
+      _state?._fillSelection(color);
+
+  /// Erases paint within the current magic-wand selection (reveals the surface).
+  Future<void> deleteSelection() async => _state?._deleteSelection();
+
+  /// A snapshot of the committed paint ops, for the undo/redo history. Ops are
   /// immutable once committed, so the list shares their instances (cheap).
-  List<Stroke> strokes() => _state?._strokesForHistory() ?? const [];
+  List<PaintOp> ops() => _state?._opsForHistory() ?? const [];
 
   /// Restores a document snapshot atomically: rebuilds the surface for
-  /// [surface]/[plainColor] and re-composites [strokes] in one pass.
+  /// [surface]/[plainColor] and re-composites [ops] in one pass.
   Future<void> restore(
-          SurfaceKind surface, Color plainColor, List<Stroke> strokes) async =>
-      _state?._restoreDocument(surface, plainColor, strokes);
+          SurfaceKind surface, Color plainColor, List<PaintOp> ops) async =>
+      _state?._restoreDocument(surface, plainColor, ops);
 
   /// Bakes any pending strokes and saves the canvas as a PNG in the device
   /// Gallery (Paintsprout album). Returns a short human-readable location.
@@ -162,10 +196,11 @@ class _DrawingCanvasState extends State<DrawingCanvas>
   /// Strokes finished but not yet baked into [_paint].
   final List<Stroke> _unbaked = [];
 
-  /// Every stroke already baked into [_paint], in paint order. Kept as vectors
-  /// so the whole drawing can be re-rendered against a new surface's tooth when
-  /// the surface changes (existing marks take on the new substrate).
-  final List<Stroke> _committed = [];
+  /// Every edit already baked into [_paint], in paint order. Kept as ops (drawn
+  /// strokes, region fills, region erases) so the whole drawing can be re-
+  /// rendered against a new surface's tooth when the surface changes (existing
+  /// marks take on the new substrate) and replayed for undo/redo.
+  final List<PaintOp> _committed = [];
 
   /// Stroke currently under the pointer.
   Stroke? _active;
@@ -264,15 +299,15 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     oldP?.dispose();
   }
 
-  /// Snapshot of the committed strokes for the undo/redo history.
-  List<Stroke> _strokesForHistory() => List.of(_committed);
+  /// Snapshot of the committed ops for the undo/redo history.
+  List<PaintOp> _opsForHistory() => List.of(_committed);
 
   /// Restores a document snapshot: rebuilds the surface for [surface]/
-  /// [plainColor] and re-composites [strokes], in a single pass. Used by
-  /// undo/redo so surface and strokes come back together without a double
+  /// [plainColor] and re-composites [ops], in a single pass. Used by
+  /// undo/redo so surface and paint come back together without a double
   /// rebuild (see the _suppressRegen guard in didUpdateWidget).
   Future<void> _restoreDocument(
-      SurfaceKind surface, Color plainColor, List<Stroke> strokes) async {
+      SurfaceKind surface, Color plainColor, List<PaintOp> ops) async {
     if (_paint == null) return;
     // If the restored surface differs from the current props, the screen's
     // matching setState will trigger didUpdateWidget; flag it so that pass
@@ -284,7 +319,7 @@ class _DrawingCanvasState extends State<DrawingCanvas>
         await buildSurfaceVisual(surface, _bufW, _bufH, plainColor: plainColor);
     _committed
       ..clear()
-      ..addAll(strokes);
+      ..addAll(ops);
     _unbaked.clear();
     _active = null;
     _activePointer = null;
@@ -343,7 +378,8 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     // Bake colored bands, then a watercolor sweep across them so the wet
     // interaction (dilute / push / spectral mix) is visible without a stylus.
     final w = _logicalSize.width, h = _logicalSize.height;
-    var img = await _composite(_paint!, _buildToolSamples());
+    var img = await _composite(
+        _paint!, [for (final s in _buildToolSamples()) StrokeOp(s)]);
     final sweep = Stroke(Tool.watercolor, Colors.yellow, seed: 50);
     for (var y = h * 0.12; y <= h * 0.9; y += 6) {
       sweep.add(StrokePoint(Offset(w * 0.5, y), 60));
@@ -575,6 +611,54 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     widget.onSelectionChanged?.call(true);
   }
 
+  /// Fills the current selection with [color], toothed like paint, as one
+  /// committed op (undoable). The selection stays active afterward.
+  Future<void> _fillSelection(Color color) async {
+    if (_paint == null || _selectionMask == null) return;
+    await _flushPending();
+    final mask = _selectionMask;
+    if (mask == null || _paint == null) return;
+    // Clone so the op's mask survives the live selection being cleared/replaced.
+    final op = FillOp(mask.clone(), color);
+    await _applyCommittedOp(op);
+  }
+
+  /// Erases paint within the current selection (revealing the surface) as one
+  /// committed op (undoable). The selection stays active afterward.
+  Future<void> _deleteSelection() async {
+    if (_paint == null || _selectionMask == null) return;
+    await _flushPending();
+    final mask = _selectionMask;
+    if (mask == null || _paint == null) return;
+    final op = EraseOp(mask.clone());
+    await _applyCommittedOp(op);
+  }
+
+  /// Bakes [op] onto the paint layer and records it as a committed step.
+  Future<void> _applyCommittedOp(PaintOp op) async {
+    final newPaint = await _composite(_paint!, [op]);
+    if (!mounted) {
+      newPaint.dispose();
+      return;
+    }
+    final old = _paint;
+    setState(() {
+      _paint = newPaint;
+      _committed.add(op);
+    });
+    old?.dispose();
+    widget.onCommitted?.call();
+  }
+
+  /// Flushes any strokes still pending a bake so a following op composites on
+  /// top of a fully up-to-date paint layer.
+  Future<void> _flushPending() async {
+    while (_unbaked.isNotEmpty || _baking) {
+      await _bake();
+      if (_baking) await Future<void>.delayed(const Duration(milliseconds: 8));
+    }
+  }
+
   /// Clears the current magic-wand selection.
   void _clearSelection() {
     if (_selectionMask == null) return;
@@ -592,7 +676,8 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     _baking = true;
     try {
       final batch = List<Stroke>.from(_unbaked);
-      final newPaint = await _composite(_paint!, batch);
+      final newPaint =
+          await _composite(_paint!, [for (final s in batch) StrokeOp(s)]);
       if (!mounted) {
         newPaint.dispose();
         return;
@@ -608,7 +693,7 @@ class _DrawingCanvasState extends State<DrawingCanvas>
       setState(() {
         _paint = newPaint;
         _unbaked.removeRange(0, batch.length);
-        _committed.addAll(batch);
+        _committed.addAll([for (final s in batch) StrokeOp(s)]);
         if (clearPreview) _wetPreview = null;
       });
       old?.dispose();
@@ -637,7 +722,8 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     _previewing = true;
     try {
       final strokes = <Stroke>[..._unbaked, ?_active];
-      final img = await _composite(_paint!, strokes);
+      final img = await _composite(
+          _paint!, [for (final s in strokes) StrokeOp(s)]);
       if (!mounted) {
         img.dispose();
         return;
@@ -654,34 +740,71 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     }
   }
 
-  /// Folds [strokes] onto [base] in order, returning a new image (never disposes
-  /// [base]). Ordinary tools just deposit (batched); the watercolor brush reads
-  /// the paint underneath and re-wets it, so it must run against an already-
-  /// rasterized image and is processed one stroke at a time.
-  Future<ui.Image> _composite(ui.Image base, List<Stroke> strokes) async {
+  /// Folds [ops] onto [base] in order, returning a new image (never disposes
+  /// [base]). Ordinary stroke tools just deposit (batched); the watercolor brush
+  /// reads the paint underneath and re-wets it, so it runs against an already-
+  /// rasterized image one stroke at a time. Region fills/erases apply their mask
+  /// directly and break a stroke run.
+  Future<ui.Image> _composite(ui.Image base, List<PaintOp> ops) async {
     ui.Image current = base;
     var owns = false; // whether we own `current` and must dispose it
     var i = 0;
-    while (i < strokes.length) {
+    while (i < ops.length) {
+      final op = ops[i];
       final ui.Image next;
-      if (strokes[i].tool == Tool.watercolor) {
-        next = await _compositeWatercolor(current, strokes[i]);
+      if (op is StrokeOp && op.stroke.tool == Tool.watercolor) {
+        next = await _compositeWatercolor(current, op.stroke);
         i++;
-      } else {
+      } else if (op is StrokeOp) {
+        // Batch a run of consecutive ordinary strokes into one deposit pass.
         final run = <Stroke>[];
-        while (i < strokes.length && strokes[i].tool != Tool.watercolor) {
-          run.add(strokes[i]);
+        while (i < ops.length &&
+            ops[i] is StrokeOp &&
+            (ops[i] as StrokeOp).stroke.tool != Tool.watercolor) {
+          run.add((ops[i] as StrokeOp).stroke);
           i++;
         }
         next = await _additiveComposite(current, run);
+      } else if (op is FillOp) {
+        next = await _compositeFill(current, op);
+        i++;
+      } else {
+        next = await _compositeErase(current, op as EraseOp);
+        i++;
       }
       if (owns) current.dispose();
       current = next;
       owns = true;
     }
-    // No strokes: hand back a fresh copy the caller can own/dispose.
+    // No ops: hand back a fresh copy the caller can own/dispose.
     if (!owns) return _additiveComposite(base, const []);
     return current;
+  }
+
+  /// Deposits a toothed color fill (masked to the op's region) onto [base].
+  Future<ui.Image> _compositeFill(ui.Image base, FillOp op) {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    canvas.drawImage(base, Offset.zero, Paint());
+    paintToothedFill(
+      canvas,
+      op.mask,
+      Rect.fromLTWH(0, 0, _bufW.toDouble(), _bufH.toDouble()),
+      op.color,
+      surface: widget.surface,
+      toothTexelScale: widget.surface.toothScale * kSuperSample,
+    );
+    return recorder.endRecording().toImage(_bufW, _bufH);
+  }
+
+  /// Erases paint (masked to the op's region) from [base].
+  Future<ui.Image> _compositeErase(ui.Image base, EraseOp op) {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    canvas.drawImage(base, Offset.zero, Paint());
+    paintMaskedErase(canvas, op.mask,
+        Rect.fromLTWH(0, 0, _bufW.toDouble(), _bufH.toDouble()));
+    return recorder.endRecording().toImage(_bufW, _bufH);
   }
 
   /// The plain additive bake: draw the buffer 1:1, then scale into logical space

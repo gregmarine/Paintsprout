@@ -86,7 +86,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
     if (_histIndex < _history.length - 1) {
       _history.removeRange(_histIndex + 1, _history.length);
     }
-    _history.add(_Snapshot(_surfaceKind, _plainColor, _controller.strokes()));
+    _history.add(_Snapshot(_surfaceKind, _plainColor, _controller.ops()));
     _histIndex = _history.length - 1;
     setState(() {}); // refresh undo/redo affordances
   }
@@ -109,7 +109,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
       _surfaceKind = s.surface;
       _plainColor = s.plainColor;
     });
-    await _controller.restore(s.surface, s.plainColor, s.strokes);
+    await _controller.restore(s.surface, s.plainColor, s.ops);
     _applyingHistory = false;
     if (mounted) setState(() {}); // refresh undo/redo affordances
   }
@@ -156,6 +156,8 @@ class _CanvasScreenState extends State<CanvasScreen> {
                     onPickSize: _pickSize,
                     onPickSurface: _pickSurface,
                     onPickTolerance: _pickTolerance,
+                    onFillSelection: () => _controller.fillSelection(_color),
+                    onDeleteSelection: () => _controller.deleteSelection(),
                     onDeselect: () => _controller.clearSelection(),
                     onUndo: _undo,
                     onRedo: _redo,
@@ -443,13 +445,13 @@ class _CanvasScreenState extends State<CanvasScreen> {
 }
 
 /// One entry in the undo/redo history: a full document snapshot. Committed
-/// strokes are immutable, so the list just shares their instances.
+/// paint ops are immutable, so the list just shares their instances.
 class _Snapshot {
-  const _Snapshot(this.surface, this.plainColor, this.strokes);
+  const _Snapshot(this.surface, this.plainColor, this.ops);
 
   final SurfaceKind surface;
   final Color plainColor;
-  final List<Stroke> strokes;
+  final List<PaintOp> ops;
 }
 
 class _ToolRail extends StatelessWidget {
@@ -467,6 +469,8 @@ class _ToolRail extends StatelessWidget {
     required this.onPickSize,
     required this.onPickSurface,
     required this.onPickTolerance,
+    required this.onFillSelection,
+    required this.onDeleteSelection,
     required this.onDeselect,
     required this.onUndo,
     required this.onRedo,
@@ -488,6 +492,8 @@ class _ToolRail extends StatelessWidget {
   final VoidCallback onPickSize;
   final VoidCallback onPickSurface;
   final VoidCallback onPickTolerance;
+  final VoidCallback onFillSelection;
+  final VoidCallback onDeleteSelection;
   final VoidCallback onDeselect;
   final VoidCallback onUndo;
   final VoidCallback onRedo;
@@ -568,13 +574,25 @@ class _ToolRail extends StatelessWidget {
               onPressed: onPickSurface,
               icon: Icon(surface.icon),
             ),
-            // Deselect appears only while a magic-wand selection is active.
-            if (hasSelection)
+            // Selection actions appear only while a magic-wand selection is
+            // active: fill it with the current color, erase inside it, deselect.
+            if (hasSelection) ...[
+              IconButton(
+                tooltip: 'Fill selection with color',
+                onPressed: onFillSelection,
+                icon: Icon(Icons.format_color_fill, color: color),
+              ),
+              IconButton(
+                tooltip: 'Erase inside selection',
+                onPressed: onDeleteSelection,
+                icon: const Icon(Icons.layers_clear),
+              ),
               IconButton(
                 tooltip: 'Deselect',
                 onPressed: onDeselect,
                 icon: const Icon(Icons.deselect),
               ),
+            ],
             const Divider(height: 12, indent: 8, endIndent: 8),
             IconButton(
                 tooltip: 'Undo (two-finger double-tap)',
