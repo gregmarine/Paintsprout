@@ -1,24 +1,44 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:orientation="vertical">
 
-    <com.symmetricalpalmtree.paintsprout.PigmentCanvasView
-        android:id="@+id/pigmentCanvas"
+    <!-- Bare-bones toolbar for Stage 2 verification. The real tool chrome
+         (color picker, surface picker, full tool set) is a later stage. -->
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
-
-    <TextView
-        android:id="@+id/caption"
-        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom|center_horizontal"
-        android:layout_marginBottom="32dp"
-        android:background="#66000000"
-        android:paddingHorizontal="16dp"
-        android:paddingVertical="8dp"
-        android:text="AGSL pigment pipeline — proof of concept"
-        android:textColor="#FFFFFF"
-        android:textSize="14sp" />
+        android:orientation="horizontal"
+        android:background="#EEEEEE"
+        android:padding="8dp">
 
-</FrameLayout>
+        <Button
+            android:id="@+id/btnPen"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Pen" />
+
+        <Button
+            android:id="@+id/btnEraser"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="Eraser" />
+
+        <Button
+            android:id="@+id/btnClear"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="Clear" />
+
+    </LinearLayout>
+
+    <com.symmetricalpalmtree.paintsprout.PaintCanvasView
+        android:id="@+id/canvas"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+</LinearLayout>

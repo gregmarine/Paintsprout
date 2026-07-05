@@ -58,5 +58,8 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
 
+    // Off-thread stroke bakes: Dispatchers.Default composites, Main swaps + invalidates.
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
     testImplementation("junit:junit:4.13.2")
 }
