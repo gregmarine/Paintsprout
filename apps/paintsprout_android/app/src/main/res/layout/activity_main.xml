@@ -4,36 +4,41 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
-    <!-- Bare-bones toolbar for Stage 2 verification. The real tool chrome
+    <!-- Bare-bones toolbar for Stage 3 verification. The real tool chrome
          (color picker, surface picker, full tool set) is a later stage. -->
-    <LinearLayout
+    <HorizontalScrollView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
         android:background="#EEEEEE"
-        android:padding="8dp">
+        android:scrollbars="none">
 
-        <Button
-            android:id="@+id/btnPen"
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Pen" />
+            android:orientation="horizontal"
+            android:padding="8dp">
 
-        <Button
-            android:id="@+id/btnEraser"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:text="Eraser" />
+            <Button android:id="@+id/btnPencil" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Pencil" />
+            <Button android:id="@+id/btnPen" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Pen" />
+            <Button android:id="@+id/btnMarker" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Marker" />
+            <Button android:id="@+id/btnBrush" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Brush" />
+            <Button android:id="@+id/btnWater" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Water" />
+            <Button android:id="@+id/btnSpray" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Spray" />
+            <Button android:id="@+id/btnEraser" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Eraser" />
+            <Button android:id="@+id/btnSurface" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Surface" />
+            <Button android:id="@+id/btnClear" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Clear" />
 
-        <Button
-            android:id="@+id/btnClear"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:text="Clear" />
-
-    </LinearLayout>
+        </LinearLayout>
+    </HorizontalScrollView>
 
     <com.symmetricalpalmtree.paintsprout.PaintCanvasView
         android:id="@+id/canvas"

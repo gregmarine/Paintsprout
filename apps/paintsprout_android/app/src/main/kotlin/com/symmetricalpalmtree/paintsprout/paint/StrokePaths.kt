@@ -30,3 +30,13 @@ fun smoothPath(pts: List<StrokePoint>): Path {
     path.lineTo(last.x, last.y)
     return path
 }
+
+/** Builds a closed `Path` from a ribbon outline (see [ribbonOutline]). */
+fun ribbonPath(outline: List<Vec2>): Path {
+    val path = Path()
+    outline.forEachIndexed { i, v ->
+        if (i == 0) path.moveTo(v.x, v.y) else path.lineTo(v.x, v.y)
+    }
+    path.close()
+    return path
+}

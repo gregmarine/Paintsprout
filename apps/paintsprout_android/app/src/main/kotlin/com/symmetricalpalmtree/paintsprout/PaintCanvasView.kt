@@ -13,8 +13,11 @@ import androidx.core.graphics.createBitmap
 import com.symmetricalpalmtree.paintsprout.paint.Stroke
 import com.symmetricalpalmtree.paintsprout.paint.StrokePoint
 import com.symmetricalpalmtree.paintsprout.paint.StrokeRenderer
+import com.symmetricalpalmtree.paintsprout.paint.SurfaceKind
 import com.symmetricalpalmtree.paintsprout.paint.Tool
+import com.symmetricalpalmtree.paintsprout.paint.ToothCache
 import com.symmetricalpalmtree.paintsprout.paint.Vec2
+import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
 import com.symmetricalpalmtree.paintsprout.paint.resolveDensity
 import com.symmetricalpalmtree.paintsprout.paint.resolveWidth
 import kotlinx.coroutines.CoroutineScope
@@ -54,6 +57,14 @@ class PaintCanvasView @JvmOverloads constructor(
     /** Base size override; null uses the tool's default. */
     var baseSize: Float? = null
 
+    /** The surface being painted on. Change via [setSurface]. */
+    var surface: SurfaceKind = SurfaceKind.PAPER
+        private set
+
+    /** Background color for the Plain surface (ignored by textured surfaces). */
+    @ColorInt
+    var plainColor: Int = Color.WHITE
+
     private fun sizeFor(t: Tool): Float = baseSize ?: t.defaultSize
 
     // --- Buffers ------------------------------------------------------------
@@ -82,35 +93,70 @@ class PaintCanvasView @JvmOverloads constructor(
         srcRect.set(0, 0, bufW, bufH)
         dstRect.set(0, 0, w, h)
 
-        val newSurface = createBitmap(bufW, bufH).apply { Canvas(this).drawColor(Color.WHITE) }
+        // A flat placeholder surface so drawing works immediately; the textured
+        // surface is built off-thread and swapped in a frame later.
+        val placeholder = createBitmap(bufW, bufH).apply { Canvas(this).drawColor(plainColor) }
         val newPaint = createBitmap(bufW, bufH) // transparent
 
         surfaceBmp?.recycle()
         paintBmp?.recycle()
-        surfaceBmp = newSurface
+        surfaceBmp = placeholder
         paintBmp = newPaint
         unbaked.clear()
         active = null
         invalidate()
+        regenerateSurface()
+    }
+
+    /** Switches the surface, rebuilding the base layer (keeps the paint). */
+    fun setSurface(kind: SurfaceKind) {
+        surface = kind
+        regenerateSurface()
+    }
+
+    /**
+     * Builds the (procedural) surface visual off-thread and swaps it in. Also
+     * ensures the tooth textures are baked (idempotent).
+     */
+    private fun regenerateSurface() {
+        val w = bufW
+        val h = bufH
+        if (w <= 0 || h <= 0) return
+        val kind = surface
+        val pc = plainColor
+        scope.launch {
+            val bmp = withContext(Dispatchers.Default) {
+                ToothCache.init()
+                buildSurfaceVisual(kind, w, h, pc)
+            }
+            if (bufW != w || bufH != h) { // size changed while building
+                bmp.recycle()
+                return@launch
+            }
+            val old = surfaceBmp
+            surfaceBmp = bmp
+            old?.recycle()
+            invalidate()
+        }
     }
 
     // --- Drawing ------------------------------------------------------------
 
     override fun onDraw(canvas: Canvas) {
-        val surface = surfaceBmp ?: return
-        val paint = paintBmp ?: return
+        val surfaceLayer = surfaceBmp ?: return
+        val paintLayer = paintBmp ?: return
 
         // Base surface, scaled from the buffer to the view.
-        canvas.drawBitmap(surface, srcRect, dstRect, null)
+        canvas.drawBitmap(surfaceLayer, srcRect, dstRect, null)
 
         // Composite the paint in an isolated layer so an eraser stroke (CLEAR)
         // punches through to reveal the surface, not the window behind the view.
         val layer = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
-        canvas.drawBitmap(paint, srcRect, dstRect, null)
+        canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
         // Live strokes are in view (logical) coordinates, drawn straight onto the
         // view canvas — SUPER_SAMPLE only affects the buffer bitmaps above.
-        for (s in unbaked) StrokeRenderer.paintStroke(canvas, s)
-        active?.let { StrokeRenderer.paintStroke(canvas, it) }
+        for (s in unbaked) StrokeRenderer.paintStroke(canvas, s, surface)
+        active?.let { StrokeRenderer.paintStroke(canvas, it, surface) }
         canvas.restoreToCount(layer)
     }
 
@@ -206,7 +252,7 @@ class PaintCanvasView @JvmOverloads constructor(
                 Canvas(out).apply {
                     drawBitmap(base, 0f, 0f, null)
                     scale(SUPER_SAMPLE, SUPER_SAMPLE)
-                    for (s in batch) StrokeRenderer.paintStroke(this, s)
+                    for (s in batch) StrokeRenderer.paintStroke(this, s, surface)
                 }
                 out
             }
