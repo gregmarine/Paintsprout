@@ -79,6 +79,20 @@ class EraseOp extends PaintOp {
   final ui.Image mask;
 }
 
+/// Which transform a floating-selection drag is performing.
+enum _Xform { translate, scale, rotate }
+
+/// Lifts the paint inside a magic-wand region and re-lays it under [transform]
+/// (a move/scale/rotate), clearing the original spot. [transform] is a 4x4
+/// column-major matrix in BUFFER coordinates. On replay it recomputes the lifted
+/// paint from whatever is under [sourceMask] at that point, so it re-tooths and
+/// composes correctly through surface changes and undo/redo.
+class MoveOp extends PaintOp {
+  MoveOp(this.sourceMask, this.transform);
+  final ui.Image sourceMask;
+  final Float64List transform;
+}
+
 /// Handle the toolbar uses to drive the canvas (clear / save / history).
 class DrawingController {
   _DrawingCanvasState? _state;
@@ -247,6 +261,40 @@ class _DrawingCanvasState extends State<DrawingCanvas>
   int? _wandPointer;
   bool _wandMoved = false;
 
+  /// Bounding box of the current selection, in logical coordinates (the mask
+  /// runs at logical resolution). Rect.zero when nothing is selected.
+  Rect _selRect = Rect.zero;
+
+  // --- Floating move/transform of a selection -----------------------------
+  /// The lifted paint (buffer res, masked to the selection), shown transformed
+  /// while a move is in progress. Null when not moving.
+  ui.Image? _floating;
+
+  /// The committed paint with the lifted region removed (buffer res), shown
+  /// under the floating paint during a move.
+  ui.Image? _paintHole;
+
+  /// The lifted region mask (a clone), used to bake the move op.
+  ui.Image? _floatSourceMask;
+
+  /// Live transform of the float: translation (logical), uniform scale, and
+  /// rotation (radians), all about the selection's center.
+  Offset _floatTranslate = Offset.zero;
+  double _floatScale = 1.0;
+  double _floatRotation = 0.0;
+
+  bool _lifting = false; // a lift is being computed
+  int? _movePointer; // stylus owning the in-progress transform drag
+  Offset _moveLastPos = Offset.zero;
+  _Xform? _xformMode; // which transform the current drag is performing
+  // Values captured at the start of a scale/rotate drag.
+  double _gestureStartScale = 1.0;
+  double _gestureStartDist = 1.0;
+  double _gestureStartRotation = 0.0;
+  double _gestureStartAngle = 0.0;
+
+  bool get _isFloating => _floating != null;
+
   // --- Touch gesture tracking --------------------------------------------
   // Two-finger double-tap = undo, three-finger double-tap = redo.
   final Map<int, Offset> _touchStart = {}; // active touch pointers -> down pos
@@ -273,6 +321,8 @@ class _DrawingCanvasState extends State<DrawingCanvas>
   @override
   void didUpdateWidget(DrawingCanvas old) {
     super.didUpdateWidget(old);
+    // Leaving the wand tool bakes any in-progress move.
+    if (widget.tool != old.tool && _isFloating) unawaited(_commitFloating());
     // Switching surfaces — or recoloring the Plain background — re-renders the
     // base but keeps the paint.
     final surfaceChanged = widget.surface != old.surface;
@@ -328,6 +378,7 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     final willRegen = surface != widget.surface ||
         (surface == SurfaceKind.plain && plainColor != widget.plainColor);
     if (willRegen) widget.controller._suppressRegen = true;
+    _discardFloating();
     final surfaceImg =
         await buildSurfaceVisual(surface, _bufW, _bufH, plainColor: plainColor);
     _committed
@@ -367,6 +418,9 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     _wetPreview?.dispose();
     _selectionMask?.dispose();
     _strokeClip?.dispose();
+    _floating?.dispose();
+    _paintHole?.dispose();
+    _floatSourceMask?.dispose();
     super.dispose();
   }
 
@@ -475,9 +529,21 @@ class _DrawingCanvasState extends State<DrawingCanvas>
       return;
     }
     if (widget.tool == Tool.wand) {
-      // A stylus tap selects; a drag is ignored. No stroke is created.
+      final p = e.localPosition;
+      // A corner handle scales, the top handle rotates, dragging inside moves.
+      // Lift the paint so it floats. A tap (no drag) is harmless — an unmoved
+      // float commits to nothing.
+      final mode = _hitTransform(p);
+      if (mode != null) {
+        _movePointer = e.pointer;
+        _moveLastPos = p;
+        _xformMode = mode;
+        if (!_isFloating && !_lifting) unawaited(_liftSelection());
+        return;
+      }
+      // Otherwise a stylus tap selects; a drag is ignored. No stroke is created.
       _wandPointer = e.pointer;
-      _wandDownPos = e.localPosition;
+      _wandDownPos = p;
       _wandMoved = false;
       return;
     }
@@ -505,6 +571,33 @@ class _DrawingCanvasState extends State<DrawingCanvas>
       return;
     }
     if (widget.tool == Tool.wand) {
+      if (e.pointer == _movePointer) {
+        final p = e.localPosition;
+        // Until the lift finishes, just track position (no transform yet).
+        if (!_isFloating) {
+          _moveLastPos = p;
+          return;
+        }
+        switch (_xformMode) {
+          case _Xform.translate:
+            final delta = p - _moveLastPos;
+            _moveLastPos = p;
+            setState(() => _floatTranslate += delta);
+          case _Xform.scale:
+            final d = (p - _visiblePivot()).distance;
+            setState(() => _floatScale = (_gestureStartScale *
+                    d /
+                    _gestureStartDist)
+                .clamp(0.05, 20.0));
+          case _Xform.rotate:
+            final ang = (p - _visiblePivot()).direction;
+            setState(() => _floatRotation =
+                _gestureStartRotation + (ang - _gestureStartAngle));
+          case null:
+            break;
+        }
+        return;
+      }
       if (e.pointer == _wandPointer &&
           _wandDownPos != null &&
           (e.localPosition - _wandDownPos!).distance > 8) {
@@ -523,6 +616,13 @@ class _DrawingCanvasState extends State<DrawingCanvas>
       return;
     }
     if (widget.tool == Tool.wand) {
+      if (e.pointer == _movePointer) {
+        // Drag ended; the selection stays floating so it can be transformed
+        // again. It bakes on deselect, tool switch, or a new selection.
+        _movePointer = null;
+        _xformMode = null;
+        return;
+      }
       if (e.pointer == _wandPointer) {
         final pos = _wandDownPos;
         final moved = _wandMoved;
@@ -603,6 +703,9 @@ class _DrawingCanvasState extends State<DrawingCanvas>
   /// layers, but never the surface.)
   Future<void> _runWandSelection(Offset logical) async {
     if (_paint == null) return;
+    // Bake any in-progress move before selecting a new region.
+    await _commitFloating();
+    if (_paint == null) return;
     final seedX = (logical.dx * kSuperSample).round().clamp(0, _bufW - 1);
     final seedY = (logical.dy * kSuperSample).round().clamp(0, _bufH - 1);
 
@@ -626,7 +729,13 @@ class _DrawingCanvasState extends State<DrawingCanvas>
       return;
     }
     final old = _selectionMask;
-    setState(() => _selectionMask = maskImg);
+    setState(() {
+      _selectionMask = maskImg;
+      _selRect = result.bounds;
+      _floatTranslate = Offset.zero;
+      _floatScale = 1.0;
+      _floatRotation = 0.0;
+    });
     old?.dispose();
     if (!_antsController.isAnimating) _antsController.repeat();
     widget.onSelectionChanged?.call(true);
@@ -636,6 +745,7 @@ class _DrawingCanvasState extends State<DrawingCanvas>
   /// committed op (undoable). The selection stays active afterward.
   Future<void> _fillSelection(Color color) async {
     if (_paint == null || _selectionMask == null) return;
+    await _commitFloating();
     await _flushPending();
     final mask = _selectionMask;
     if (mask == null || _paint == null) return;
@@ -648,6 +758,7 @@ class _DrawingCanvasState extends State<DrawingCanvas>
   /// committed op (undoable). The selection stays active afterward.
   Future<void> _deleteSelection() async {
     if (_paint == null || _selectionMask == null) return;
+    await _commitFloating();
     await _flushPending();
     final mask = _selectionMask;
     if (mask == null || _paint == null) return;
@@ -682,14 +793,267 @@ class _DrawingCanvasState extends State<DrawingCanvas>
 
   /// Clears the current magic-wand selection. Pending strokes keep their own
   /// frisket ([_strokeClip]), so this doesn't need to flush them — the preview
-  /// stays clipped and they bake correctly even after the ants disappear.
-  void _clearSelection() {
-    if (_selectionMask == null) return;
+  /// stays clipped and they bake correctly even after the ants disappear. A
+  /// floating move (if any) is baked first.
+  Future<void> _clearSelection() async {
+    if (_selectionMask == null && !_isFloating) return;
+    await _commitFloating();
     final old = _selectionMask;
-    setState(() => _selectionMask = null);
-    old?.dispose();
+    if (old != null) {
+      setState(() => _selectionMask = null);
+      old.dispose();
+    }
+    _selRect = Rect.zero;
     _antsController.stop();
     widget.onSelectionChanged?.call(false);
+  }
+
+  // --- Floating move/transform --------------------------------------------
+
+  /// The visible center the float scales/rotates about, in logical coords.
+  Offset _visiblePivot() => _selRect.center + _floatTranslate;
+
+  /// The current float transform as a 2D affine matrix (column-major 4x4).
+  /// [superSample] scales the pivot/translation into buffer coordinates.
+  Float64List _floatMatrix({double superSample = 1.0}) => _affine(
+        _floatScale,
+        _floatRotation,
+        _selRect.center * superSample,
+        _floatTranslate * superSample,
+      );
+
+  /// Builds a 2D affine (scale [s] and rotation [theta] about [pivot], then
+  /// translate by [t]) as a column-major 4x4 matrix for Canvas.transform.
+  Float64List _affine(double s, double theta, Offset pivot, Offset t) {
+    final cos = math.cos(theta), sin = math.sin(theta);
+    final a = s * cos, b = s * sin, c = -s * sin, d = s * cos;
+    final e = pivot.dx + t.dx - (a * pivot.dx + c * pivot.dy);
+    final f = pivot.dy + t.dy - (b * pivot.dx + d * pivot.dy);
+    return Float64List.fromList([
+      a, b, 0, 0, //
+      c, d, 0, 0, //
+      0, 0, 1, 0, //
+      e, f, 0, 1, //
+    ]);
+  }
+
+  Offset _mapPoint(Float64List m, Offset p) =>
+      Offset(m[0] * p.dx + m[4] * p.dy + m[12],
+          m[1] * p.dx + m[5] * p.dy + m[13]);
+
+  /// The four transformed corners of the selection frame (logical coords).
+  List<Offset> _floatCorners() {
+    final m = _floatMatrix();
+    return [
+      _mapPoint(m, _selRect.topLeft),
+      _mapPoint(m, _selRect.topRight),
+      _mapPoint(m, _selRect.bottomRight),
+      _mapPoint(m, _selRect.bottomLeft),
+    ];
+  }
+
+  /// The rotate handle position: out past the (transformed) top edge midpoint.
+  Offset _rotateHandle() {
+    final m = _floatMatrix();
+    final topMid = _mapPoint(m, Offset(_selRect.center.dx, _selRect.top));
+    final pivot = _mapPoint(m, _selRect.center);
+    final dir = topMid - pivot;
+    final len = dir.distance;
+    final norm = len == 0 ? const Offset(0, -1) : dir / len;
+    return topMid + norm * 30.0;
+  }
+
+  /// Hit-tests a wand-tool pointer-down against the transform affordances,
+  /// returning the transform it starts (and recording the gesture anchors), or
+  /// null if the point isn't on the selection.
+  _Xform? _hitTransform(Offset p) {
+    if (_selectionMask == null && !_isFloating) return null;
+    if (_selRect.isEmpty) return null;
+    const hit = 26.0;
+    final pivot = _visiblePivot();
+    if ((p - _rotateHandle()).distance <= hit) {
+      _gestureStartRotation = _floatRotation;
+      _gestureStartAngle = (p - pivot).direction;
+      return _Xform.rotate;
+    }
+    for (final c in _floatCorners()) {
+      if ((p - c).distance <= hit) {
+        _gestureStartScale = _floatScale;
+        _gestureStartDist = math.max(1.0, (p - pivot).distance);
+        return _Xform.scale;
+      }
+    }
+    if (_pointInQuad(p, _floatCorners())) return _Xform.translate;
+    return null;
+  }
+
+  static bool _pointInQuad(Offset p, List<Offset> q) {
+    var sign = 0;
+    for (var i = 0; i < 4; i++) {
+      final a = q[i], b = q[(i + 1) % 4];
+      final cross =
+          (b.dx - a.dx) * (p.dy - a.dy) - (b.dy - a.dy) * (p.dx - a.dx);
+      final s = cross > 0 ? 1 : (cross < 0 ? -1 : 0);
+      if (s != 0) {
+        if (sign == 0) {
+          sign = s;
+        } else if (s != sign) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /// Lifts the selected paint into a floating layer (and clears its original
+  /// spot) so it can be transformed. Idempotent while a lift is in flight.
+  Future<void> _liftSelection() async {
+    if (_paint == null || _selectionMask == null || _isFloating || _lifting) {
+      return;
+    }
+    _lifting = true;
+    try {
+      final mask = _selectionMask!;
+      final floating = await _maskedCopy(_paint!, mask, keepInside: true);
+      final hole = await _maskedCopy(_paint!, mask, keepInside: false);
+      if (!mounted) {
+        floating.dispose();
+        hole.dispose();
+        return;
+      }
+      setState(() {
+        _floating = floating;
+        _paintHole = hole;
+        _floatSourceMask = mask.clone();
+        _floatTranslate = Offset.zero;
+        _floatScale = 1.0;
+        _floatRotation = 0.0;
+      });
+    } finally {
+      _lifting = false;
+    }
+  }
+
+  /// Bakes the current floating move into the paint as a [MoveOp] and re-lands
+  /// the selection at its new spot. An unmoved float commits to nothing.
+  Future<void> _commitFloating() async {
+    final sourceMask = _floatSourceMask;
+    if (_floating == null || sourceMask == null || _paint == null) {
+      _discardFloating();
+      return;
+    }
+    // Nothing actually transformed → drop the float, no undo step.
+    if (_floatTranslate == Offset.zero &&
+        _floatScale == 1.0 &&
+        _floatRotation == 0.0) {
+      _discardFloating();
+      return;
+    }
+    final logical = _floatMatrix();
+    final op = MoveOp(
+        sourceMask.clone(), _floatMatrix(superSample: kSuperSample));
+    final newRect = _boundsOf(_floatCorners());
+    final newPaint = await _compositeMove(_paint!, op);
+    final movedMask = _selectionMask == null
+        ? null
+        : await _transformMask(_selectionMask!, logical);
+    if (!mounted) {
+      newPaint.dispose();
+      movedMask?.dispose();
+      return;
+    }
+    final oldPaint = _paint;
+    final oldMask = _selectionMask;
+    final f = _floating, h = _paintHole, m = _floatSourceMask;
+    setState(() {
+      _paint = newPaint;
+      _committed.add(op);
+      if (movedMask != null) _selectionMask = movedMask;
+      _selRect = newRect;
+      _floating = null;
+      _paintHole = null;
+      _floatSourceMask = null;
+      _floatTranslate = Offset.zero;
+      _floatScale = 1.0;
+      _floatRotation = 0.0;
+    });
+    oldPaint?.dispose();
+    if (movedMask != null) oldMask?.dispose();
+    f?.dispose();
+    h?.dispose();
+    m?.dispose();
+    widget.onCommitted?.call();
+  }
+
+  static Rect _boundsOf(List<Offset> pts) {
+    var l = pts.first.dx, t = pts.first.dy, r = l, b = t;
+    for (final p in pts) {
+      if (p.dx < l) l = p.dx;
+      if (p.dx > r) r = p.dx;
+      if (p.dy < t) t = p.dy;
+      if (p.dy > b) b = p.dy;
+    }
+    return Rect.fromLTRB(l, t, r, b);
+  }
+
+  /// Drops the floating layer without committing (used for an unmoved float).
+  void _discardFloating() {
+    if (_floating == null && _paintHole == null && _floatSourceMask == null) {
+      return;
+    }
+    final f = _floating, h = _paintHole, m = _floatSourceMask;
+    setState(() {
+      _floating = null;
+      _paintHole = null;
+      _floatSourceMask = null;
+      _floatTranslate = Offset.zero;
+    });
+    f?.dispose();
+    h?.dispose();
+    m?.dispose();
+  }
+
+  /// Copies [src], keeping only the paint inside [mask] (keepInside) or only the
+  /// paint outside it. Both at buffer resolution.
+  Future<ui.Image> _maskedCopy(ui.Image src, ui.Image mask,
+      {required bool keepInside}) {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final dst = Rect.fromLTWH(0, 0, _bufW.toDouble(), _bufH.toDouble());
+    final msrc =
+        Rect.fromLTWH(0, 0, mask.width.toDouble(), mask.height.toDouble());
+    canvas.drawImage(src, Offset.zero, Paint());
+    canvas.drawImageRect(mask, msrc, dst,
+        Paint()..blendMode = keepInside ? BlendMode.dstIn : BlendMode.dstOut);
+    return recorder.endRecording().toImage(_bufW, _bufH);
+  }
+
+  /// Returns a copy of [mask] under [logicalMatrix]. The mask runs at logical
+  /// resolution, so the logical-coordinate transform applies to it 1:1.
+  Future<ui.Image> _transformMask(ui.Image mask, Float64List logicalMatrix) {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    canvas.transform(logicalMatrix);
+    canvas.drawImage(mask, Offset.zero, Paint());
+    return recorder.endRecording().toImage(mask.width, mask.height);
+  }
+
+  /// Bakes a [MoveOp]: lifts the paint under its source mask, clears that spot,
+  /// and re-lays the lifted paint under the op's transform.
+  Future<ui.Image> _compositeMove(ui.Image base, MoveOp op) async {
+    final floating = await _maskedCopy(base, op.sourceMask, keepInside: true);
+    final hole = await _maskedCopy(base, op.sourceMask, keepInside: false);
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    canvas.drawImage(hole, Offset.zero, Paint());
+    canvas.save();
+    canvas.transform(op.transform);
+    canvas.drawImage(floating, Offset.zero, Paint());
+    canvas.restore();
+    final out = await recorder.endRecording().toImage(_bufW, _bufH);
+    floating.dispose();
+    hole.dispose();
+    return out;
   }
 
   // --- Baking -------------------------------------------------------------
@@ -799,8 +1163,11 @@ class _DrawingCanvasState extends State<DrawingCanvas>
       } else if (op is FillOp) {
         next = await _compositeFill(current, op);
         i++;
+      } else if (op is EraseOp) {
+        next = await _compositeErase(current, op);
+        i++;
       } else {
-        next = await _compositeErase(current, op as EraseOp);
+        next = await _compositeMove(current, op as MoveOp);
         i++;
       }
       if (owns) current.dispose();
@@ -980,6 +1347,7 @@ class _DrawingCanvasState extends State<DrawingCanvas>
 
   /// Clears painted strokes but keeps the chosen surface.
   Future<void> _clear() async {
+    _discardFloating();
     final blank = await _blankPaint();
     if (!mounted) {
       blank.dispose();
@@ -1005,11 +1373,9 @@ class _DrawingCanvasState extends State<DrawingCanvas>
   }
 
   Future<String> _savePng() async {
-    // Flush anything still pending so the export includes every stroke.
-    while (_unbaked.isNotEmpty || _baking) {
-      await _bake();
-      if (_baking) await Future<void>.delayed(const Duration(milliseconds: 8));
-    }
+    // Bake a floating move and flush pending strokes so the export is current.
+    await _commitFloating();
+    await _flushPending();
     if (_paint == null) throw StateError('Nothing to save yet');
 
     final image = await _flatten();
@@ -1082,19 +1448,25 @@ class _DrawingCanvasState extends State<DrawingCanvas>
                   clip: _strokeClip,
                   unbaked: _unbaked,
                   active: _active,
+                  floating: _floating,
+                  paintHole: _paintHole,
+                  floatMatrix: _isFloating ? _floatMatrix() : null,
                 ),
               ),
-              // Animated selection overlay (dim + marching ants). The
+              // Animated selection overlay: marching ants for a static
+              // selection, or a transform frame + handles while moving. The
               // RepaintBoundary contains its per-frame ticks so they repaint
               // only this cheap layer, never the paint stack above.
-              if (_selectionMask != null)
+              if (_selectionMask != null || _isFloating)
                 RepaintBoundary(
                   child: CustomPaint(
                     size: size,
                     painter: _SelectionPainter(
-                      selectionMask: _selectionMask!,
+                      selectionMask: _selectionMask,
                       antsShader: _antsShader,
                       antsPhase: _antsController,
+                      corners: _isFloating ? _floatCorners() : null,
+                      rotateHandle: _isFloating ? _rotateHandle() : null,
                     ),
                   ),
                 ),
@@ -1249,12 +1621,17 @@ class _WandRequest {
   final int gap; // px: bridge grain gaps in a boundary up to this radius
 }
 
-/// Result of a wand flood fill: an rgba mask (white = selected) and its size.
+/// Result of a wand flood fill: an rgba mask (white = selected), its size, and
+/// the selection's bounding box in mask pixels (empty if nothing was selected).
+/// The mask runs at half the buffer resolution, which equals the logical canvas
+/// resolution (buffer = logical * 2, downsample = 2), so these bounds double as
+/// logical-coordinate bounds.
 class _WandResult {
-  const _WandResult(this.mask, this.width, this.height);
+  const _WandResult(this.mask, this.width, this.height, this.bounds);
   final Uint8List mask;
   final int width;
   final int height;
+  final Rect bounds;
 }
 
 /// Edge-aware flood fill with gap closing, over the PAINT layer only (surface
@@ -1399,6 +1776,7 @@ _WandResult _wandFloodFill(_WandRequest r) {
   final selected = gap > 0 ? _dilate(visited, w, h, gap) : visited;
 
   final mask = Uint8List(n * 4);
+  var minX = w, minY = h, maxX = -1, maxY = -1;
   for (var i = 0; i < n; i++) {
     if (selected[i] == 1 && barrier[i] == 0) {
       final o = i * 4;
@@ -1406,9 +1784,18 @@ _WandResult _wandFloodFill(_WandRequest r) {
       mask[o + 1] = 255;
       mask[o + 2] = 255;
       mask[o + 3] = 255;
+      final x = i % w, y = i ~/ w;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
     }
   }
-  return _WandResult(mask, w, h);
+  final bounds = maxX < minX
+      ? Rect.zero
+      : Rect.fromLTRB((minX).toDouble(), (minY).toDouble(),
+          (maxX + 1).toDouble(), (maxY + 1).toDouble());
+  return _WandResult(mask, w, h, bounds);
 }
 
 /// Separable binary morphological dilation (square structuring element).
@@ -1464,11 +1851,21 @@ class _CanvasPainter extends CustomPainter {
     required this.clip,
     required this.unbaked,
     required this.active,
+    required this.floating,
+    required this.paintHole,
+    required this.floatMatrix,
   });
 
   final ui.Image surface;
   final SurfaceKind surfaceKind;
   final ui.Image paintLayer;
+
+  /// While a selection is being moved: [floating] is the lifted paint and
+  /// [paintHole] is the committed paint with that region removed. The float is
+  /// drawn over the hole under [floatMatrix] (logical/display affine).
+  final ui.Image? floating;
+  final ui.Image? paintHole;
+  final Float64List? floatMatrix;
 
   /// Live spectral composite of committed paint + pending strokes while a
   /// watercolor stroke is in progress. When present it fully replaces the paint
@@ -1497,6 +1894,23 @@ class _CanvasPainter extends CustomPainter {
         Rect.fromLTWH(0, 0, surface.width.toDouble(), surface.height.toDouble()),
         dst,
         hq);
+
+    // Moving a selection: the committed paint with a hole where the region was
+    // lifted, then the floating paint on top at its dragged offset. The hole is
+    // transparent, so the surface shows through the vacated spot.
+    final float = floating;
+    if (float != null && paintHole != null) {
+      final holeSrc = Rect.fromLTWH(
+          0, 0, paintHole!.width.toDouble(), paintHole!.height.toDouble());
+      final floatSrc =
+          Rect.fromLTWH(0, 0, float.width.toDouble(), float.height.toDouble());
+      canvas.drawImageRect(paintHole!, holeSrc, dst, hq);
+      canvas.save();
+      if (floatMatrix != null) canvas.transform(floatMatrix!);
+      canvas.drawImageRect(float, floatSrc, dst, hq);
+      canvas.restore();
+      return;
+    }
 
     // The edited paint: the committed layer (or its live watercolor composite)
     // plus any pending strokes rendered on the fly.
@@ -1583,6 +1997,9 @@ class _CanvasPainter extends CustomPainter {
       old.paintLayer != paintLayer ||
       old.wetPreview != wetPreview ||
       old.clip != clip ||
+      old.floating != floating ||
+      old.paintHole != paintHole ||
+      old.floatMatrix != floatMatrix ||
       old.active != active ||
       old.unbaked.length != unbaked.length ||
       (active != null && active!.points.length != (old.active?.points.length ?? -1));
@@ -1598,16 +2015,35 @@ class _SelectionPainter extends CustomPainter {
     required this.selectionMask,
     required this.antsShader,
     required this.antsPhase,
+    this.corners,
+    this.rotateHandle,
   }) : super(repaint: antsPhase);
 
-  final ui.Image selectionMask;
+  /// The selection mask (marching ants source), or null while moving.
+  final ui.Image? selectionMask;
   final ui.FragmentShader? antsShader;
   final Animation<double> antsPhase;
+
+  /// When set, a selection is being transformed: draw the frame (through these
+  /// four corners, logical/display coords) with scale/rotate handles instead of
+  /// the ants.
+  final List<Offset>? corners;
+  final Offset? rotateHandle;
 
   @override
   void paint(Canvas canvas, Size size) {
     final dst = Rect.fromLTWH(0, 0, size.width, size.height);
+
+    // Moving: draw the transform frame + handles at the dragged location rather
+    // than the ants (which trace the un-moved mask).
+    final quad = corners;
+    if (quad != null) {
+      _paintFrame(canvas, quad, rotateHandle);
+      return;
+    }
+
     final mask = selectionMask;
+    if (mask == null) return;
     final src =
         Rect.fromLTWH(0, 0, mask.width.toDouble(), mask.height.toDouble());
 
@@ -1636,7 +2072,66 @@ class _SelectionPainter extends CustomPainter {
               const ColorFilter.mode(Color(0x3300B8D4), BlendMode.srcIn));
   }
 
+  /// Draws the transform frame: a marching black/white dashed quad through
+  /// [quad], square scale handles at each corner, and a rotate handle on a stalk
+  /// past the top edge.
+  void _paintFrame(Canvas canvas, List<Offset> quad, Offset? rotate) {
+    final frame = Path()..addPolygon(quad, true);
+    final white = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6;
+    final black = Paint()
+      ..color = Colors.black
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6;
+
+    // Stalk to the rotate handle (drawn as part of the dashed outline).
+    final outline = Path.from(frame);
+    if (rotate != null) {
+      final topMid = (quad[0] + quad[1]) / 2;
+      outline
+        ..moveTo(topMid.dx, topMid.dy)
+        ..lineTo(rotate.dx, rotate.dy);
+    }
+
+    const dash = 9.0;
+    final phase = antsPhase.value * dash * 2; // one dash pair per cycle
+    for (final m in outline.computeMetrics()) {
+      var d = -phase;
+      var i = 0;
+      while (d < m.length) {
+        final start = d < 0 ? 0.0 : d;
+        final end = (d + dash).clamp(0.0, m.length);
+        if (end > start) {
+          canvas.drawPath(m.extractPath(start, end), i.isEven ? white : black);
+        }
+        d += dash;
+        i++;
+      }
+    }
+
+    // Handles: filled white with a dark border.
+    final fill = Paint()..color = Colors.white;
+    final border = Paint()
+      ..color = Colors.black87
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4;
+    for (final c in quad) {
+      final r = Rect.fromCenter(center: c, width: 12, height: 12);
+      canvas.drawRect(r, fill);
+      canvas.drawRect(r, border);
+    }
+    if (rotate != null) {
+      canvas.drawCircle(rotate, 7, fill);
+      canvas.drawCircle(rotate, 7, border);
+    }
+  }
+
   @override
   bool shouldRepaint(_SelectionPainter old) =>
-      old.selectionMask != selectionMask || old.antsShader != antsShader;
+      old.selectionMask != selectionMask ||
+      old.antsShader != antsShader ||
+      !listEquals(old.corners, corners) ||
+      old.rotateHandle != rotateHandle;
 }
