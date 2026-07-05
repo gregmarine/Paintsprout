@@ -160,6 +160,20 @@ Path _ribbonPath(List<StrokePoint> pts, List<Offset> normals) {
   return path;
 }
 
+/// The filled outline of a whole stroke (variable-width ribbon, or a disc for a
+/// single dab) in the stroke's own coordinates. Watercolor's wet interaction
+/// uses this to mask the region of existing paint it re-wets.
+Path strokeRibbon(Stroke stroke) {
+  final pts = stroke.points;
+  if (pts.length == 1) {
+    final p = pts.first;
+    return Path()
+      ..addOval(Rect.fromCircle(
+          center: p.position, radius: math.max(0.5, p.width / 2)));
+  }
+  return _ribbonPath(pts, _strokeNormals(pts));
+}
+
 /// A held stylus never reaches 0 (perpendicular) or pi/2 (flat) tilt in
 /// practice — the reachable range sits in a compressed middle band. Remap that
 /// band to [0, 1] so an upright pen reads as a fine tip and laying it onto its
