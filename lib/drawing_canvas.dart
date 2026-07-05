@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
 
@@ -32,6 +32,21 @@ Future<void> initPigmentShader() async {
   }
 }
 
+/// Marching-ants selection overlay shader (loaded once at startup). Null if it
+/// fails to load, in which case the selection falls back to a dim/tint overlay.
+ui.FragmentProgram? _selectionProgram;
+
+/// Loads the selection overlay shader. Call once before the first frame.
+Future<void> initSelectionShader() async {
+  try {
+    _selectionProgram ??=
+        await ui.FragmentProgram.fromAsset('shaders/selection_overlay.frag');
+  } catch (e, st) {
+    debugPrint('Selection shader failed to load: $e\n$st');
+    _selectionProgram = null;
+  }
+}
+
 /// Handle the toolbar uses to drive the canvas (clear / save / history).
 class DrawingController {
   _DrawingCanvasState? _state;
@@ -44,6 +59,9 @@ class DrawingController {
   bool get isReady => _state?._paint != null;
 
   Future<void> clear() async => _state?._clear();
+
+  /// Drops the current magic-wand selection.
+  void clearSelection() => _state?._clearSelection();
 
   /// A snapshot of the committed strokes, for the undo/redo history. Strokes are
   /// immutable once committed, so the list shares their instances (cheap).
@@ -79,9 +97,13 @@ class DrawingCanvas extends StatefulWidget {
     this.surface = SurfaceKind.paper,
     this.plainColor = Colors.white,
     this.paperColor = Colors.white,
+    this.wandTolerance = 0.15,
+    this.wandEdgeSensitivity = 0.5,
+    this.wandGap = 3,
     this.onCommitted,
     this.onUndoGesture,
     this.onRedoGesture,
+    this.onSelectionChanged,
     this.debugPencilSample = false,
   });
 
@@ -99,11 +121,25 @@ class DrawingCanvas extends StatefulWidget {
   /// record an undo step.
   final VoidCallback? onCommitted;
 
+  /// Magic-wand color tolerance, 0..1 (0 = exact match, 1 = everything).
+  final double wandTolerance;
+
+  /// How faint a drawn edge still stops the wand fill, 0..1 (higher = catches
+  /// lighter lines like a soft pencil).
+  final double wandEdgeSensitivity;
+
+  /// Gap-closing radius (buffer px): bridges holes in a grainy boundary so the
+  /// fill can't leak through.
+  final int wandGap;
+
   /// Touch gestures for history: a two-finger tap fires [onUndoGesture], a
   /// three-finger tap fires [onRedoGesture] (drawing is stylus-only, so touch
   /// is free for these).
   final VoidCallback? onUndoGesture;
   final VoidCallback? onRedoGesture;
+
+  /// Fired when the magic-wand selection appears (true) or is cleared (false).
+  final ValueChanged<bool>? onSelectionChanged;
 
   /// When true, bakes synthetic pencil sample strokes on init so the pencil
   /// look can be verified on-device without a stylus. Temporary/dev only.
@@ -113,7 +149,8 @@ class DrawingCanvas extends StatefulWidget {
   State<DrawingCanvas> createState() => _DrawingCanvasState();
 }
 
-class _DrawingCanvasState extends State<DrawingCanvas> {
+class _DrawingCanvasState extends State<DrawingCanvas>
+    with SingleTickerProviderStateMixin {
   final math.Random _rng = math.Random();
 
   /// The base layer you paint on (paper/canvas/etc.), buffer resolution.
@@ -147,6 +184,21 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
   bool _previewing = false; // a preview composite is in flight
   bool _previewDirty = false; // the stroke changed while a preview was running
 
+  /// Magic-wand selection: white where selected, transparent elsewhere, at
+  /// buffer resolution. Null when nothing is selected.
+  ui.Image? _selectionMask;
+
+  /// Drives the marching-ants animation while a selection is active.
+  late final AnimationController _antsController;
+
+  /// Reused selection-overlay shader instance (marching ants).
+  ui.FragmentShader? _antsShader;
+
+  // Wand tap tracking (a stylus tap in the wand tool triggers a selection).
+  Offset? _wandDownPos;
+  int? _wandPointer;
+  bool _wandMoved = false;
+
   // --- Touch gesture tracking --------------------------------------------
   // Two-finger double-tap = undo, three-finger double-tap = redo.
   final Map<int, Offset> _touchStart = {}; // active touch pointers -> down pos
@@ -165,6 +217,9 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
   void initState() {
     super.initState();
     widget.controller._state = this;
+    _antsController =
+        AnimationController(vsync: this, duration: const Duration(seconds: 1));
+    _antsShader = _selectionProgram?.fragmentShader();
   }
 
   @override
@@ -257,9 +312,12 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
   @override
   void dispose() {
     if (widget.controller._state == this) widget.controller._state = null;
+    _antsController.dispose();
+    _antsShader?.dispose();
     _surface?.dispose();
     _paint?.dispose();
     _wetPreview?.dispose();
+    _selectionMask?.dispose();
     super.dispose();
   }
 
@@ -366,6 +424,13 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
       _onTouchDown(e);
       return;
     }
+    if (widget.tool == Tool.wand) {
+      // A stylus tap selects; a drag is ignored. No stroke is created.
+      _wandPointer = e.pointer;
+      _wandDownPos = e.localPosition;
+      _wandMoved = false;
+      return;
+    }
     if (_active != null) return; // already tracking a stroke
     final color =
         widget.tool == Tool.eraser ? widget.paperColor : widget.color;
@@ -382,6 +447,14 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
       _onTouchMove(e);
       return;
     }
+    if (widget.tool == Tool.wand) {
+      if (e.pointer == _wandPointer &&
+          _wandDownPos != null &&
+          (e.localPosition - _wandDownPos!).distance > 8) {
+        _wandMoved = true;
+      }
+      return;
+    }
     if (_active == null || e.pointer != _activePointer) return;
     setState(() => _active!.add(_sample(e)));
     if (_active!.tool == Tool.watercolor) unawaited(_updateWetPreview());
@@ -390,6 +463,17 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
   void _onUp(PointerEvent e) {
     if (!_isStylus(e.kind)) {
       _onTouchUp(e);
+      return;
+    }
+    if (widget.tool == Tool.wand) {
+      if (e.pointer == _wandPointer) {
+        final pos = _wandDownPos;
+        final moved = _wandMoved;
+        _wandPointer = null;
+        _wandDownPos = null;
+        _wandMoved = false;
+        if (!moved && pos != null) unawaited(_runWandSelection(pos));
+      }
       return;
     }
     if (_active == null || e.pointer != _activePointer) return;
@@ -451,6 +535,54 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
       _pendingTapCount = count;
       _pendingTapTime = now;
     }
+  }
+
+  // --- Magic wand selection -----------------------------------------------
+
+  /// Flood-fills a contiguous painted region starting at [logical] (logical
+  /// coords), building a selection mask. Samples the PAINT layer only — never
+  /// the surface. The surface material only affects how paint looks, not how the
+  /// wand selects. (With layers, this will target the active layer or all paint
+  /// layers, but never the surface.)
+  Future<void> _runWandSelection(Offset logical) async {
+    if (_paint == null) return;
+    final seedX = (logical.dx * kSuperSample).round().clamp(0, _bufW - 1);
+    final seedY = (logical.dy * kSuperSample).round().clamp(0, _bufH - 1);
+
+    final data = await _paint!.toByteData(format: ui.ImageByteFormat.rawRgba);
+    if (data == null) return;
+
+    final request = _WandRequest(
+      pixels: data.buffer.asUint8List(),
+      width: _bufW,
+      height: _bufH,
+      seedX: seedX,
+      seedY: seedY,
+      tolerance: widget.wandTolerance,
+      edgeSensitivity: widget.wandEdgeSensitivity,
+      gap: widget.wandGap,
+    );
+    final result = await compute(_wandFloodFill, request);
+    final maskImg = await _decodeRgba(result.mask, result.width, result.height);
+    if (!mounted) {
+      maskImg.dispose();
+      return;
+    }
+    final old = _selectionMask;
+    setState(() => _selectionMask = maskImg);
+    old?.dispose();
+    if (!_antsController.isAnimating) _antsController.repeat();
+    widget.onSelectionChanged?.call(true);
+  }
+
+  /// Clears the current magic-wand selection.
+  void _clearSelection() {
+    if (_selectionMask == null) return;
+    final old = _selectionMask;
+    setState(() => _selectionMask = null);
+    old?.dispose();
+    _antsController.stop();
+    widget.onSelectionChanged?.call(false);
   }
 
   // --- Baking -------------------------------------------------------------
@@ -748,6 +880,9 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
               surfaceKind: widget.surface,
               paintLayer: _paint!,
               wetPreview: _wetPreview,
+              selectionMask: _selectionMask,
+              antsShader: _antsShader,
+              antsPhase: _antsController,
               unbaked: _unbaked,
               active: _active,
             ),
@@ -876,15 +1011,249 @@ void applyWetInteraction({
   canvas.restore();
 }
 
+// --- Magic wand flood fill --------------------------------------------------
+
+/// Input for the flood fill, sent to a background isolate via [compute].
+class _WandRequest {
+  const _WandRequest({
+    required this.pixels,
+    required this.width,
+    required this.height,
+    required this.seedX,
+    required this.seedY,
+    required this.tolerance,
+    required this.edgeSensitivity,
+    required this.gap,
+  });
+
+  final Uint8List pixels; // rawRgba of the flattened canvas
+  final int width;
+  final int height;
+  final int seedX;
+  final int seedY;
+  final double tolerance; // 0..1: color spread from the seed
+  final double edgeSensitivity; // 0..1: how faint an edge still counts as a wall
+  final int gap; // px: bridge grain gaps in a boundary up to this radius
+}
+
+/// Result of a wand flood fill: an rgba mask (white = selected) and its size.
+class _WandResult {
+  const _WandResult(this.mask, this.width, this.height);
+  final Uint8List mask;
+  final int width;
+  final int height;
+}
+
+/// Edge-aware flood fill with gap closing, over the PAINT layer only (surface
+/// texture never participates). From the seed it grows over pixels within
+/// [tolerance] of the seed's premultiplied RGBA AND not blocked by a drawn edge.
+/// Boundaries come from two signals: paint coverage (the alpha channel), which
+/// catches even a faint pencil line the way a color signal can't, and premult
+/// luminance, which catches color edges between opaque regions.
+///
+/// For speed the heavy passes run at half resolution, downsampling by keeping
+/// the MAX-alpha sample of each 2x2 block (never averaging — that would erase a
+/// faint speckly line). Steps: reduce, Sobel → barrier, dilate the barrier by
+/// [gap] (seals speckle holes), scanline-fill inside it, grow the result back up
+/// to the edge. Returns a half-res mask. Runs in a background isolate.
+_WandResult _wandFloodFill(_WandRequest r) {
+  const ds = 2;
+  final fw = r.width, fh = r.height;
+  final w = (fw + ds - 1) ~/ ds, h = (fh + ds - 1) ~/ ds, n = w * h;
+  final px = r.pixels;
+
+  // Downsample to a representative pixel per block (the most-painted sample),
+  // plus the two boundary signals.
+  final small = Uint8List(n * 4);
+  final alpha = Uint8List(n);
+  final lum = Uint8List(n);
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      var bestA = -1, br = 0, bg = 0, bb = 0;
+      for (var dy = 0; dy < ds; dy++) {
+        final yy = y * ds + dy;
+        if (yy >= fh) break;
+        for (var dx = 0; dx < ds; dx++) {
+          final xx = x * ds + dx;
+          if (xx >= fw) break;
+          final o = (yy * fw + xx) * 4;
+          if (px[o + 3] > bestA) {
+            bestA = px[o + 3];
+            br = px[o];
+            bg = px[o + 1];
+            bb = px[o + 2];
+          }
+        }
+      }
+      final j = y * w + x;
+      final o = j * 4;
+      small[o] = br;
+      small[o + 1] = bg;
+      small[o + 2] = bb;
+      small[o + 3] = bestA;
+      alpha[j] = bestA;
+      lum[j] = (br * 77 + bg * 150 + bb * 29) >> 8;
+    }
+  }
+
+  // Sobel edge barrier. Higher sensitivity -> lower thresholds -> fainter lines
+  // still register as walls. Alpha (paint coverage) gets a much lower threshold
+  // than luminance: a light pencil's coverage gradient is small, and because the
+  // surface is excluded, empty areas are perfectly flat so there's no noise to
+  // trip over. Luminance separates touching opaque colors.
+  final alphaThreshold = (24.0 + (4.0 - 24.0) * r.edgeSensitivity);
+  final lumThreshold = (60.0 + (6.0 - 60.0) * r.edgeSensitivity);
+  final barrier = Uint8List(n);
+  for (var y = 1; y < h - 1; y++) {
+    for (var x = 1; x < w - 1; x++) {
+      final i = y * w + x;
+      final aGx = -alpha[i - w - 1] - 2 * alpha[i - 1] - alpha[i + w - 1] +
+          alpha[i - w + 1] + 2 * alpha[i + 1] + alpha[i + w + 1];
+      final aGy = -alpha[i - w - 1] - 2 * alpha[i - w] - alpha[i - w + 1] +
+          alpha[i + w - 1] + 2 * alpha[i + w] + alpha[i + w + 1];
+      final lGx = -lum[i - w - 1] - 2 * lum[i - 1] - lum[i + w - 1] +
+          lum[i - w + 1] + 2 * lum[i + 1] + lum[i + w + 1];
+      final lGy = -lum[i - w - 1] - 2 * lum[i - w] - lum[i - w + 1] +
+          lum[i + w - 1] + 2 * lum[i + w] + lum[i + w + 1];
+      if (aGx.abs() + aGy.abs() > alphaThreshold ||
+          lGx.abs() + lGy.abs() > lumThreshold) {
+        barrier[i] = 1;
+      }
+    }
+  }
+
+  // Seal small gaps in the boundary so the fill can't leak through the speckle.
+  final gap = r.gap <= 0 ? 0 : ((r.gap + ds - 1) ~/ ds);
+  final wall = gap > 0 ? _dilate(barrier, w, h, gap) : barrier;
+
+  final sx = (r.seedX ~/ ds).clamp(0, w - 1);
+  final sy = (r.seedY ~/ ds).clamp(0, h - 1);
+  final seedO = (sy * w + sx) * 4;
+  final sr = small[seedO],
+      sg = small[seedO + 1],
+      sb = small[seedO + 2],
+      sa = small[seedO + 3];
+  final colorThreshold = (r.tolerance * 1020).round(); // 4 channels incl. alpha
+  final visited = Uint8List(n);
+
+  bool fillable(int i) {
+    if (wall[i] == 1) return false;
+    final o = i * 4;
+    final d = (small[o] - sr).abs() +
+        (small[o + 1] - sg).abs() +
+        (small[o + 2] - sb).abs() +
+        (small[o + 3] - sa).abs();
+    return d <= colorThreshold;
+  }
+
+  final stack = <int>[sy * w + sx];
+  while (stack.isNotEmpty) {
+    final p = stack.removeLast();
+    if (visited[p] == 1) continue;
+    final y = p ~/ w;
+    final rowStart = y * w;
+    var xl = p - rowStart;
+    var xr = xl;
+    while (xl > 0 && visited[rowStart + xl - 1] == 0 && fillable(rowStart + xl - 1)) {
+      xl--;
+    }
+    while (xr < w - 1 && visited[rowStart + xr + 1] == 0 && fillable(rowStart + xr + 1)) {
+      xr++;
+    }
+    for (var x = xl; x <= xr; x++) {
+      visited[rowStart + x] = 1;
+    }
+    var ny = y - 1;
+    for (var pass = 0; pass < 2; pass++, ny += 2) {
+      if (ny < 0 || ny >= h) continue;
+      final nRow = ny * w;
+      var x = xl;
+      while (x <= xr) {
+        while (x <= xr && (visited[nRow + x] == 1 || !fillable(nRow + x))) {
+          x++;
+        }
+        if (x > xr) break;
+        stack.add(nRow + x);
+        while (x <= xr && visited[nRow + x] == 0 && fillable(nRow + x)) {
+          x++;
+        }
+      }
+    }
+  }
+
+  // Grow the selection back up to the true edge (recovering the band the barrier
+  // dilation ate), but never onto the edge itself.
+  final selected = gap > 0 ? _dilate(visited, w, h, gap) : visited;
+
+  final mask = Uint8List(n * 4);
+  for (var i = 0; i < n; i++) {
+    if (selected[i] == 1 && barrier[i] == 0) {
+      final o = i * 4;
+      mask[o] = 255;
+      mask[o + 1] = 255;
+      mask[o + 2] = 255;
+      mask[o + 3] = 255;
+    }
+  }
+  return _WandResult(mask, w, h);
+}
+
+/// Separable binary morphological dilation (square structuring element).
+Uint8List _dilate(Uint8List src, int w, int h, int radius) {
+  final tmp = Uint8List(w * h);
+  for (var y = 0; y < h; y++) {
+    final row = y * w;
+    for (var x = 0; x < w; x++) {
+      final x0 = x - radius < 0 ? 0 : x - radius;
+      final x1 = x + radius >= w ? w - 1 : x + radius;
+      var v = 0;
+      for (var xx = x0; xx <= x1; xx++) {
+        if (src[row + xx] == 1) {
+          v = 1;
+          break;
+        }
+      }
+      tmp[row + x] = v;
+    }
+  }
+  final out = Uint8List(w * h);
+  for (var x = 0; x < w; x++) {
+    for (var y = 0; y < h; y++) {
+      final y0 = y - radius < 0 ? 0 : y - radius;
+      final y1 = y + radius >= h ? h - 1 : y + radius;
+      var v = 0;
+      for (var yy = y0; yy <= y1; yy++) {
+        if (tmp[yy * w + x] == 1) {
+          v = 1;
+          break;
+        }
+      }
+      out[y * w + x] = v;
+    }
+  }
+  return out;
+}
+
+/// Decodes raw rgba bytes into a [ui.Image].
+Future<ui.Image> _decodeRgba(Uint8List rgba, int w, int h) {
+  final completer = Completer<ui.Image>();
+  ui.decodeImageFromPixels(
+      rgba, w, h, ui.PixelFormat.rgba8888, completer.complete);
+  return completer.future;
+}
+
 class _CanvasPainter extends CustomPainter {
   _CanvasPainter({
     required this.surface,
     required this.surfaceKind,
     required this.paintLayer,
     required this.wetPreview,
+    required this.selectionMask,
+    required this.antsShader,
+    required this.antsPhase,
     required this.unbaked,
     required this.active,
-  });
+  }) : super(repaint: antsPhase);
 
   final ui.Image surface;
   final SurfaceKind surfaceKind;
@@ -895,6 +1264,13 @@ class _CanvasPainter extends CustomPainter {
   /// layer (it already contains the pending strokes, mixed exactly as they will
   /// commit), so no on-the-fly wash approximation is needed.
   final ui.Image? wetPreview;
+
+  /// Magic-wand selection mask (white where selected), or null.
+  final ui.Image? selectionMask;
+
+  /// Marching-ants overlay shader, and the animation it reads its phase from.
+  final ui.FragmentShader? antsShader;
+  final Animation<double> antsPhase;
   final List<Stroke> unbaked;
   final Stroke? active;
 
@@ -926,38 +1302,72 @@ class _CanvasPainter extends CustomPainter {
       if (active != null && active!.tool != Tool.watercolor) {
         paintStroke(canvas, active!, surface: surfaceKind);
       }
-      canvas.restore();
+    } else {
+      // No spectral preview yet: render pending strokes on the fly. A watercolor
+      // stroke re-wets the paint beneath it (same wet recipe as the bake, in
+      // logical coords) with a cheap multiply approximation of the mix; this
+      // only shows for the frame or two before the first spectral preview lands.
+      final paintSrc = Rect.fromLTWH(
+          0, 0, paintLayer.width.toDouble(), paintLayer.height.toDouble());
+      void render(Stroke s) {
+        if (s.tool == Tool.watercolor) {
+          applyWetInteraction(
+            canvas: canvas,
+            region: strokeRibbon(s),
+            avgWidth: _avgWidth(s),
+            drawPaint: (c) => c.drawImageRect(paintLayer, paintSrc, dst, hq),
+          );
+          final b = strokeRibbon(s).getBounds().inflate(_avgWidth(s));
+          canvas.saveLayer(b, Paint()..blendMode = BlendMode.multiply);
+          paintStroke(canvas, s, surface: surfaceKind);
+          canvas.restore();
+          return;
+        }
+        paintStroke(canvas, s, surface: surfaceKind);
+      }
+
+      for (final s in unbaked) {
+        render(s);
+      }
+      if (active != null) render(active!);
+    }
+    canvas.restore();
+
+    _paintSelection(canvas, dst);
+  }
+
+  /// Draws the magic-wand selection: dims outside it and animates marching ants
+  /// along the border (via the overlay shader). Falls back to a dim/tint overlay
+  /// if the shader didn't load.
+  void _paintSelection(Canvas canvas, Rect dst) {
+    final mask = selectionMask;
+    if (mask == null) return;
+    final src =
+        Rect.fromLTWH(0, 0, mask.width.toDouble(), mask.height.toDouble());
+
+    final shader = antsShader;
+    if (shader != null) {
+      shader
+        ..setFloat(0, dst.width)
+        ..setFloat(1, dst.height)
+        ..setFloat(2, antsPhase.value)
+        ..setImageSampler(0, mask);
+      canvas.drawRect(dst, Paint()..shader = shader);
       return;
     }
 
-    // No spectral preview yet: render pending strokes on the fly. A watercolor
-    // stroke re-wets the paint beneath it (same wet recipe as the bake, in
-    // logical coords) with a cheap multiply approximation of the mix; this only
-    // shows for the frame or two before the first spectral preview lands.
-    final paintSrc = Rect.fromLTWH(
-        0, 0, paintLayer.width.toDouble(), paintLayer.height.toDouble());
-    void render(Stroke s) {
-      if (s.tool == Tool.watercolor) {
-        applyWetInteraction(
-          canvas: canvas,
-          region: strokeRibbon(s),
-          avgWidth: _avgWidth(s),
-          drawPaint: (c) => c.drawImageRect(paintLayer, paintSrc, dst, hq),
-        );
-        final b = strokeRibbon(s).getBounds().inflate(_avgWidth(s));
-        canvas.saveLayer(b, Paint()..blendMode = BlendMode.multiply);
-        paintStroke(canvas, s, surface: surfaceKind);
-        canvas.restore();
-        return;
-      }
-      paintStroke(canvas, s, surface: surfaceKind);
-    }
-
-    for (final s in unbaked) {
-      render(s);
-    }
-    if (active != null) render(active!);
+    // Fallback: dim outside + faint tint.
+    canvas.saveLayer(dst, Paint());
+    canvas.drawRect(dst, Paint()..color = Colors.black.withValues(alpha: 0.28));
+    canvas.drawImageRect(mask, src, dst, Paint()..blendMode = BlendMode.dstOut);
     canvas.restore();
+    canvas.drawImageRect(
+        mask,
+        src,
+        dst,
+        Paint()
+          ..colorFilter =
+              const ColorFilter.mode(Color(0x3300B8D4), BlendMode.srcIn));
   }
 
   @override
@@ -966,6 +1376,7 @@ class _CanvasPainter extends CustomPainter {
       old.surfaceKind != surfaceKind ||
       old.paintLayer != paintLayer ||
       old.wetPreview != wetPreview ||
+      old.selectionMask != selectionMask ||
       old.active != active ||
       old.unbaked.length != unbaked.length ||
       (active != null && active!.points.length != (old.active?.points.length ?? -1));
