@@ -1,0 +1,241 @@
+package com.symmetricalpalmtree.paintsprout.paint
+
+/**
+ * The drawing tools. Ported from the Flutter reference `tools.dart`.
+ *
+ * [wand] is not a drawing tool — it's the magic-wand selection tool. It never
+ * creates a stroke; a tap flood-fills a selection instead.
+ *
+ * Note: the per-tool `IconData` from the Flutter enum is intentionally omitted
+ * here — icons map to Android drawable resources and belong to the UI shell, not
+ * the pure paint model.
+ */
+enum class Tool {
+    PENCIL, PEN, BRUSH, WATERCOLOR, MARKER, SPRAY, ERASER, WAND;
+
+    val label: String
+        get() = when (this) {
+            PENCIL -> "Pencil"
+            PEN -> "Pen"
+            BRUSH -> "Brush"
+            WATERCOLOR -> "Watercolor"
+            MARKER -> "Marker"
+            SPRAY -> "Spray"
+            ERASER -> "Eraser"
+            WAND -> "Magic Wand"
+        }
+
+    /** Whether this tool paints strokes at all. The wand only selects. */
+    val isDrawing: Boolean get() = this != WAND
+
+    /**
+     * Whether the tool's stroke width reacts to stylus pressure and tilt.
+     * Pen and eraser strictly honor the base size; the rest grow.
+     */
+    val isDynamic: Boolean get() = this != PEN && this != ERASER
+
+    /** Sensible starting base size (logical px) per tool. */
+    val defaultSize: Float
+        get() = when (this) {
+            PENCIL -> 1f
+            PEN -> 3f
+            BRUSH -> 18f
+            WATERCOLOR -> 26f
+            MARKER -> 4f
+            SPRAY -> 28f
+            ERASER -> 24f
+            WAND -> 1f
+        }
+}
+
+/** How a stroke is rendered. */
+enum class RenderStyle {
+    /** Crisp constant-color ribbon (pen, eraser). */
+    SOLID,
+
+    /** Soft blurred, translucent, builds up on overlap (spray can). */
+    SOFT,
+
+    /** Variable-width ribbon multiplied by a grain texture (pencil, marker). */
+    GRAIN,
+
+    /** Multiple bristle streaks following the path with dry-brush gaps (brush). */
+    BRISTLE,
+
+    /**
+     * Translucent pigment wash: soft bleeding edges, darker pooled rim, grainy
+     * granulation in the surface tooth, building up where strokes overlap.
+     */
+    WASH,
+}
+
+/**
+ * Per-tool feel parameters used by the stroke renderer. Ported field-for-field
+ * (and value-for-value) from `ToolProfile` in the Flutter `tools.dart`.
+ */
+data class ToolProfile(
+    /** Width multiplier at zero and full pressure (relative to base size). */
+    val minPressureFactor: Float,
+    val maxPressureFactor: Float,
+
+    /**
+     * Whether pressure scales stroke width (brush) or not (pencil: pressure
+     * drives density instead).
+     */
+    val pressureAffectsWidth: Boolean,
+
+    /** How much tilt broadens the mark (0 = none). */
+    val tiltGain: Float,
+
+    /** Whether pressure scales per-point opacity/darkness (pencil). */
+    val pressureAffectsDensity: Boolean,
+    val minDensity: Float,
+    val maxDensity: Float,
+
+    /**
+     * Stroke opacity applied uniformly across the whole stroke (tools that don't
+     * vary density per point).
+     */
+    val opacity: Float,
+
+    /** Soft-edge blur as a fraction of stroke width (0 = crisp). */
+    val blurFactor: Float,
+
+    /**
+     * How the tool reacts to the surface tooth. [toothFloor] is the ink kept at
+     * the deepest tooth valley — low = high sensitivity (gritty), high =
+     * near-solid, 1.0 = ignores the surface entirely. [toothBias] > 1 skews
+     * toward the valleys for more speckle.
+     */
+    val toothFloor: Float,
+    val toothBias: Float,
+
+    /** How the stroke is rendered. */
+    val renderStyle: RenderStyle,
+) {
+    /** Whether this tool's mark is broken up by the surface tooth at all. */
+    val reactsToTooth: Boolean get() = toothFloor < 1.0f
+
+    companion object {
+        // Pencil: pressure -> darkness, tilt -> width, gritty graphite grain.
+        private val PENCIL = ToolProfile(
+            minPressureFactor = 1.0f,
+            maxPressureFactor = 1.0f,
+            pressureAffectsWidth = false,
+            tiltGain = 16.0f,
+            pressureAffectsDensity = true,
+            minDensity = 0.1f,
+            maxDensity = 0.95f,
+            opacity = 1.0f,
+            blurFactor = 0.0f,
+            toothFloor = 0.0f, // gritty: grooves show bare surface
+            toothBias = 1.4f,
+            renderStyle = RenderStyle.GRAIN,
+        )
+
+        // Marker: same feel as the pencil, but a soft/even grain -> chunky marker.
+        private val MARKER = ToolProfile(
+            minPressureFactor = 1.0f,
+            maxPressureFactor = 1.0f,
+            pressureAffectsWidth = false,
+            tiltGain = 5.5f,
+            pressureAffectsDensity = true,
+            minDensity = 0.1f,
+            maxDensity = 0.95f,
+            opacity = 1.0f,
+            blurFactor = 0.0f,
+            toothFloor = 0.62f, // even: soft, near-solid ink
+            toothBias = 1.0f,
+            renderStyle = RenderStyle.GRAIN,
+        )
+
+        private val PEN = ToolProfile(
+            minPressureFactor = 1.0f,
+            maxPressureFactor = 1.0f,
+            pressureAffectsWidth = false,
+            tiltGain = 0.0f,
+            pressureAffectsDensity = false,
+            minDensity = 1.0f,
+            maxDensity = 1.0f,
+            opacity = 1.0f,
+            blurFactor = 0.0f,
+            toothFloor = 0.85f, // gel pen: mostly fills, faint tooth on rough surfaces
+            toothBias = 1.0f,
+            renderStyle = RenderStyle.SOLID,
+        )
+
+        // Paint brush: bristle streaks that follow the path, spreading with pressure.
+        private val BRUSH = ToolProfile(
+            minPressureFactor = 0.35f,
+            maxPressureFactor = 2.2f,
+            pressureAffectsWidth = true,
+            tiltGain = 0.4f,
+            pressureAffectsDensity = false,
+            minDensity = 1.0f,
+            maxDensity = 1.0f,
+            opacity = 0.9f,
+            blurFactor = 0.08f, // slight smear so bristles read as paint, not hard combs
+            toothFloor = 0.7f, // medium: dry-brush skips over the tooth
+            toothBias = 1.0f,
+            renderStyle = RenderStyle.BRISTLE,
+        )
+
+        // Watercolor: a translucent pigment wash.
+        private val WATERCOLOR = ToolProfile(
+            minPressureFactor = 0.5f,
+            maxPressureFactor = 2.0f,
+            pressureAffectsWidth = true,
+            tiltGain = 0.3f,
+            pressureAffectsDensity = false,
+            minDensity = 1.0f,
+            maxDensity = 1.0f,
+            opacity = 0.5f,
+            blurFactor = 0.12f, // soft bleed, but not so strong it erases the pooled rim
+            toothFloor = 0.6f, // granulation: pigment settles into the tooth
+            toothBias = 1.0f,
+            renderStyle = RenderStyle.WASH,
+        )
+
+        // Spray can: soft, translucent, builds up on overlap.
+        private val SPRAY = ToolProfile(
+            minPressureFactor = 0.25f,
+            maxPressureFactor = 2.8f,
+            pressureAffectsWidth = true,
+            tiltGain = 0.5f,
+            pressureAffectsDensity = false,
+            minDensity = 1.0f,
+            maxDensity = 1.0f,
+            opacity = 0.92f,
+            blurFactor = 0.25f,
+            toothFloor = 0.78f, // droplets settle a touch more on the crests
+            toothBias = 1.0f,
+            renderStyle = RenderStyle.SOFT,
+        )
+
+        private val ERASER = ToolProfile(
+            minPressureFactor = 1.0f,
+            maxPressureFactor = 1.0f,
+            pressureAffectsWidth = false,
+            tiltGain = 0.0f,
+            pressureAffectsDensity = false,
+            minDensity = 1.0f,
+            maxDensity = 1.0f,
+            opacity = 1.0f,
+            blurFactor = 0.0f,
+            toothFloor = 0.85f, // erasing leaves faint residue down in the tooth valleys
+            toothBias = 1.0f,
+            renderStyle = RenderStyle.SOLID,
+        )
+
+        fun of(tool: Tool): ToolProfile = when (tool) {
+            Tool.PENCIL -> PENCIL
+            Tool.PEN -> PEN
+            Tool.BRUSH -> BRUSH
+            Tool.WATERCOLOR -> WATERCOLOR
+            Tool.MARKER -> MARKER
+            Tool.SPRAY -> SPRAY
+            Tool.ERASER -> ERASER
+            Tool.WAND -> PEN // unused: the wand never draws
+        }
+    }
+}

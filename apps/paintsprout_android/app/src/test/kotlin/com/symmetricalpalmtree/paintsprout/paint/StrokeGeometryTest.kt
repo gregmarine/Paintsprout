@@ -1,0 +1,150 @@
+package com.symmetricalpalmtree.paintsprout.paint
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class StrokeGeometryTest {
+
+    private val eps = 1e-4f
+
+    // --- resolveWidth --------------------------------------------------------
+
+    @Test
+    fun nonDynamicToolsIgnorePressureAndTilt() {
+        // Pen and eraser strictly honor the base size regardless of stylus data.
+        for (tool in listOf(Tool.PEN, Tool.ERASER)) {
+            assertEquals(3f, resolveWidth(tool, 3f, pressureNorm = 0f, tiltRadians = 0f), 0f)
+            assertEquals(3f, resolveWidth(tool, 3f, pressureNorm = 1f, tiltRadians = 1.2f), 0f)
+        }
+    }
+
+    @Test
+    fun brushWidthScalesWithPressureAtFlatTilt() {
+        // tilt 0 is below the lo cutoff -> tiltFactor 1, so only pressure applies.
+        // min/max pressure factors are 0.35 / 2.2 (base 10).
+        assertEquals(3.5f, resolveWidth(Tool.BRUSH, 10f, pressureNorm = 0f, tiltRadians = 0f), eps)
+        assertEquals(22f, resolveWidth(Tool.BRUSH, 10f, pressureNorm = 1f, tiltRadians = 0f), eps)
+    }
+
+    @Test
+    fun widthNeverDropsBelowHalfPixel() {
+        // Tiny base at minimum pressure would compute 0.35 -> clamped up to 0.5.
+        assertEquals(0.5f, resolveWidth(Tool.BRUSH, 1f, pressureNorm = 0f, tiltRadians = 0f), eps)
+    }
+
+    @Test
+    fun pencilWidthDrivenByTiltNotPressure() {
+        // Pencil width ignores pressure (drives density instead); below the lo
+        // tilt cutoff it stays at base size.
+        val base = 4f
+        assertEquals(base, resolveWidth(Tool.PENCIL, base, pressureNorm = 0f, tiltRadians = 0f), eps)
+        assertEquals(base, resolveWidth(Tool.PENCIL, base, pressureNorm = 1f, tiltRadians = 0f), eps)
+
+        // Full tilt: tiltFactor = 1 + tiltGain(16) * 1 = 17.
+        assertEquals(base * 17f, resolveWidth(Tool.PENCIL, base, 0f, TILT_HI_RAD), eps)
+    }
+
+    @Test
+    fun pencilWidthIsMonotonicInTilt() {
+        val base = 4f
+        var prev = resolveWidth(Tool.PENCIL, base, 0f, TILT_LO_RAD)
+        var t = TILT_LO_RAD + 0.05f
+        while (t <= TILT_HI_RAD) {
+            val w = resolveWidth(Tool.PENCIL, base, 0f, t)
+            assertTrue("width should not decrease as tilt grows (t=$t)", w >= prev - eps)
+            prev = w
+            t += 0.05f
+        }
+    }
+
+    // --- resolveDensity ------------------------------------------------------
+
+    @Test
+    fun nonDensityToolsStayFullyDense() {
+        assertEquals(1f, resolveDensity(Tool.PEN, 0f), 0f)
+        assertEquals(1f, resolveDensity(Tool.BRUSH, 0.5f), 0f)
+    }
+
+    @Test
+    fun pencilDensityMapsPressure() {
+        // minDensity 0.1, maxDensity 0.95; pressure is scaled *1.3 then clamped.
+        assertEquals(0.1f, resolveDensity(Tool.PENCIL, 0f), eps)
+        assertEquals(0.95f, resolveDensity(Tool.PENCIL, 1f), eps)
+        // pressureNorm 0.5 -> p' = 0.65 -> lerp(0.1, 0.95, 0.65) = 0.6525
+        assertEquals(0.6525f, resolveDensity(Tool.PENCIL, 0.5f), eps)
+    }
+
+    // --- strokeNormals -------------------------------------------------------
+
+    @Test
+    fun normalsOfHorizontalLinePointDown() {
+        val pts = listOf(
+            StrokePoint(Vec2(0f, 0f), 2f),
+            StrokePoint(Vec2(10f, 0f), 2f),
+            StrokePoint(Vec2(20f, 0f), 2f),
+        )
+        val normals = strokeNormals(pts)
+        for (n in normals) {
+            assertEquals(0f, n.x, eps)
+            assertEquals(1f, n.y, eps)
+        }
+    }
+
+    @Test
+    fun normalsOfVerticalLinePointLeft() {
+        val pts = listOf(
+            StrokePoint(Vec2(0f, 0f), 2f),
+            StrokePoint(Vec2(0f, 10f), 2f),
+        )
+        val normals = strokeNormals(pts)
+        for (n in normals) {
+            assertEquals(-1f, n.x, eps)
+            assertEquals(0f, n.y, eps)
+        }
+    }
+
+    @Test
+    fun strokeNormalsRequiresTwoPoints() {
+        assertThrows(IllegalArgumentException::class.java) {
+            strokeNormals(listOf(StrokePoint(Vec2(0f, 0f), 2f)))
+        }
+    }
+
+    // --- ribbonOutline -------------------------------------------------------
+
+    @Test
+    fun ribbonOutlineOffsetsByHalfWidthAlongNormals() {
+        val pts = listOf(
+            StrokePoint(Vec2(0f, 0f), 2f),
+            StrokePoint(Vec2(10f, 0f), 2f),
+            StrokePoint(Vec2(20f, 0f), 2f),
+        )
+        val normals = strokeNormals(pts) // all (0, 1); half-width = 1
+        val outline = ribbonOutline(pts, normals)
+
+        // Down the left edge (y = +1), then back up the right edge (y = -1).
+        val expected = listOf(
+            Vec2(0f, 1f), Vec2(10f, 1f), Vec2(20f, 1f),
+            Vec2(20f, -1f), Vec2(10f, -1f), Vec2(0f, -1f),
+        )
+        assertEquals(expected.size, outline.size)
+        for (i in expected.indices) {
+            assertEquals("x[$i]", expected[i].x, outline[i].x, eps)
+            assertEquals("y[$i]", expected[i].y, outline[i].y, eps)
+        }
+    }
+
+    @Test
+    fun ribbonOutlineClampsHalfWidthToMinimum() {
+        // width 0.4 -> half-width 0.2 -> clamped up to 0.5.
+        val pts = listOf(
+            StrokePoint(Vec2(0f, 0f), 0.4f),
+            StrokePoint(Vec2(10f, 0f), 0.4f),
+        )
+        val normals = strokeNormals(pts)
+        val outline = ribbonOutline(pts, normals)
+        assertEquals(0.5f, outline.first().y, eps)
+    }
+}
