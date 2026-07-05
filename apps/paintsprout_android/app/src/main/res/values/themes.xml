@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <style name="Theme.Paintsprout" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorPrimary">@color/sproutGreen</item>
+        <item name="colorPrimaryDark">@color/sproutGreen</item>
+        <item name="colorAccent">@color/sproutGreen</item>
+
+        <item name="android:windowBackground">@color/canvasWhite</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowContentOverlay">@null</item>
+    </style>
+
+</resources>
