@@ -53,10 +53,15 @@ Future<void> initSelectionShader() async {
 sealed class PaintOp {}
 
 /// A drawn stroke (pencil, pen, brush, watercolor, …). Re-rendered against the
-/// current surface's tooth when replayed.
+/// current surface's tooth when replayed. If [clip] is set (the stroke was drawn
+/// while a magic-wand selection was active), the stroke's effect is masked to
+/// that region — a frisket — and the clip replays with the op so the constraint
+/// survives surface changes and undo/redo. Strokes drawn under the same
+/// selection share one clip instance so they still batch together.
 class StrokeOp extends PaintOp {
-  StrokeOp(this.stroke);
+  StrokeOp(this.stroke, {this.clip});
   final Stroke stroke;
+  final ui.Image? clip;
 }
 
 /// Fills a magic-wand region with [color], broken up by the surface tooth.
@@ -223,6 +228,14 @@ class _DrawingCanvasState extends State<DrawingCanvas>
   /// buffer resolution. Null when nothing is selected.
   ui.Image? _selectionMask;
 
+  /// The frisket that constrains the pending/preview strokes (and the eraser and
+  /// wet preview) currently on top of [_paint]. Captured from [_selectionMask]
+  /// when a stroke starts, and kept until that content bakes — so it survives the
+  /// selection being dismissed mid-stroke (otherwise the preview would redraw the
+  /// still-unbaked stroke unclipped the instant the mask went away). Null when
+  /// the pending content wasn't drawn under a selection.
+  ui.Image? _strokeClip;
+
   /// Drives the marching-ants animation while a selection is active.
   late final AnimationController _antsController;
 
@@ -353,6 +366,7 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     _paint?.dispose();
     _wetPreview?.dispose();
     _selectionMask?.dispose();
+    _strokeClip?.dispose();
     super.dispose();
   }
 
@@ -470,11 +484,18 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     if (_active != null) return; // already tracking a stroke
     final color =
         widget.tool == Tool.eraser ? widget.paperColor : widget.color;
+    // Capture the frisket this stroke is drawn under. It outlives the live
+    // selection so the preview stays clipped even if the selection is dismissed
+    // before this stroke bakes. Committed ops keep their own clip, so nothing
+    // still references the previous value; drop it.
+    final prevClip = _strokeClip;
     setState(() {
+      _strokeClip = _selectionMask?.clone();
       _activePointer = e.pointer;
       _active = Stroke(widget.tool, color, seed: _rng.nextInt(1 << 30))
         ..add(_sample(e));
     });
+    prevClip?.dispose();
     if (widget.tool == Tool.watercolor) unawaited(_updateWetPreview());
   }
 
@@ -659,7 +680,9 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     }
   }
 
-  /// Clears the current magic-wand selection.
+  /// Clears the current magic-wand selection. Pending strokes keep their own
+  /// frisket ([_strokeClip]), so this doesn't need to flush them — the preview
+  /// stays clipped and they bake correctly even after the ants disappear.
   void _clearSelection() {
     if (_selectionMask == null) return;
     final old = _selectionMask;
@@ -676,8 +699,13 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     _baking = true;
     try {
       final batch = List<Stroke>.from(_unbaked);
-      final newPaint =
-          await _composite(_paint!, [for (final s in batch) StrokeOp(s)]);
+      // These strokes are constrained to the frisket they were drawn under
+      // ([_strokeClip], which persists even if the selection was since dropped).
+      // Clone once, shared across the batch, so the ops still batch together and
+      // the clip replays with them (surface change, undo/redo).
+      final clip = _strokeClip?.clone();
+      final batchOps = [for (final s in batch) StrokeOp(s, clip: clip)];
+      final newPaint = await _composite(_paint!, batchOps);
       if (!mounted) {
         newPaint.dispose();
         return;
@@ -693,7 +721,7 @@ class _DrawingCanvasState extends State<DrawingCanvas>
       setState(() {
         _paint = newPaint;
         _unbaked.removeRange(0, batch.length);
-        _committed.addAll([for (final s in batch) StrokeOp(s)]);
+        _committed.addAll(batchOps);
         if (clearPreview) _wetPreview = null;
       });
       old?.dispose();
@@ -753,18 +781,21 @@ class _DrawingCanvasState extends State<DrawingCanvas>
       final op = ops[i];
       final ui.Image next;
       if (op is StrokeOp && op.stroke.tool == Tool.watercolor) {
-        next = await _compositeWatercolor(current, op.stroke);
+        next = await _compositeStrokes(current, [op.stroke], op.clip,
+            watercolor: true);
         i++;
       } else if (op is StrokeOp) {
-        // Batch a run of consecutive ordinary strokes into one deposit pass.
+        // Batch a run of consecutive ordinary strokes that share a clip.
+        final clip = op.clip;
         final run = <Stroke>[];
         while (i < ops.length &&
             ops[i] is StrokeOp &&
-            (ops[i] as StrokeOp).stroke.tool != Tool.watercolor) {
+            (ops[i] as StrokeOp).stroke.tool != Tool.watercolor &&
+            identical((ops[i] as StrokeOp).clip, clip)) {
           run.add((ops[i] as StrokeOp).stroke);
           i++;
         }
-        next = await _additiveComposite(current, run);
+        next = await _compositeStrokes(current, run, clip, watercolor: false);
       } else if (op is FillOp) {
         next = await _compositeFill(current, op);
         i++;
@@ -779,6 +810,43 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     // No ops: hand back a fresh copy the caller can own/dispose.
     if (!owns) return _additiveComposite(base, const []);
     return current;
+  }
+
+  /// Deposits [strokes] onto [base], optionally masked to [clip] (a frisket, so
+  /// only the part inside the selection survives — outside stays as it was).
+  Future<ui.Image> _compositeStrokes(
+      ui.Image base, List<Stroke> strokes, ui.Image? clip,
+      {required bool watercolor}) async {
+    final full = watercolor
+        ? await _compositeWatercolor(base, strokes.first)
+        : await _additiveComposite(base, strokes);
+    if (clip == null) return full;
+    final out = await _blendMasked(base, full, clip);
+    full.dispose();
+    return out;
+  }
+
+  /// Per-pixel select between [base] (outside [mask]) and [full] (inside it):
+  /// `out = base*(1-m) + full*m`. Constrains an edit to the selection uniformly
+  /// for any tool (additive, eraser, watercolor), since it just chooses the
+  /// pre- or post-edit pixel by mask coverage.
+  Future<ui.Image> _blendMasked(ui.Image base, ui.Image full, ui.Image mask) {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final dst = Rect.fromLTWH(0, 0, _bufW.toDouble(), _bufH.toDouble());
+    final msrc =
+        Rect.fromLTWH(0, 0, mask.width.toDouble(), mask.height.toDouble());
+    // base with a hole punched inside the selection.
+    canvas.drawImage(base, Offset.zero, Paint());
+    canvas.saveLayer(dst, Paint()..blendMode = BlendMode.dstOut);
+    canvas.drawImageRect(mask, msrc, dst, Paint());
+    canvas.restore();
+    // full, kept only inside the selection, dropped into the hole.
+    canvas.saveLayer(dst, Paint());
+    canvas.drawImage(full, Offset.zero, Paint());
+    canvas.drawImageRect(mask, msrc, dst, Paint()..blendMode = BlendMode.dstIn);
+    canvas.restore();
+    return recorder.endRecording().toImage(_bufW, _bufH);
   }
 
   /// Deposits a toothed color fill (masked to the op's region) onto [base].
@@ -996,19 +1064,41 @@ class _DrawingCanvasState extends State<DrawingCanvas>
           onPointerUp: _onUp,
           onPointerCancel: _onUp,
           behavior: HitTestBehavior.opaque,
-          child: CustomPaint(
-            size: size,
-            painter: _CanvasPainter(
-              surface: _surface!,
-              surfaceKind: widget.surface,
-              paintLayer: _paint!,
-              wetPreview: _wetPreview,
-              selectionMask: _selectionMask,
-              antsShader: _antsShader,
-              antsPhase: _antsController,
-              unbaked: _unbaked,
-              active: _active,
-            ),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // Base paint. No RepaintBoundary here: during a stroke this
+              // repaints every frame, and a boundary would force a full-screen
+              // offscreen re-rasterize each time (that stuttered the first
+              // strokes). It's a separate CustomPaint from the overlay, so the
+              // ants animation still can't reach back into it.
+              CustomPaint(
+                size: size,
+                painter: _CanvasPainter(
+                  surface: _surface!,
+                  surfaceKind: widget.surface,
+                  paintLayer: _paint!,
+                  wetPreview: _wetPreview,
+                  clip: _strokeClip,
+                  unbaked: _unbaked,
+                  active: _active,
+                ),
+              ),
+              // Animated selection overlay (dim + marching ants). The
+              // RepaintBoundary contains its per-frame ticks so they repaint
+              // only this cheap layer, never the paint stack above.
+              if (_selectionMask != null)
+                RepaintBoundary(
+                  child: CustomPaint(
+                    size: size,
+                    painter: _SelectionPainter(
+                      selectionMask: _selectionMask!,
+                      antsShader: _antsShader,
+                      antsPhase: _antsController,
+                    ),
+                  ),
+                ),
+            ],
           ),
         );
       },
@@ -1371,12 +1461,10 @@ class _CanvasPainter extends CustomPainter {
     required this.surfaceKind,
     required this.paintLayer,
     required this.wetPreview,
-    required this.selectionMask,
-    required this.antsShader,
-    required this.antsPhase,
+    required this.clip,
     required this.unbaked,
     required this.active,
-  }) : super(repaint: antsPhase);
+  });
 
   final ui.Image surface;
   final SurfaceKind surfaceKind;
@@ -1388,12 +1476,13 @@ class _CanvasPainter extends CustomPainter {
   /// commit), so no on-the-fly wash approximation is needed.
   final ui.Image? wetPreview;
 
-  /// Magic-wand selection mask (white where selected), or null.
-  final ui.Image? selectionMask;
+  /// Frisket for the pending/preview content (white where paint is allowed), or
+  /// null when unconstrained. Distinct from the live selection: it's the mask the
+  /// current strokes were drawn under, so the preview stays clipped even after
+  /// the selection is dismissed. The marching-ants visualization lives in
+  /// [_SelectionPainter] on a separate layer.
+  final ui.Image? clip;
 
-  /// Marching-ants overlay shader, and the animation it reads its phase from.
-  final ui.FragmentShader? antsShader;
-  final Animation<double> antsPhase;
   final List<Stroke> unbaked;
   final Stroke? active;
 
@@ -1409,29 +1498,29 @@ class _CanvasPainter extends CustomPainter {
         dst,
         hq);
 
-    // Paint layer + pending edits, composited in an isolated layer so an
-    // eraser stroke (BlendMode.clear) punches through to reveal the surface
-    // rather than the widget behind the canvas.
-    canvas.saveLayer(dst, Paint());
+    // The edited paint: the committed layer (or its live watercolor composite)
+    // plus any pending strokes rendered on the fly.
     final base = wetPreview ?? paintLayer;
     final baseSrc =
         Rect.fromLTWH(0, 0, base.width.toDouble(), base.height.toDouble());
-    canvas.drawImageRect(base, baseSrc, dst, hq);
+    final paintSrc = Rect.fromLTWH(
+        0, 0, paintLayer.width.toDouble(), paintLayer.height.toDouble());
 
-    if (wetPreview != null) {
-      // The preview already holds every pending watercolor stroke, spectrally
-      // mixed. Only a non-watercolor active stroke (e.g. a pen drawn while a
-      // wash is still baking) needs a live overlay.
-      if (active != null && active!.tool != Tool.watercolor) {
-        paintStroke(canvas, active!, surface: surfaceKind);
+    void drawEdited() {
+      canvas.drawImageRect(base, baseSrc, dst, hq);
+      if (wetPreview != null) {
+        // The preview already holds every pending watercolor stroke, spectrally
+        // mixed. Only a non-watercolor active stroke (e.g. a pen drawn while a
+        // wash is still baking) needs a live overlay.
+        if (active != null && active!.tool != Tool.watercolor) {
+          paintStroke(canvas, active!, surface: surfaceKind);
+        }
+        return;
       }
-    } else {
       // No spectral preview yet: render pending strokes on the fly. A watercolor
       // stroke re-wets the paint beneath it (same wet recipe as the bake, in
       // logical coords) with a cheap multiply approximation of the mix; this
       // only shows for the frame or two before the first spectral preview lands.
-      final paintSrc = Rect.fromLTWH(
-          0, 0, paintLayer.width.toDouble(), paintLayer.height.toDouble());
       void render(Stroke s) {
         if (s.tool == Tool.watercolor) {
           applyWetInteraction(
@@ -1454,17 +1543,71 @@ class _CanvasPainter extends CustomPainter {
       }
       if (active != null) render(active!);
     }
-    canvas.restore();
 
-    _paintSelection(canvas, dst);
+    // Composite the paint in an isolated layer so an eraser stroke
+    // (BlendMode.clear) punches through to reveal the surface rather than the
+    // widget behind the canvas.
+    canvas.saveLayer(dst, Paint());
+    final mask = clip;
+    final hasEdits =
+        wetPreview != null || unbaked.isNotEmpty || active != null;
+    if (mask == null || !hasEdits) {
+      // Unconstrained, or nothing live to constrain — draw the edit straight.
+      drawEdited();
+    } else {
+      // The frisket: pending edits stay inside it. Show the committed paint
+      // outside the frisket, and the edited result inside —
+      // `committed*(1-m) + edited*m` — so strokes (and the eraser) can't spill
+      // past its boundary. Committed edits already carry their own clip, so this
+      // only constrains what's still live on top.
+      final msrc =
+          Rect.fromLTWH(0, 0, mask.width.toDouble(), mask.height.toDouble());
+      canvas.saveLayer(dst, Paint());
+      canvas.drawImageRect(paintLayer, paintSrc, dst, hq);
+      canvas.drawImageRect(
+          mask, msrc, dst, Paint()..blendMode = BlendMode.dstOut);
+      canvas.restore();
+      canvas.saveLayer(dst, Paint());
+      drawEdited();
+      canvas.drawImageRect(
+          mask, msrc, dst, Paint()..blendMode = BlendMode.dstIn);
+      canvas.restore();
+    }
+    canvas.restore();
   }
 
-  /// Draws the magic-wand selection: dims outside it and animates marching ants
-  /// along the border (via the overlay shader). Falls back to a dim/tint overlay
-  /// if the shader didn't load.
-  void _paintSelection(Canvas canvas, Rect dst) {
+  @override
+  bool shouldRepaint(_CanvasPainter old) =>
+      old.surface != surface ||
+      old.surfaceKind != surfaceKind ||
+      old.paintLayer != paintLayer ||
+      old.wetPreview != wetPreview ||
+      old.clip != clip ||
+      old.active != active ||
+      old.unbaked.length != unbaked.length ||
+      (active != null && active!.points.length != (old.active?.points.length ?? -1));
+}
+
+/// Paints the magic-wand selection visualization on its own layer: dims outside
+/// the selection and animates marching ants along the border (via the overlay
+/// shader). Kept separate from [_CanvasPainter] and driven by [antsPhase] so the
+/// per-frame animation repaints only this cheap overlay, never the paint stack.
+/// Falls back to a dim/tint overlay if the shader didn't load.
+class _SelectionPainter extends CustomPainter {
+  _SelectionPainter({
+    required this.selectionMask,
+    required this.antsShader,
+    required this.antsPhase,
+  }) : super(repaint: antsPhase);
+
+  final ui.Image selectionMask;
+  final ui.FragmentShader? antsShader;
+  final Animation<double> antsPhase;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final dst = Rect.fromLTWH(0, 0, size.width, size.height);
     final mask = selectionMask;
-    if (mask == null) return;
     final src =
         Rect.fromLTWH(0, 0, mask.width.toDouble(), mask.height.toDouble());
 
@@ -1494,13 +1637,6 @@ class _CanvasPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_CanvasPainter old) =>
-      old.surface != surface ||
-      old.surfaceKind != surfaceKind ||
-      old.paintLayer != paintLayer ||
-      old.wetPreview != wetPreview ||
-      old.selectionMask != selectionMask ||
-      old.active != active ||
-      old.unbaked.length != unbaked.length ||
-      (active != null && active!.points.length != (old.active?.points.length ?? -1));
+  bool shouldRepaint(_SelectionPainter old) =>
+      old.selectionMask != selectionMask || old.antsShader != antsShader;
 }
