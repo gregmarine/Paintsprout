@@ -10,6 +10,7 @@ import 'tools.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initGrains();
+  await initPigmentShader();
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
