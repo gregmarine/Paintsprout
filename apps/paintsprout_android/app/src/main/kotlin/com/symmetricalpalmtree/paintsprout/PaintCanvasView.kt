@@ -10,6 +10,7 @@ import android.view.MotionEvent
 import android.view.View
 import androidx.annotation.ColorInt
 import androidx.core.graphics.createBitmap
+import com.symmetricalpalmtree.paintsprout.paint.PigmentMixer
 import com.symmetricalpalmtree.paintsprout.paint.Stroke
 import com.symmetricalpalmtree.paintsprout.paint.StrokePoint
 import com.symmetricalpalmtree.paintsprout.paint.StrokeRenderer
@@ -84,6 +85,17 @@ class PaintCanvasView @JvmOverloads constructor(
     // --- Baking -------------------------------------------------------------
     private var baking = false
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /**
+     * Spectral pigment-mixing shader source (res/raw/pigment_mix.agsl), loaded
+     * once. Null if it fails to load, in which case watercolor falls back to a
+     * plain over-composite (no true pigment mixing).
+     */
+    private val pigmentAgsl: String? by lazy {
+        runCatching {
+            resources.openRawResource(R.raw.pigment_mix).bufferedReader().use { it.readText() }
+        }.getOrNull()
+    }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
@@ -248,13 +260,28 @@ class PaintCanvasView @JvmOverloads constructor(
         val batch = unbaked.toList()
         scope.launch {
             val next = withContext(Dispatchers.Default) {
-                val out = createBitmap(bufW, bufH)
-                Canvas(out).apply {
-                    drawBitmap(base, 0f, 0f, null)
-                    scale(SUPER_SAMPLE, SUPER_SAMPLE)
-                    for (s in batch) StrokeRenderer.paintStroke(this, s, surface)
+                // Start from a copy of the committed paint, then fold in each
+                // stroke in order. Ordinary strokes deposit directly; a watercolor
+                // stroke reads the paint underneath and mixes spectrally.
+                var cur = createBitmap(bufW, bufH)
+                Canvas(cur).drawBitmap(base, 0f, 0f, null)
+                for (s in batch) {
+                    if (s.tool == Tool.WATERCOLOR) {
+                        val mixed = compositeWatercolor(cur, s)
+                        if (mixed !== cur) {
+                            cur.recycle()
+                            cur = mixed
+                        }
+                    } else {
+                        Canvas(cur).apply {
+                            save()
+                            scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                            StrokeRenderer.paintStroke(this, s, surface)
+                            restore()
+                        }
+                    }
                 }
-                out
+                cur
             }
             val old = paintBmp
             paintBmp = next
@@ -264,6 +291,38 @@ class PaintCanvasView @JvmOverloads constructor(
             invalidate()
             if (unbaked.isNotEmpty()) kickBake()
         }
+    }
+
+    /**
+     * Composites one watercolor stroke: renders the wash, then blends it onto
+     * [base] through the spectral pigment mixer. Falls back to a plain over-
+     * composite if the shader failed to load or the GPU render throws. Runs on
+     * the bake thread. Returns a new bitmap (never recycles [base]).
+     */
+    private fun compositeWatercolor(base: Bitmap, stroke: Stroke): Bitmap {
+        val wash = createBitmap(bufW, bufH)
+        Canvas(wash).apply {
+            scale(SUPER_SAMPLE, SUPER_SAMPLE)
+            StrokeRenderer.paintStroke(this, stroke, surface)
+        }
+        val agsl = pigmentAgsl
+        val result = if (agsl == null) {
+            overComposite(base, wash)
+        } else {
+            runCatching { PigmentMixer.mix(agsl, base, wash) }.getOrElse { overComposite(base, wash) }
+        }
+        wash.recycle()
+        return result
+    }
+
+    /** Plain over-composite of [wash] onto [base] (the no-shader fallback). */
+    private fun overComposite(base: Bitmap, wash: Bitmap): Bitmap {
+        val out = createBitmap(bufW, bufH)
+        Canvas(out).apply {
+            drawBitmap(base, 0f, 0f, null)
+            drawBitmap(wash, 0f, 0f, null)
+        }
+        return out
     }
 
     /** Clears painted strokes, keeping the surface. */
