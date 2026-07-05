@@ -32,13 +32,28 @@ Future<void> initPigmentShader() async {
   }
 }
 
-/// Handle the toolbar uses to drive the canvas (clear / save).
+/// Handle the toolbar uses to drive the canvas (clear / save / history).
 class DrawingController {
   _DrawingCanvasState? _state;
+
+  /// Set by the screen while it applies an undo/redo snapshot, so the canvas's
+  /// prop-driven surface regeneration doesn't fire a second, redundant rebuild
+  /// on top of the atomic [restore] the snapshot already performs.
+  bool _suppressRegen = false;
 
   bool get isReady => _state?._paint != null;
 
   Future<void> clear() async => _state?._clear();
+
+  /// A snapshot of the committed strokes, for the undo/redo history. Strokes are
+  /// immutable once committed, so the list shares their instances (cheap).
+  List<Stroke> strokes() => _state?._strokesForHistory() ?? const [];
+
+  /// Restores a document snapshot atomically: rebuilds the surface for
+  /// [surface]/[plainColor] and re-composites [strokes] in one pass.
+  Future<void> restore(
+          SurfaceKind surface, Color plainColor, List<Stroke> strokes) async =>
+      _state?._restoreDocument(surface, plainColor, strokes);
 
   /// Bakes any pending strokes and saves the canvas as a PNG in the device
   /// Gallery (Paintsprout album). Returns a short human-readable location.
@@ -64,6 +79,9 @@ class DrawingCanvas extends StatefulWidget {
     this.surface = SurfaceKind.paper,
     this.plainColor = Colors.white,
     this.paperColor = Colors.white,
+    this.onCommitted,
+    this.onUndoGesture,
+    this.onRedoGesture,
     this.debugPencilSample = false,
   });
 
@@ -76,6 +94,16 @@ class DrawingCanvas extends StatefulWidget {
   /// Background color for the Plain surface (ignored by textured surfaces).
   final Color plainColor;
   final Color paperColor;
+
+  /// Called after a stroke is baked into the paint layer, so the screen can
+  /// record an undo step.
+  final VoidCallback? onCommitted;
+
+  /// Touch gestures for history: a two-finger tap fires [onUndoGesture], a
+  /// three-finger tap fires [onRedoGesture] (drawing is stylus-only, so touch
+  /// is free for these).
+  final VoidCallback? onUndoGesture;
+  final VoidCallback? onRedoGesture;
 
   /// When true, bakes synthetic pencil sample strokes on init so the pencil
   /// look can be verified on-device without a stylus. Temporary/dev only.
@@ -119,6 +147,18 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
   bool _previewing = false; // a preview composite is in flight
   bool _previewDirty = false; // the stroke changed while a preview was running
 
+  // --- Touch gesture tracking --------------------------------------------
+  // Two-finger double-tap = undo, three-finger double-tap = redo.
+  final Map<int, Offset> _touchStart = {}; // active touch pointers -> down pos
+  int _touchMaxCount = 0; // most fingers down at once this session
+  DateTime? _touchSessionStart;
+  bool _touchMoved = false; // any finger dragged past the tap slop
+  static const double _touchTapSlop = 18.0;
+  // Pending first tap of a potential double-tap.
+  int _pendingTapCount = 0;
+  DateTime? _pendingTapTime;
+  static const Duration _doubleTapWindow = Duration(milliseconds: 450);
+
   Size _logicalSize = Size.zero;
 
   @override
@@ -135,8 +175,14 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
     final surfaceChanged = widget.surface != old.surface;
     final plainRecolored = widget.surface == SurfaceKind.plain &&
         widget.plainColor != old.plainColor;
-    if ((surfaceChanged || plainRecolored) && _paint != null) {
-      unawaited(_regenerateSurface());
+    if (surfaceChanged || plainRecolored) {
+      // An undo/redo already rebuilt the surface via restore(); consume the
+      // suppress flag so we don't rebuild it a second time here.
+      if (widget.controller._suppressRegen) {
+        widget.controller._suppressRegen = false;
+        return;
+      }
+      if (_paint != null) unawaited(_regenerateSurface());
     }
   }
 
@@ -161,6 +207,51 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
     });
     oldS?.dispose();
     oldP?.dispose();
+  }
+
+  /// Snapshot of the committed strokes for the undo/redo history.
+  List<Stroke> _strokesForHistory() => List.of(_committed);
+
+  /// Restores a document snapshot: rebuilds the surface for [surface]/
+  /// [plainColor] and re-composites [strokes], in a single pass. Used by
+  /// undo/redo so surface and strokes come back together without a double
+  /// rebuild (see the _suppressRegen guard in didUpdateWidget).
+  Future<void> _restoreDocument(
+      SurfaceKind surface, Color plainColor, List<Stroke> strokes) async {
+    if (_paint == null) return;
+    // If the restored surface differs from the current props, the screen's
+    // matching setState will trigger didUpdateWidget; flag it so that pass
+    // skips its own rebuild (we do the one rebuild here).
+    final willRegen = surface != widget.surface ||
+        (surface == SurfaceKind.plain && plainColor != widget.plainColor);
+    if (willRegen) widget.controller._suppressRegen = true;
+    final surfaceImg =
+        await buildSurfaceVisual(surface, _bufW, _bufH, plainColor: plainColor);
+    _committed
+      ..clear()
+      ..addAll(strokes);
+    _unbaked.clear();
+    _active = null;
+    _activePointer = null;
+    final blank = await _blankPaint();
+    final paintImg = await _composite(blank, _committed);
+    blank.dispose();
+    if (!mounted) {
+      surfaceImg.dispose();
+      paintImg.dispose();
+      return;
+    }
+    final oldS = _surface;
+    final oldP = _paint;
+    final oldPrev = _wetPreview;
+    setState(() {
+      _surface = surfaceImg;
+      _paint = paintImg;
+      _wetPreview = null;
+    });
+    oldS?.dispose();
+    oldP?.dispose();
+    oldPrev?.dispose();
   }
 
   @override
@@ -271,7 +362,10 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
       kind == ui.PointerDeviceKind.invertedStylus;
 
   void _onDown(PointerDownEvent e) {
-    if (!_isStylus(e.kind)) return;
+    if (!_isStylus(e.kind)) {
+      _onTouchDown(e);
+      return;
+    }
     if (_active != null) return; // already tracking a stroke
     final color =
         widget.tool == Tool.eraser ? widget.paperColor : widget.color;
@@ -284,12 +378,20 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
   }
 
   void _onMove(PointerMoveEvent e) {
+    if (!_isStylus(e.kind)) {
+      _onTouchMove(e);
+      return;
+    }
     if (_active == null || e.pointer != _activePointer) return;
     setState(() => _active!.add(_sample(e)));
     if (_active!.tool == Tool.watercolor) unawaited(_updateWetPreview());
   }
 
   void _onUp(PointerEvent e) {
+    if (!_isStylus(e.kind)) {
+      _onTouchUp(e);
+      return;
+    }
     if (_active == null || e.pointer != _activePointer) return;
     setState(() {
       _unbaked.add(_active!);
@@ -297,6 +399,58 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
       _activePointer = null;
     });
     unawaited(_bake());
+  }
+
+  // --- Touch gestures: 2-finger tap = undo, 3-finger tap = redo -------------
+
+  void _onTouchDown(PointerDownEvent e) {
+    if (_touchStart.isEmpty) {
+      _touchSessionStart = DateTime.now();
+      _touchMaxCount = 0;
+      _touchMoved = false;
+    }
+    _touchStart[e.pointer] = e.localPosition;
+    if (_touchStart.length > _touchMaxCount) _touchMaxCount = _touchStart.length;
+  }
+
+  void _onTouchMove(PointerMoveEvent e) {
+    final start = _touchStart[e.pointer];
+    if (start == null) return;
+    if ((e.localPosition - start).distance > _touchTapSlop) _touchMoved = true;
+  }
+
+  void _onTouchUp(PointerEvent e) {
+    if (_touchStart.remove(e.pointer) == null) return;
+    if (_touchStart.isNotEmpty) return; // still fingers down; wait for all up
+    final now = DateTime.now();
+    final duration = _touchSessionStart == null
+        ? Duration.zero
+        : now.difference(_touchSessionStart!);
+    final tapped = !_touchMoved && duration < const Duration(milliseconds: 400);
+    final count = _touchMaxCount;
+    _touchSessionStart = null;
+    _touchMaxCount = 0;
+    _touchMoved = false;
+    if (!tapped || (count != 2 && count != 3)) {
+      _pendingTapCount = 0;
+      return;
+    }
+    // Second matching tap within the window completes a double-tap.
+    if (_pendingTapCount == count &&
+        _pendingTapTime != null &&
+        now.difference(_pendingTapTime!) < _doubleTapWindow) {
+      _pendingTapCount = 0;
+      _pendingTapTime = null;
+      if (count == 2) {
+        widget.onUndoGesture?.call();
+      } else {
+        widget.onRedoGesture?.call();
+      }
+    } else {
+      // First tap — remember it and wait for the second.
+      _pendingTapCount = count;
+      _pendingTapTime = now;
+    }
   }
 
   // --- Baking -------------------------------------------------------------
@@ -330,7 +484,12 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
     } finally {
       _baking = false;
     }
-    if (_unbaked.isNotEmpty) unawaited(_bake());
+    if (_unbaked.isNotEmpty) {
+      unawaited(_bake());
+    } else {
+      // A batch fully committed — record an undo step for the drawn stroke(s).
+      widget.onCommitted?.call();
+    }
   }
 
   /// Recomputes the live watercolor preview: the committed paint with all

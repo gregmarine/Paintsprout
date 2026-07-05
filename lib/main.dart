@@ -49,12 +49,63 @@ class _CanvasScreenState extends State<CanvasScreen> {
   Color _plainColor = Colors.white;
   bool _railVisible = true;
 
+  // Undo/redo: snapshots of the whole document (surface, background color, and
+  // strokes). Every undoable action pushes one; undo/redo walk [_histIndex].
+  final List<_Snapshot> _history = [];
+  int _histIndex = -1;
+  bool _applyingHistory = false; // suppress recording while restoring a snapshot
+
+  bool get _canUndo => _histIndex > 0;
+  bool get _canRedo => _histIndex >= 0 && _histIndex < _history.length - 1;
+
   // Each tool remembers its own base size.
   final Map<Tool, double> _sizes = {
     for (final t in Tool.values) t: t.defaultSize,
   };
 
   double get _size => _sizes[_tool]!;
+
+  @override
+  void initState() {
+    super.initState();
+    // Seed history with the initial blank document so undo can reach it.
+    _history.add(_Snapshot(_surfaceKind, _plainColor, const []));
+    _histIndex = 0;
+  }
+
+  /// Records the current document as a new undo step (dropping any redo tail).
+  void _record() {
+    if (_applyingHistory) return;
+    if (_histIndex < _history.length - 1) {
+      _history.removeRange(_histIndex + 1, _history.length);
+    }
+    _history.add(_Snapshot(_surfaceKind, _plainColor, _controller.strokes()));
+    _histIndex = _history.length - 1;
+    setState(() {}); // refresh undo/redo affordances
+  }
+
+  Future<void> _undo() async {
+    if (!_canUndo) return;
+    _histIndex--;
+    await _applySnapshot(_history[_histIndex]);
+  }
+
+  Future<void> _redo() async {
+    if (!_canRedo) return;
+    _histIndex++;
+    await _applySnapshot(_history[_histIndex]);
+  }
+
+  Future<void> _applySnapshot(_Snapshot s) async {
+    _applyingHistory = true;
+    setState(() {
+      _surfaceKind = s.surface;
+      _plainColor = s.plainColor;
+    });
+    await _controller.restore(s.surface, s.plainColor, s.strokes);
+    _applyingHistory = false;
+    if (mounted) setState(() {}); // refresh undo/redo affordances
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -70,6 +121,9 @@ class _CanvasScreenState extends State<CanvasScreen> {
               baseSize: _size,
               surface: _surfaceKind,
               plainColor: _plainColor,
+              onCommitted: _record,
+              onUndoGesture: _undo,
+              onRedoGesture: _redo,
             ),
           ),
           Positioned(
@@ -82,10 +136,14 @@ class _CanvasScreenState extends State<CanvasScreen> {
                     color: _color,
                     size: _size,
                     surface: _surfaceKind,
+                    canUndo: _canUndo,
+                    canRedo: _canRedo,
                     onToolChanged: (t) => setState(() => _tool = t),
                     onPickColor: _pickColor,
                     onPickSize: _pickSize,
                     onPickSurface: _pickSurface,
+                    onUndo: _undo,
+                    onRedo: _redo,
                     onSave: _save,
                     onClear: _clear,
                     onHide: () => setState(() => _railVisible = false),
@@ -213,6 +271,8 @@ class _CanvasScreenState extends State<CanvasScreen> {
       ),
     );
     if (chosen != null) {
+      final oldSurface = _surfaceKind;
+      final oldColor = _plainColor;
       // Plain always opens the color chooser (so you can recolor it too);
       // other surfaces just switch.
       if (chosen == SurfaceKind.plain) {
@@ -221,6 +281,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
       } else if (chosen != _surfaceKind) {
         setState(() => _surfaceKind = chosen);
       }
+      if (_surfaceKind != oldSurface || _plainColor != oldColor) _record();
     }
   }
 
@@ -277,7 +338,10 @@ class _CanvasScreenState extends State<CanvasScreen> {
         ],
       ),
     );
-    if (ok == true) await _controller.clear();
+    if (ok == true) {
+      await _controller.clear();
+      _record();
+    }
   }
 
   static const List<Color> _swatches = [
@@ -302,16 +366,30 @@ class _CanvasScreenState extends State<CanvasScreen> {
   ];
 }
 
+/// One entry in the undo/redo history: a full document snapshot. Committed
+/// strokes are immutable, so the list just shares their instances.
+class _Snapshot {
+  const _Snapshot(this.surface, this.plainColor, this.strokes);
+
+  final SurfaceKind surface;
+  final Color plainColor;
+  final List<Stroke> strokes;
+}
+
 class _ToolRail extends StatelessWidget {
   const _ToolRail({
     required this.tool,
     required this.color,
     required this.size,
     required this.surface,
+    required this.canUndo,
+    required this.canRedo,
     required this.onToolChanged,
     required this.onPickColor,
     required this.onPickSize,
     required this.onPickSurface,
+    required this.onUndo,
+    required this.onRedo,
     required this.onSave,
     required this.onClear,
     required this.onHide,
@@ -321,10 +399,14 @@ class _ToolRail extends StatelessWidget {
   final Color color;
   final double size;
   final SurfaceKind surface;
+  final bool canUndo;
+  final bool canRedo;
   final ValueChanged<Tool> onToolChanged;
   final VoidCallback onPickColor;
   final VoidCallback onPickSize;
   final VoidCallback onPickSurface;
+  final VoidCallback onUndo;
+  final VoidCallback onRedo;
   final VoidCallback onSave;
   final VoidCallback onClear;
   final VoidCallback onHide;
@@ -386,6 +468,15 @@ class _ToolRail extends StatelessWidget {
               onPressed: onPickSurface,
               icon: Icon(surface.icon),
             ),
+            const Divider(height: 12, indent: 8, endIndent: 8),
+            IconButton(
+                tooltip: 'Undo (two-finger double-tap)',
+                onPressed: canUndo ? onUndo : null,
+                icon: const Icon(Icons.undo)),
+            IconButton(
+                tooltip: 'Redo (three-finger double-tap)',
+                onPressed: canRedo ? onRedo : null,
+                icon: const Icon(Icons.redo)),
             const Divider(height: 12, indent: 8, endIndent: 8),
             IconButton(
                 tooltip: 'Save PNG',
