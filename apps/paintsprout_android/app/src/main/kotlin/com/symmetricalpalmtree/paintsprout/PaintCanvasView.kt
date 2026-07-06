@@ -121,12 +121,43 @@ class PaintCanvasView @JvmOverloads constructor(
     private val unbakedClips = mutableListOf<Bitmap?>()
     private var pressureMax = 1.0f
 
+    /**
+     * Live watercolor wet preview: the spectral composite of the committed paint
+     * plus the in-progress strokes, computed off-thread while drawing so the wet
+     * bleed appears under the pen instead of only on lift. Port of Flutter's
+     * `_wetPreview` / `_updateWetPreview` ([previewing]/[previewDirty] coalesce so
+     * only one composite runs at a time).
+     */
+    private var wetPreview: Bitmap? = null
+    private var previewing = false
+    private var previewDirty = false
+
+    /**
+     * Incremental accumulation buffer for the active spray stroke. Spray redraws
+     * as many blurred segments as the stroke is long, so redrawing the whole
+     * stroke every frame is O(n²) and janks on long strokes; instead we append
+     * only the new segments here each frame and blit this once. [accumDrawn] is
+     * how many of the stroke's points are already in it.
+     */
+    private var activeAccum: Bitmap? = null
+    private var accumDrawn = 0
+
     // --- History ------------------------------------------------------------
     private val committed = mutableListOf<PaintOp>()
     private val redoStack = mutableListOf<PaintOp>()
     var onHistoryChanged: (() -> Unit)? = null
     val canUndo: Boolean get() = committed.isNotEmpty()
     val canRedo: Boolean get() = redoStack.isNotEmpty()
+
+    /**
+     * Paint-layer snapshots keyed by op count (state after that many committed
+     * ops), taken every [CHECKPOINT_STRIDE] ops. An undo/redo rebuild starts from
+     * the nearest checkpoint ≤ the target and replays only the remainder, so it
+     * never re-runs the whole (watercolor-heavy) history. Bounded to
+     * [MAX_CHECKPOINTS] most-recent — a rebuild before the earliest just replays
+     * from blank.
+     */
+    private val checkpoints = java.util.TreeMap<Int, Bitmap>()
 
     // --- Magic-wand selection -----------------------------------------------
     /** White where selected (half-buffer resolution), or null when unselected. */
@@ -215,6 +246,10 @@ class PaintCanvasView @JvmOverloads constructor(
         unbaked.clear()
         unbakedClips.clear()
         active = null
+        endActiveExtras()
+        wetPreview?.recycle()
+        wetPreview = null
+        recycleCheckpoints()
         clearSelectionState()
         invalidate()
         regenerateSurface()
@@ -271,14 +306,29 @@ class PaintCanvasView @JvmOverloads constructor(
         val paintLayer = paintBmp ?: return
         val liveClip = activeClip ?: unbakedClips.lastOrNull { it != null }
         val hasEdits = unbaked.isNotEmpty() || active != null
+        // The wet preview already holds the committed paint + the watercolor
+        // strokes, spectrally mixed, so it fully replaces the paint layer.
+        val wet = wetPreview
+
+        // Draws the edited paint: the wet preview if present (only a non-watercolor
+        // active stroke needs a live overlay on top of it), else the committed
+        // paint plus the pending strokes rendered on the fly.
+        fun drawEdited() {
+            if (wet != null) {
+                canvas.drawBitmap(wet, srcRect, dstRect, null)
+                active?.let { if (it.tool != Tool.WATERCOLOR) StrokeRenderer.paintStroke(canvas, it, surface) }
+            } else {
+                canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
+                for (s in unbaked) drawLiveStroke(canvas, s, isActive = false)
+                active?.let { drawLiveStroke(canvas, it, isActive = true) }
+            }
+        }
 
         // Isolated layer so an eraser stroke (CLEAR) punches through to the surface
         // rather than the window behind the view.
         val layer = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
         if (liveClip == null || !hasEdits) {
-            canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
-            for (s in unbaked) StrokeRenderer.paintStroke(canvas, s, surface)
-            active?.let { StrokeRenderer.paintStroke(canvas, it, surface) }
+            drawEdited()
         } else {
             // Frisket: committed paint outside the selection, the edited result
             // inside — `committed*(1-m) + edited*m` — so live strokes (and the
@@ -289,15 +339,51 @@ class PaintCanvasView @JvmOverloads constructor(
             canvas.drawBitmap(liveClip, mSrc, dstRect, dstOutPaint)
             canvas.restoreToCount(punch)
             val inside = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
-            canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
-            for (s in unbaked) StrokeRenderer.paintStroke(canvas, s, surface)
-            active?.let { StrokeRenderer.paintStroke(canvas, it, surface) }
+            drawEdited()
             canvas.drawBitmap(liveClip, mSrc, dstRect, dstInPaint)
             canvas.restoreToCount(inside)
         }
         canvas.restoreToCount(layer)
 
         drawSelectionOverlay(canvas)
+    }
+
+    /**
+     * Draws one pending stroke in the live preview. The active spray stroke uses
+     * the incremental [activeAccum] (append-only) to stay fast on long strokes;
+     * everything else renders straight.
+     */
+    private fun drawLiveStroke(canvas: Canvas, s: Stroke, isActive: Boolean) {
+        if (isActive && s.tool == Tool.SPRAY && activeAccum != null) {
+            ensureSprayAccum(s)
+            blitSprayAccum(canvas)
+        } else {
+            StrokeRenderer.paintStroke(canvas, s, surface)
+        }
+    }
+
+    /** Appends any not-yet-drawn spray segments to [activeAccum]. */
+    private fun ensureSprayAccum(stroke: Stroke) {
+        val accum = activeAccum ?: return
+        if (stroke.points.size <= accumDrawn && accumDrawn > 0) return
+        StrokeRenderer.appendSoftSegments(Canvas(accum), stroke, accumDrawn)
+        accumDrawn = stroke.points.size
+    }
+
+    /** Blits the spray accumulation with the tool's opacity + surface tooth. */
+    private fun blitSprayAccum(canvas: Canvas) {
+        val accum = activeAccum ?: return
+        val opacity = com.symmetricalpalmtree.paintsprout.paint.ToolProfile.of(Tool.SPRAY).opacity
+        val tooth = ToothCache.toothFor(surface, Tool.SPRAY)
+        val lp = Paint().apply { alpha = (opacity * 255f).roundToInt().coerceIn(0, 255) }
+        val layer = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), lp)
+        canvas.drawBitmap(accum, 0f, 0f, null)
+        if (tooth != null) {
+            com.symmetricalpalmtree.paintsprout.paint.applyTooth(
+                canvas, RectF(0f, 0f, width.toFloat(), height.toFloat()), tooth, surface.toothScale,
+            )
+        }
+        canvas.restoreToCount(layer)
     }
 
     /** Marching ants over the selection, or the transform frame while floating. */
@@ -404,6 +490,8 @@ class PaintCanvasView @JvmOverloads constructor(
                 active = Stroke(tool, color, seed = Random.nextInt()).apply {
                     add(sample(event, actionIndex))
                 }
+                beginActiveExtras()
+                if (tool == Tool.WATERCOLOR) updateWetPreview()
                 invalidate()
                 return true
             }
@@ -420,6 +508,7 @@ class PaintCanvasView @JvmOverloads constructor(
                     stroke.add(sampleHistorical(event, pi, h))
                 }
                 stroke.add(sample(event, pi))
+                if (stroke.tool == Tool.WATERCOLOR) updateWetPreview()
                 invalidate()
                 return true
             }
@@ -436,6 +525,7 @@ class PaintCanvasView @JvmOverloads constructor(
                     active = null
                     activeClip = null
                     activePointerId = INVALID_POINTER
+                    endActiveExtras()
                     kickBake()
                     invalidate()
                 }
@@ -543,6 +633,70 @@ class PaintCanvasView @JvmOverloads constructor(
         return StrokePoint(Vec2(x, y), width, density)
     }
 
+    /** Sets up per-stroke live-preview scratch (the spray accumulation buffer). */
+    private fun beginActiveExtras() {
+        activeAccum?.recycle()
+        activeAccum = null
+        accumDrawn = 0
+        if (active?.tool == Tool.SPRAY && width > 0 && height > 0) {
+            activeAccum = createBitmap(width, height)
+        }
+    }
+
+    /** Tears down per-stroke live-preview scratch on pointer-up. */
+    private fun endActiveExtras() {
+        activeAccum?.recycle()
+        activeAccum = null
+        accumDrawn = 0
+    }
+
+    /**
+     * Recomputes the live watercolor wet preview off-thread (paint + pending
+     * strokes, spectrally composited). Coalesced: while one runs, a later request
+     * just marks it dirty so exactly one recompute is queued. Port of Flutter's
+     * `_updateWetPreview`.
+     */
+    private fun updateWetPreview() {
+        if (previewing) {
+            previewDirty = true
+            return
+        }
+        val base = paintBmp ?: return
+        // Snapshot the strokes (copy point lists) on the main thread so the
+        // off-thread composite never reads a stroke that's still growing.
+        val snapshot = buildList {
+            for (s in unbaked) add(s.snapshot())
+            active?.let { add(it.snapshot()) }
+        }
+        if (snapshot.none { it.tool == Tool.WATERCOLOR }) return
+        previewing = true
+        val baseCopy = base.copy(Bitmap.Config.ARGB_8888, true)
+        scope.launch {
+            val img = withContext(Dispatchers.Default) {
+                foldOps(baseCopy, snapshot.map { StrokeOp(it) })
+            }
+            // The stroke may have already committed (and cleared the preview) while
+            // this composite ran — drop a stale result rather than double-drawing.
+            if (active?.tool != Tool.WATERCOLOR && unbaked.none { it.tool == Tool.WATERCOLOR }) {
+                img.recycle()
+                previewing = false
+                return@launch
+            }
+            val old = wetPreview
+            wetPreview = img
+            old?.recycle()
+            previewing = false
+            invalidate()
+            if (previewDirty) {
+                previewDirty = false
+                updateWetPreview()
+            }
+        }
+    }
+
+    private fun Stroke.snapshot(): Stroke =
+        Stroke(tool, color, seed).also { it.points.addAll(points) }
+
     // --- Baking -------------------------------------------------------------
 
     private fun kickBake() {
@@ -562,7 +716,14 @@ class PaintCanvasView @JvmOverloads constructor(
             unbakedClips.subList(0, batch.size).clear()
             committed.addAll(ops)
             clearRedo()
+            storeCheckpoint(committed.size, next)
             old?.recycle()
+            // The baked paint now contains these strokes; drop the wet preview so
+            // onDraw shows the committed result (no double-draw).
+            if (unbaked.isEmpty()) {
+                wetPreview?.recycle()
+                wetPreview = null
+            }
             baking = false
             invalidate()
             onHistoryChanged?.invoke()
@@ -654,14 +815,19 @@ class PaintCanvasView @JvmOverloads constructor(
 
     private fun rebuild() {
         rebuilding = true
-        val ops = committed.toList()
+        val target = committed.size
+        val startIdx = checkpoints.floorKey(target) ?: 0
+        val startBmp = if (startIdx == 0) null else checkpoints[startIdx]
+        val ops = committed.subList(startIdx, target).toList()
         scope.launch {
             val next = withContext(Dispatchers.Default) {
-                foldOps(createBitmap(bufW, bufH), ops)
+                val base = startBmp?.copy(Bitmap.Config.ARGB_8888, true) ?: createBitmap(bufW, bufH)
+                foldOps(base, ops)
             }
             val old = paintBmp
             paintBmp = next
             old?.recycle()
+            storeCheckpoint(target, next)
             rebuilding = false
             invalidate()
             onHistoryChanged?.invoke()
@@ -672,6 +838,26 @@ class PaintCanvasView @JvmOverloads constructor(
     private fun clearRedo() {
         for (op in redoStack) op.recycle()
         redoStack.clear()
+        dropCheckpointsAfter(committed.size)
+    }
+
+    /** Snapshots the paint at [index] ops (a copy of [source]) if it's on-stride. */
+    private fun storeCheckpoint(index: Int, source: Bitmap) {
+        if (index <= 0 || index % CHECKPOINT_STRIDE != 0 || checkpoints.containsKey(index)) return
+        checkpoints[index] = source.copy(Bitmap.Config.ARGB_8888, false)
+        while (checkpoints.size > MAX_CHECKPOINTS) {
+            checkpoints.remove(checkpoints.firstKey())?.recycle()
+        }
+    }
+
+    /** Invalidates checkpoints past [index] (history diverged there). */
+    private fun dropCheckpointsAfter(index: Int) {
+        for (k in checkpoints.tailMap(index + 1).keys.toList()) checkpoints.remove(k)?.recycle()
+    }
+
+    private fun recycleCheckpoints() {
+        for (b in checkpoints.values) b.recycle()
+        checkpoints.clear()
     }
 
     // --- Selection ops ------------------------------------------------------
@@ -764,6 +950,7 @@ class PaintCanvasView @JvmOverloads constructor(
         paintBmp = next
         committed.add(op)
         clearRedo()
+        storeCheckpoint(committed.size, next)
         old?.recycle()
         invalidate()
         onHistoryChanged?.invoke()
@@ -917,6 +1104,7 @@ class PaintCanvasView @JvmOverloads constructor(
         paintBmp = newPaint
         committed.add(op)
         clearRedo()
+        storeCheckpoint(committed.size, newPaint)
         if (movedMask != null) selectionMask = movedMask
         selRect.set(newRect)
         floating = null
@@ -1113,9 +1301,13 @@ class PaintCanvasView @JvmOverloads constructor(
         active = null
         activeClip?.recycle()
         activeClip = null
+        endActiveExtras()
+        wetPreview?.recycle()
+        wetPreview = null
         for (op in committed) op.recycle()
         committed.clear()
         clearRedo()
+        recycleCheckpoints()
         clearSelectionState()
         onSelectionChanged?.invoke(false)
         paintBmp = createBitmap(bufW, bufH)
@@ -1128,10 +1320,16 @@ class PaintCanvasView @JvmOverloads constructor(
         super.onDetachedFromWindow()
         antsAnimator.cancel()
         scope.cancel()
+        recycleCheckpoints()
+        wetPreview?.recycle()
+        wetPreview = null
+        activeAccum?.recycle()
+        activeAccum = null
         surfaceBmp?.recycle()
         paintBmp?.recycle()
         surfaceBmp = null
         paintBmp = null
+        GpuRender.release()
     }
 
     /**
@@ -1171,6 +1369,11 @@ class PaintCanvasView @JvmOverloads constructor(
         const val INVALID_POINTER = -1
         const val WET_DILUTE_ALPHA = 128
         const val SUPER_SAMPLE = 1.0f
+
+        // Undo/redo: keep a paint snapshot every STRIDE ops, at most MAX of them
+        // (most-recent), so an undo replays at most STRIDE ops from a checkpoint.
+        const val CHECKPOINT_STRIDE = 6
+        const val MAX_CHECKPOINTS = 6
 
         fun isStylus(toolType: Int): Boolean =
             toolType == MotionEvent.TOOL_TYPE_STYLUS ||

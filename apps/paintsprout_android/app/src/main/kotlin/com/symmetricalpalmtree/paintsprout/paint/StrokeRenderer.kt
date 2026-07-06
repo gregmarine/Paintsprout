@@ -248,6 +248,49 @@ object StrokeRenderer {
         if (needsLayer) canvas.restoreToCount(layer)
     }
 
+    /**
+     * Appends the soft (spray) stroke's segments from point [fromIndex] onward to
+     * [canvas], WITHOUT the outer opacity/tooth layer (the caller applies those
+     * once when blitting). Lets the live preview accumulate a long spray stroke
+     * incrementally instead of re-rendering the whole thing every frame. Blur is
+     * per-segment (local width) rather than the whole-stroke average [paintSolid]
+     * uses — imperceptible for spray's soft, noisy look, and the bake stays the
+     * source of truth.
+     */
+    fun appendSoftSegments(canvas: Canvas, stroke: Stroke, fromIndex: Int) {
+        val profile = ToolProfile.of(stroke.tool)
+        val rgb = stroke.color or OPAQUE_ALPHA
+        val pts = stroke.points
+        if (pts.isEmpty()) return
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = rgb
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        fun blurFor(w: Float): BlurMaskFilter? {
+            val sigma = profile.blurFactor * w
+            return if (sigma > 0.3f) BlurMaskFilter(sigma, BlurMaskFilter.Blur.NORMAL) else null
+        }
+        if (fromIndex == 0) {
+            val p = pts.first()
+            paint.maskFilter = blurFor(p.width)
+            canvas.drawPoint(p.position.x, p.position.y, paint.apply {
+                strokeCap = Paint.Cap.ROUND; strokeWidth = p.width
+            })
+        }
+        var i = max(1, fromIndex)
+        while (i < pts.size) {
+            val a = pts[i - 1]
+            val b = pts[i]
+            val w = (a.width + b.width) / 2f
+            paint.strokeWidth = w
+            paint.maskFilter = blurFor(w)
+            canvas.drawLine(a.position.x, a.position.y, b.position.x, b.position.y, paint)
+            i++
+        }
+    }
+
     // --- Helpers ------------------------------------------------------------
 
     private const val OPAQUE_ALPHA = 0xFF000000.toInt()

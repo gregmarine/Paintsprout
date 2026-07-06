@@ -25,11 +25,19 @@ import kotlin.math.max
  * back to a mutable ARGB_8888 bitmap the rest of the pipeline can keep
  * compositing onto.
  *
- * One-shot per call (sets up and tears down the GPU objects each time). Watercolor
- * bakes happen on pointer-up, not per frame, so this is acceptable; it can be
- * pooled later if profiling calls for it. Safe to call off the main thread.
+ * The [HardwareRenderer] + [ImageReader] are **pooled** per buffer size and
+ * reused across calls (creating them is expensive, and a watercolor bake — plus
+ * the live wet preview — issues several renders back to back). All access is
+ * serialized behind [lock], so it is safe to call from the bake threads.
  */
 object GpuRender {
+
+    private val lock = Any()
+    private val root = RenderNode("root")
+    private var reader: ImageReader? = null
+    private var renderer: HardwareRenderer? = null
+    private var poolW = 0
+    private var poolH = 0
 
     /**
      * Gaussian-blurs [src] on the GPU via a [RenderEffect] (premultiplied-correct,
@@ -48,17 +56,15 @@ object GpuRender {
         height: Int,
         effect: RenderEffect? = null,
         draw: (Canvas) -> Unit,
-    ): Bitmap {
-        val reader = ImageReader.newInstance(
-            width, height, PixelFormat.RGBA_8888, 2,
-            HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or HardwareBuffer.USAGE_GPU_COLOR_OUTPUT,
-        )
+    ): Bitmap = synchronized(lock) {
+        val (reader, renderer) = ensurePool(width, height)
+        root.setPosition(0, 0, width, height)
+
         // A RenderEffect (blur) renders to an intermediate layer, so clearing
         // inside that node does NOT clear the backing surface. Put the effect on a
         // child node and let the effect-free ROOT clear the surface to transparent
         // and draw the child over it — otherwise sparse content (a blurred region
         // mask) reads back opaque outside the drawn area.
-        val root = RenderNode("root").apply { setPosition(0, 0, width, height) }
         val child = if (effect != null) {
             RenderNode("fx").apply {
                 setPosition(0, 0, width, height)
@@ -69,10 +75,6 @@ object GpuRender {
             }
         } else {
             null
-        }
-        val renderer = HardwareRenderer().apply {
-            setSurface(reader.surface)
-            setContentRoot(root)
         }
         try {
             val canvas = root.beginRecording(width, height)
@@ -94,10 +96,39 @@ object GpuRender {
                 }
             }
         } finally {
-            renderer.destroy()
             root.discardDisplayList()
             child?.discardDisplayList()
-            reader.close()
         }
+    }
+
+    /** Releases the pooled GPU objects (call when the canvas is torn down). */
+    fun release() = synchronized(lock) {
+        renderer?.destroy()
+        reader?.close()
+        renderer = null
+        reader = null
+        poolW = 0
+        poolH = 0
+    }
+
+    private fun ensurePool(width: Int, height: Int): Pair<ImageReader, HardwareRenderer> {
+        val r = reader
+        val rr = renderer
+        if (r != null && rr != null && poolW == width && poolH == height) return r to rr
+        renderer?.destroy()
+        reader?.close()
+        val newReader = ImageReader.newInstance(
+            width, height, PixelFormat.RGBA_8888, 2,
+            HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or HardwareBuffer.USAGE_GPU_COLOR_OUTPUT,
+        )
+        val newRenderer = HardwareRenderer().apply {
+            setSurface(newReader.surface)
+            setContentRoot(root)
+        }
+        reader = newReader
+        renderer = newRenderer
+        poolW = width
+        poolH = height
+        return newReader to newRenderer
     }
 }
