@@ -51,12 +51,40 @@ object GpuRender {
         }
     }
 
+    /**
+     * Like [renderToBitmap] but copies the result into the caller-owned [dst]
+     * (which must be [dst].width × [dst].height) instead of allocating a fresh
+     * bitmap. Meant for the per-frame live watercolor backdrop, where allocating
+     * (and GCing) a bitmap every frame would stutter. [dst] must be mutable.
+     */
+    fun renderInto(dst: Bitmap, effect: RenderEffect? = null, draw: (Canvas) -> Unit) =
+        synchronized(lock) {
+            renderInternal(dst.width, dst.height, effect, draw) { hw ->
+                Canvas(dst).apply {
+                    drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+                    drawBitmap(hw, 0f, 0f, null)
+                }
+            }
+        }
+
     fun renderToBitmap(
         width: Int,
         height: Int,
         effect: RenderEffect? = null,
         draw: (Canvas) -> Unit,
     ): Bitmap = synchronized(lock) {
+        renderInternal(width, height, effect, draw) { hw ->
+            hw.copy(Bitmap.Config.ARGB_8888, true)
+        }
+    }
+
+    private inline fun <R> renderInternal(
+        width: Int,
+        height: Int,
+        effect: RenderEffect?,
+        draw: (Canvas) -> Unit,
+        consume: (Bitmap) -> R,
+    ): R {
         val (reader, renderer) = ensurePool(width, height)
         root.setPosition(0, 0, width, height)
 
@@ -89,8 +117,9 @@ object GpuRender {
                     val hw = Bitmap.wrapHardwareBuffer(
                         buffer, ColorSpace.get(ColorSpace.Named.SRGB),
                     ) ?: error("wrapHardwareBuffer returned null")
-                    // Mutable copy so later strokes can composite onto it.
-                    return hw.copy(Bitmap.Config.ARGB_8888, true).also { hw.recycle() }
+                    // The caller either copies to a fresh mutable bitmap or blits
+                    // into a reused one; either way the wrapped buffer is transient.
+                    return consume(hw).also { hw.recycle() }
                 } finally {
                     buffer.close()
                 }

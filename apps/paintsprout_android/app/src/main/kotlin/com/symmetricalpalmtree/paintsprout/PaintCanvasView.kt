@@ -133,10 +133,19 @@ class PaintCanvasView @JvmOverloads constructor(
     private val washScratch = arrayOfNulls<Bitmap>(2)
     private var washFlip = 0
 
+    // Half-resolution wet backdrop for the LIVE preview: the dilute+bloom is blurry,
+    // so computing it at half res keeps the per-frame GPU read-back (needed to feed
+    // the diluted backdrop to the spectral mixer as a texture) cheap. Double-buffered
+    // for the same reason the wash is — HWUI samples it a frame later.
+    private val wetLiveScratch = arrayOfNulls<Bitmap>(2)
+    private var wetLiveFlip = 0
+
     /** Frees both wash scratch buffers (double-buffered — see [drawWetLive]). */
     private fun recycleWashScratch() {
         washScratch[0]?.recycle(); washScratch[0] = null
         washScratch[1]?.recycle(); washScratch[1] = null
+        wetLiveScratch[0]?.recycle(); wetLiveScratch[0] = null
+        wetLiveScratch[1]?.recycle(); wetLiveScratch[1] = null
     }
 
     /**
@@ -396,12 +405,14 @@ class PaintCanvasView @JvmOverloads constructor(
     }
 
     /**
-     * Live watercolor: draws the committed paint, then runs the spectral pigment
-     * mixer as a Paint shader over the stroke's bounds so the wash mixes like real
-     * pigment (blue under yellow reads green) live under the pen. All on the
-     * hardware View canvas — no GPU→CPU readback, so it stays smooth. The full wet
-     * interaction (dilute + bloom) is added at bake; here the emphasis is the
-     * correct colour, cheaply. Falls back to a plain draw off the GPU / no shader.
+     * Live watercolor, rendered to MATCH the baked result so lifting the pen causes
+     * no visible change. Builds the same wet backdrop as the bake (paint diluted +
+     * bloomed under the stroke), then runs the spectral pigment mixer over it so the
+     * wash mixes like real pigment (blue under yellow reads green). The wet backdrop
+     * needs a GPU read-back (the mixer reads it as a texture), so it's computed at
+     * HALF resolution — it's blurry anyway — to keep that read-back cheap. Both the
+     * wash and the wet backdrop are double-buffered (HWUI samples them a frame late).
+     * Falls back to a plain colour mix (or a raw draw) if the GPU path is unavailable.
      */
     private fun drawWetLive(canvas: Canvas, paintLayer: Bitmap, stroke: Stroke) {
         val mixer = pigmentShader
@@ -410,11 +421,6 @@ class PaintCanvasView @JvmOverloads constructor(
             StrokeRenderer.paintStroke(canvas, stroke, surface)
             return
         }
-        // Render the wash into a scratch bitmap that feeds the shader. The buffer is
-        // DOUBLE-BUFFERED: we ping-pong between two bitmaps so we never clear/redraw
-        // the one HWUI's RenderThread is still sampling for the previous (in-flight)
-        // frame. Mutating a single shared shader bitmap every frame races the render
-        // thread and flickers worse the longer the stroke (the redraw takes longer).
         washFlip = washFlip xor 1
         val wash = (washScratch[washFlip] ?: createBitmap(bufW, bufH).also { washScratch[washFlip] = it })
         Canvas(wash).apply {
@@ -424,14 +430,41 @@ class PaintCanvasView @JvmOverloads constructor(
             StrokeRenderer.paintStroke(this, stroke, surface)
             restore()
         }
+
         val region = strokeRegionPath(stroke)
+        val avgW = avgWidth(stroke) * SUPER_SAMPLE
+        val soften = max(2f, avgW * 0.14f)
+        val clearFeather = max(2f, avgW * 0.10f)
+        val spread = max(4f, avgW * 0.30f)
+
+        // Backdrop for the mixer: the wet-interacted paint at half res, or — if the
+        // GPU read-back fails — the raw paint layer (still correct colour, no bleed).
+        wetLiveFlip = wetLiveFlip xor 1
+        val hw = bufW / 2
+        val hh = bufH / 2
+        val wetHalf = (wetLiveScratch[wetLiveFlip] ?: createBitmap(hw, hh).also { wetLiveScratch[wetLiveFlip] = it })
+        val backdropShader = runCatching {
+            GpuRender.renderInto(wetHalf) { rc ->
+                recordWetBackdrop(
+                    rc as android.graphics.RecordingCanvas, paintLayer, region, hw, hh,
+                    0.5f, clearFeather * 0.5f, spread * 0.5f, soften * 0.5f,
+                )
+            }
+            BitmapShader(wetHalf, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+                setLocalMatrix(Matrix().apply { setScale(2f, 2f) })
+            }
+        }.getOrElse {
+            BitmapShader(paintLayer, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        }
+
         val b = RectF()
         region.computeBounds(b, true)
-        val pad = avgWidth(stroke) + 4f
-        b.inset(-pad, -pad)
+        // Pad past the stroke to include the bloom that spreads beyond the ribbon,
+        // else the SRC rect below clips the soft bleed into a hard edge.
+        b.inset(-(avgW + spread + soften + 4f), -(avgW + spread + soften + 4f))
 
         canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
-        mixer.setInputShader("uBackdrop", BitmapShader(paintLayer, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
+        mixer.setInputShader("uBackdrop", backdropShader)
         mixer.setInputShader("uWash", BitmapShader(wash, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
         mixer.setFloatUniform("uWashGain", 1f)
         mixer.setFloatUniform("uDarkHold", 0f)
@@ -1261,39 +1294,56 @@ class PaintCanvasView @JvmOverloads constructor(
         val soften = max(2f, avgW * 0.14f)
         val clearFeather = max(2f, avgW * 0.10f)
         val spread = max(4f, avgW * 0.30f)
-        val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
-        val w = bufW.toFloat()
-        val h = bufH.toFloat()
+        return GpuRender.renderToBitmap(bufW, bufH) { canvas ->
+            recordWetBackdrop(
+                canvas as android.graphics.RecordingCanvas, base, region, bufW, bufH,
+                SUPER_SAMPLE, clearFeather, spread, soften,
+            )
+        }
+    }
 
+    /**
+     * Records the wet backdrop composite onto [rc] (a hardware [RecordingCanvas],
+     * either GpuRender's full-res bake surface or the half-res live one): [base]
+     * with the stroke [region] diluted (feathered clear) and pushed (a blurred,
+     * faded copy bloomed into a wider region). Geometry and blur radii are scaled by
+     * [sc] so the same recipe renders at either resolution. Everything is done with
+     * blur-[RenderEffect] child [RenderNode]s in a single pass (no round-trips).
+     */
+    private fun recordWetBackdrop(
+        rc: android.graphics.RecordingCanvas, base: Bitmap, region: android.graphics.Path,
+        w: Int, h: Int, sc: Float, clearFeather: Float, spread: Float, soften: Float,
+    ) {
+        val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+        val fw = w.toFloat()
+        val fh = h.toFloat()
         fun blurNode(radius: Float, record: (Canvas) -> Unit) = RenderNode("wet").apply {
-            setPosition(0, 0, bufW, bufH)
+            setPosition(0, 0, w, h)
             setRenderEffect(RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP))
-            val c = beginRecording(bufW, bufH)
+            val c = beginRecording(w, h)
             record(c)
             endRecording()
         }
         // White stroke region, feathered two ways (tight clear + wide bloom).
-        val clearNode = blurNode(clearFeather) { it.scale(SUPER_SAMPLE, SUPER_SAMPLE); it.drawPath(region, white) }
-        val spreadNode = blurNode(spread) { it.scale(SUPER_SAMPLE, SUPER_SAMPLE); it.drawPath(region, white) }
-        val baseBlurNode = blurNode(soften) { it.drawBitmap(base, 0f, 0f, null) }
-
-        return GpuRender.renderToBitmap(bufW, bufH) { canvas ->
-            val rc = canvas as android.graphics.RecordingCanvas
+        val clearNode = blurNode(clearFeather) { it.scale(sc, sc); it.drawPath(region, white) }
+        val spreadNode = blurNode(spread) { it.scale(sc, sc); it.drawPath(region, white) }
+        val baseBlurNode = blurNode(soften) { it.scale(sc, sc); it.drawBitmap(base, 0f, 0f, null) }
+        try {
             // 1. base
-            rc.drawBitmap(base, 0f, 0f, null)
+            rc.save(); rc.scale(sc, sc); rc.drawBitmap(base, 0f, 0f, null); rc.restore()
             // 2. dilute: punch a feathered hole where the stroke floods with water
-            val l1 = rc.saveLayer(0f, 0f, w, h, Paint().apply { blendMode = BlendMode.DST_OUT })
+            val l1 = rc.saveLayer(0f, 0f, fw, fh, Paint().apply { blendMode = BlendMode.DST_OUT })
             rc.drawRenderNode(clearNode)
             rc.restoreToCount(l1)
             // 3. push: blurred base kept only inside the wider spread region, laid
             //    back on at reduced alpha so displaced pigment blooms past the edge
-            val l2 = rc.saveLayer(0f, 0f, w, h, Paint().apply { alpha = WET_DILUTE_ALPHA })
+            val l2 = rc.saveLayer(0f, 0f, fw, fh, Paint().apply { alpha = WET_DILUTE_ALPHA })
             rc.drawRenderNode(baseBlurNode)
-            val l3 = rc.saveLayer(0f, 0f, w, h, Paint().apply { blendMode = BlendMode.DST_IN })
+            val l3 = rc.saveLayer(0f, 0f, fw, fh, Paint().apply { blendMode = BlendMode.DST_IN })
             rc.drawRenderNode(spreadNode)
             rc.restoreToCount(l3)
             rc.restoreToCount(l2)
-        }.also {
+        } finally {
             clearNode.discardDisplayList()
             spreadNode.discardDisplayList()
             baseBlurNode.discardDisplayList()
