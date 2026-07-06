@@ -14,6 +14,8 @@ import android.graphics.PathMeasure
 import android.graphics.PointF
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.RenderEffect
+import android.graphics.RenderNode
 import android.graphics.RuntimeShader
 import android.graphics.Shader
 import android.util.AttributeSet
@@ -122,15 +124,13 @@ class PaintCanvasView @JvmOverloads constructor(
     private var pressureMax = 1.0f
 
     /**
-     * Live watercolor wet preview: the spectral composite of the committed paint
-     * plus the in-progress strokes, computed off-thread while drawing so the wet
-     * bleed appears under the pen instead of only on lift. Port of Flutter's
-     * `_wetPreview` / `_updateWetPreview` ([previewing]/[previewDirty] coalesce so
-     * only one composite runs at a time).
+     * Scratch bitmap the live watercolor render draws the wash into each frame so
+     * it can feed the pigment shader as a texture. The wet look is drawn straight
+     * on the hardware View canvas (the spectral mixer runs as a Paint shader) with
+     * no GPU→CPU readback — the readback is what made an off-thread spectral
+     * preview lag. The full wet interaction (dilute/bloom) still runs at bake.
      */
-    private var wetPreview: Bitmap? = null
-    private var previewing = false
-    private var previewDirty = false
+    private var washScratch: Bitmap? = null
 
     /**
      * Incremental accumulation buffer for the active spray stroke. Spray redraws
@@ -217,6 +217,11 @@ class PaintCanvasView @JvmOverloads constructor(
         }.getOrNull()
     }
 
+    /** The pigment mixer as a live shader (for the on-canvas watercolor preview). */
+    private val pigmentShader: RuntimeShader? by lazy {
+        pigmentAgsl?.let { runCatching { RuntimeShader(it) }.getOrNull() }
+    }
+
     /** Marching-ants overlay shader (res/raw/selection_overlay.agsl). */
     private val antsShader: RuntimeShader? by lazy {
         runCatching {
@@ -247,8 +252,8 @@ class PaintCanvasView @JvmOverloads constructor(
         unbakedClips.clear()
         active = null
         endActiveExtras()
-        wetPreview?.recycle()
-        wetPreview = null
+        washScratch?.recycle()
+        washScratch = null
         recycleCheckpoints()
         clearSelectionState()
         invalidate()
@@ -306,22 +311,20 @@ class PaintCanvasView @JvmOverloads constructor(
         val paintLayer = paintBmp ?: return
         val liveClip = activeClip ?: unbakedClips.lastOrNull { it != null }
         val hasEdits = unbaked.isNotEmpty() || active != null
-        // The wet preview already holds the committed paint + the watercolor
-        // strokes, spectrally mixed, so it fully replaces the paint layer.
-        val wet = wetPreview
 
-        // Draws the edited paint: the wet preview if present (only a non-watercolor
-        // active stroke needs a live overlay on top of it), else the committed
-        // paint plus the pending strokes rendered on the fly.
+        // Draws the edited paint: the committed layer plus the pending strokes. A
+        // live watercolor stroke re-wets the paint under it directly on this
+        // hardware canvas (dilute + push + multiply the wash), so the wet bleed
+        // shows under the pen with no off-thread readback.
         fun drawEdited() {
-            if (wet != null) {
-                canvas.drawBitmap(wet, srcRect, dstRect, null)
-                active?.let { if (it.tool != Tool.WATERCOLOR) StrokeRenderer.paintStroke(canvas, it, surface) }
-            } else {
-                canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
-                for (s in unbaked) drawLiveStroke(canvas, s, isActive = false)
-                active?.let { drawLiveStroke(canvas, it, isActive = true) }
+            val a = active
+            if (a != null && a.tool == Tool.WATERCOLOR) {
+                drawWetLive(canvas, paintLayer, a)
+                return
             }
+            canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
+            for (s in unbaked) drawLiveStroke(canvas, s, isActive = false)
+            a?.let { drawLiveStroke(canvas, it, isActive = true) }
         }
 
         // Isolated layer so an eraser stroke (CLEAR) punches through to the surface
@@ -384,6 +387,44 @@ class PaintCanvasView @JvmOverloads constructor(
             )
         }
         canvas.restoreToCount(layer)
+    }
+
+    /**
+     * Live watercolor: draws the committed paint, then runs the spectral pigment
+     * mixer as a Paint shader over the stroke's bounds so the wash mixes like real
+     * pigment (blue under yellow reads green) live under the pen. All on the
+     * hardware View canvas — no GPU→CPU readback, so it stays smooth. The full wet
+     * interaction (dilute + bloom) is added at bake; here the emphasis is the
+     * correct colour, cheaply. Falls back to a plain draw off the GPU / no shader.
+     */
+    private fun drawWetLive(canvas: Canvas, paintLayer: Bitmap, stroke: Stroke) {
+        val mixer = pigmentShader
+        if (mixer == null || !canvas.isHardwareAccelerated) {
+            canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
+            StrokeRenderer.paintStroke(canvas, stroke, surface)
+            return
+        }
+        // Render the wash into the reused scratch bitmap (feeds the shader).
+        val wash = (washScratch ?: createBitmap(bufW, bufH).also { washScratch = it })
+        Canvas(wash).apply {
+            drawColor(Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+            save()
+            scale(SUPER_SAMPLE, SUPER_SAMPLE)
+            StrokeRenderer.paintStroke(this, stroke, surface)
+            restore()
+        }
+        val region = strokeRegionPath(stroke)
+        val b = RectF()
+        region.computeBounds(b, true)
+        val pad = avgWidth(stroke) + 4f
+        b.inset(-pad, -pad)
+
+        canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
+        mixer.setInputShader("uBackdrop", BitmapShader(paintLayer, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
+        mixer.setInputShader("uWash", BitmapShader(wash, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
+        mixer.setFloatUniform("uWashGain", 1f)
+        mixer.setFloatUniform("uDarkHold", 0f)
+        canvas.drawRect(b.left, b.top, b.right, b.bottom, Paint().apply { shader = mixer })
     }
 
     /** Marching ants over the selection, or the transform frame while floating. */
@@ -491,7 +532,6 @@ class PaintCanvasView @JvmOverloads constructor(
                     add(sample(event, actionIndex))
                 }
                 beginActiveExtras()
-                if (tool == Tool.WATERCOLOR) updateWetPreview()
                 invalidate()
                 return true
             }
@@ -508,7 +548,6 @@ class PaintCanvasView @JvmOverloads constructor(
                     stroke.add(sampleHistorical(event, pi, h))
                 }
                 stroke.add(sample(event, pi))
-                if (stroke.tool == Tool.WATERCOLOR) updateWetPreview()
                 invalidate()
                 return true
             }
@@ -633,7 +672,7 @@ class PaintCanvasView @JvmOverloads constructor(
         return StrokePoint(Vec2(x, y), width, density)
     }
 
-    /** Sets up per-stroke live-preview scratch (the spray accumulation buffer). */
+    /** Sets up per-stroke live-preview scratch (spray accumulation / wet backdrop). */
     private fun beginActiveExtras() {
         activeAccum?.recycle()
         activeAccum = null
@@ -649,53 +688,6 @@ class PaintCanvasView @JvmOverloads constructor(
         activeAccum = null
         accumDrawn = 0
     }
-
-    /**
-     * Recomputes the live watercolor wet preview off-thread (paint + pending
-     * strokes, spectrally composited). Coalesced: while one runs, a later request
-     * just marks it dirty so exactly one recompute is queued. Port of Flutter's
-     * `_updateWetPreview`.
-     */
-    private fun updateWetPreview() {
-        if (previewing) {
-            previewDirty = true
-            return
-        }
-        val base = paintBmp ?: return
-        // Snapshot the strokes (copy point lists) on the main thread so the
-        // off-thread composite never reads a stroke that's still growing.
-        val snapshot = buildList {
-            for (s in unbaked) add(s.snapshot())
-            active?.let { add(it.snapshot()) }
-        }
-        if (snapshot.none { it.tool == Tool.WATERCOLOR }) return
-        previewing = true
-        val baseCopy = base.copy(Bitmap.Config.ARGB_8888, true)
-        scope.launch {
-            val img = withContext(Dispatchers.Default) {
-                foldOps(baseCopy, snapshot.map { StrokeOp(it) })
-            }
-            // The stroke may have already committed (and cleared the preview) while
-            // this composite ran — drop a stale result rather than double-drawing.
-            if (active?.tool != Tool.WATERCOLOR && unbaked.none { it.tool == Tool.WATERCOLOR }) {
-                img.recycle()
-                previewing = false
-                return@launch
-            }
-            val old = wetPreview
-            wetPreview = img
-            old?.recycle()
-            previewing = false
-            invalidate()
-            if (previewDirty) {
-                previewDirty = false
-                updateWetPreview()
-            }
-        }
-    }
-
-    private fun Stroke.snapshot(): Stroke =
-        Stroke(tool, color, seed).also { it.points.addAll(points) }
 
     // --- Baking -------------------------------------------------------------
 
@@ -718,12 +710,6 @@ class PaintCanvasView @JvmOverloads constructor(
             clearRedo()
             storeCheckpoint(committed.size, next)
             old?.recycle()
-            // The baked paint now contains these strokes; drop the wet preview so
-            // onDraw shows the committed result (no double-draw).
-            if (unbaked.isEmpty()) {
-                wetPreview?.recycle()
-                wetPreview = null
-            }
             baking = false
             invalidate()
             onHistoryChanged?.invoke()
@@ -1243,38 +1229,57 @@ class PaintCanvasView @JvmOverloads constructor(
         return result
     }
 
+    /**
+     * The wet backdrop: [base] with the stroke region diluted (feathered clear)
+     * and pushed (a blurred, faded copy bloomed into a wider region), done in a
+     * SINGLE GPU pass. The three blurs are child [RenderNode]s carrying a blur
+     * [RenderEffect], composited on the recording canvas with `saveLayer` blend
+     * modes — so there's one GPU readback instead of the four the old
+     * blur-per-round-trip version needed. Never recycles [base].
+     */
     private fun wetBackdrop(base: Bitmap, stroke: Stroke): Bitmap {
         val region = strokeRegionPath(stroke)
         val avgW = avgWidth(stroke) * SUPER_SAMPLE
         val soften = max(2f, avgW * 0.14f)
         val clearFeather = max(2f, avgW * 0.10f)
         val spread = max(4f, avgW * 0.30f)
+        val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+        val w = bufW.toFloat()
+        val h = bufH.toFloat()
 
-        val backdrop = base.copy(Bitmap.Config.ARGB_8888, true)
-
-        val clearMask = softRegion(region, clearFeather)
-        Canvas(backdrop).drawBitmap(clearMask, 0f, 0f, Paint().apply { blendMode = BlendMode.DST_OUT })
-        clearMask.recycle()
-
-        val push = GpuRender.blur(base, soften)
-        val spreadMask = softRegion(region, spread)
-        Canvas(push).drawBitmap(spreadMask, 0f, 0f, Paint().apply { blendMode = BlendMode.DST_IN })
-        spreadMask.recycle()
-        Canvas(backdrop).drawBitmap(push, 0f, 0f, Paint().apply { alpha = WET_DILUTE_ALPHA })
-        push.recycle()
-
-        return backdrop
-    }
-
-    private fun softRegion(region: Path, feather: Float): Bitmap {
-        val tmp = createBitmap(bufW, bufH)
-        Canvas(tmp).apply {
-            scale(SUPER_SAMPLE, SUPER_SAMPLE)
-            drawPath(region, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+        fun blurNode(radius: Float, record: (Canvas) -> Unit) = RenderNode("wet").apply {
+            setPosition(0, 0, bufW, bufH)
+            setRenderEffect(RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP))
+            val c = beginRecording(bufW, bufH)
+            record(c)
+            endRecording()
         }
-        val blurred = GpuRender.blur(tmp, feather)
-        tmp.recycle()
-        return blurred
+        // White stroke region, feathered two ways (tight clear + wide bloom).
+        val clearNode = blurNode(clearFeather) { it.scale(SUPER_SAMPLE, SUPER_SAMPLE); it.drawPath(region, white) }
+        val spreadNode = blurNode(spread) { it.scale(SUPER_SAMPLE, SUPER_SAMPLE); it.drawPath(region, white) }
+        val baseBlurNode = blurNode(soften) { it.drawBitmap(base, 0f, 0f, null) }
+
+        return GpuRender.renderToBitmap(bufW, bufH) { canvas ->
+            val rc = canvas as android.graphics.RecordingCanvas
+            // 1. base
+            rc.drawBitmap(base, 0f, 0f, null)
+            // 2. dilute: punch a feathered hole where the stroke floods with water
+            val l1 = rc.saveLayer(0f, 0f, w, h, Paint().apply { blendMode = BlendMode.DST_OUT })
+            rc.drawRenderNode(clearNode)
+            rc.restoreToCount(l1)
+            // 3. push: blurred base kept only inside the wider spread region, laid
+            //    back on at reduced alpha so displaced pigment blooms past the edge
+            val l2 = rc.saveLayer(0f, 0f, w, h, Paint().apply { alpha = WET_DILUTE_ALPHA })
+            rc.drawRenderNode(baseBlurNode)
+            val l3 = rc.saveLayer(0f, 0f, w, h, Paint().apply { blendMode = BlendMode.DST_IN })
+            rc.drawRenderNode(spreadNode)
+            rc.restoreToCount(l3)
+            rc.restoreToCount(l2)
+        }.also {
+            clearNode.discardDisplayList()
+            spreadNode.discardDisplayList()
+            baseBlurNode.discardDisplayList()
+        }
     }
 
     private fun avgWidth(stroke: Stroke): Float {
@@ -1302,8 +1307,6 @@ class PaintCanvasView @JvmOverloads constructor(
         activeClip?.recycle()
         activeClip = null
         endActiveExtras()
-        wetPreview?.recycle()
-        wetPreview = null
         for (op in committed) op.recycle()
         committed.clear()
         clearRedo()
@@ -1321,10 +1324,10 @@ class PaintCanvasView @JvmOverloads constructor(
         antsAnimator.cancel()
         scope.cancel()
         recycleCheckpoints()
-        wetPreview?.recycle()
-        wetPreview = null
         activeAccum?.recycle()
         activeAccum = null
+        washScratch?.recycle()
+        washScratch = null
         surfaceBmp?.recycle()
         paintBmp?.recycle()
         surfaceBmp = null
