@@ -424,7 +424,14 @@ class PaintCanvasView @JvmOverloads constructor(
         mixer.setInputShader("uWash", BitmapShader(wash, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
         mixer.setFloatUniform("uWashGain", 1f)
         mixer.setFloatUniform("uDarkHold", 0f)
-        canvas.drawRect(b.left, b.top, b.right, b.bottom, Paint().apply { shader = mixer })
+        // The mixer emits the FULL composited result over the bounds (backdrop where
+        // there's no wash, mixed where there is), so it must REPLACE those pixels, not
+        // over-composite them onto the paint layer already drawn above — SRC_OVER would
+        // double the backdrop's alpha and leave a visible rectangle under the pen.
+        canvas.drawRect(b.left, b.top, b.right, b.bottom, Paint().apply {
+            shader = mixer
+            xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SRC)
+        })
     }
 
     /** Marching ants over the selection, or the transform frame while floating. */
