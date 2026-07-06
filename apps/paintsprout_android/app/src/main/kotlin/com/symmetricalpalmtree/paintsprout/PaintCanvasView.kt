@@ -130,7 +130,14 @@ class PaintCanvasView @JvmOverloads constructor(
      * no GPU→CPU readback — the readback is what made an off-thread spectral
      * preview lag. The full wet interaction (dilute/bloom) still runs at bake.
      */
-    private var washScratch: Bitmap? = null
+    private val washScratch = arrayOfNulls<Bitmap>(2)
+    private var washFlip = 0
+
+    /** Frees both wash scratch buffers (double-buffered — see [drawWetLive]). */
+    private fun recycleWashScratch() {
+        washScratch[0]?.recycle(); washScratch[0] = null
+        washScratch[1]?.recycle(); washScratch[1] = null
+    }
 
     /**
      * Incremental accumulation buffer for the active spray stroke. Spray redraws
@@ -252,8 +259,7 @@ class PaintCanvasView @JvmOverloads constructor(
         unbakedClips.clear()
         active = null
         endActiveExtras()
-        washScratch?.recycle()
-        washScratch = null
+        recycleWashScratch()
         recycleCheckpoints()
         clearSelectionState()
         invalidate()
@@ -404,8 +410,13 @@ class PaintCanvasView @JvmOverloads constructor(
             StrokeRenderer.paintStroke(canvas, stroke, surface)
             return
         }
-        // Render the wash into the reused scratch bitmap (feeds the shader).
-        val wash = (washScratch ?: createBitmap(bufW, bufH).also { washScratch = it })
+        // Render the wash into a scratch bitmap that feeds the shader. The buffer is
+        // DOUBLE-BUFFERED: we ping-pong between two bitmaps so we never clear/redraw
+        // the one HWUI's RenderThread is still sampling for the previous (in-flight)
+        // frame. Mutating a single shared shader bitmap every frame races the render
+        // thread and flickers worse the longer the stroke (the redraw takes longer).
+        washFlip = washFlip xor 1
+        val wash = (washScratch[washFlip] ?: createBitmap(bufW, bufH).also { washScratch[washFlip] = it })
         Canvas(wash).apply {
             drawColor(Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
             save()
@@ -1333,8 +1344,7 @@ class PaintCanvasView @JvmOverloads constructor(
         recycleCheckpoints()
         activeAccum?.recycle()
         activeAccum = null
-        washScratch?.recycle()
-        washScratch = null
+        recycleWashScratch()
         surfaceBmp?.recycle()
         paintBmp?.recycle()
         surfaceBmp = null
