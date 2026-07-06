@@ -2,12 +2,17 @@ package com.symmetricalpalmtree.paintsprout.paint
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.ColorSpace
 import android.graphics.HardwareRenderer
 import android.graphics.PixelFormat
+import android.graphics.PorterDuff
+import android.graphics.RenderEffect
 import android.graphics.RenderNode
+import android.graphics.Shader
 import android.hardware.HardwareBuffer
 import android.media.ImageReader
+import kotlin.math.max
 
 /**
  * Renders draw commands on a **hardware-accelerated** offscreen canvas and reads
@@ -26,20 +31,54 @@ import android.media.ImageReader
  */
 object GpuRender {
 
-    fun renderToBitmap(width: Int, height: Int, draw: (Canvas) -> Unit): Bitmap {
+    /**
+     * Gaussian-blurs [src] on the GPU via a [RenderEffect] (premultiplied-correct,
+     * unlike a naive software box blur). Returns a new bitmap.
+     */
+    fun blur(src: Bitmap, radius: Float): Bitmap {
+        val r = max(0.1f, radius)
+        val effect = RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP)
+        return renderToBitmap(src.width, src.height, effect) { canvas ->
+            canvas.drawBitmap(src, 0f, 0f, null)
+        }
+    }
+
+    fun renderToBitmap(
+        width: Int,
+        height: Int,
+        effect: RenderEffect? = null,
+        draw: (Canvas) -> Unit,
+    ): Bitmap {
         val reader = ImageReader.newInstance(
             width, height, PixelFormat.RGBA_8888, 2,
             HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or HardwareBuffer.USAGE_GPU_COLOR_OUTPUT,
         )
-        val node = RenderNode("pigment").apply { setPosition(0, 0, width, height) }
+        // A RenderEffect (blur) renders to an intermediate layer, so clearing
+        // inside that node does NOT clear the backing surface. Put the effect on a
+        // child node and let the effect-free ROOT clear the surface to transparent
+        // and draw the child over it — otherwise sparse content (a blurred region
+        // mask) reads back opaque outside the drawn area.
+        val root = RenderNode("root").apply { setPosition(0, 0, width, height) }
+        val child = if (effect != null) {
+            RenderNode("fx").apply {
+                setPosition(0, 0, width, height)
+                setRenderEffect(effect)
+                val c = beginRecording(width, height)
+                draw(c)
+                endRecording()
+            }
+        } else {
+            null
+        }
         val renderer = HardwareRenderer().apply {
             setSurface(reader.surface)
-            setContentRoot(node)
+            setContentRoot(root)
         }
         try {
-            val canvas = node.beginRecording(width, height)
-            draw(canvas)
-            node.endRecording()
+            val canvas = root.beginRecording(width, height)
+            canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+            if (child != null) canvas.drawRenderNode(child) else draw(canvas)
+            root.endRecording()
             renderer.createRenderRequest().setWaitForPresent(true).syncAndDraw()
 
             reader.acquireNextImage().use { image ->
@@ -56,7 +95,8 @@ object GpuRender {
             }
         } finally {
             renderer.destroy()
-            node.discardDisplayList()
+            root.discardDisplayList()
+            child?.discardDisplayList()
             reader.close()
         }
     }

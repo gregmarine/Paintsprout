@@ -1,6 +1,7 @@
 package com.symmetricalpalmtree.paintsprout.paint
 
 import android.graphics.Path
+import kotlin.math.max
 
 /**
  * `android.graphics.Path` builders that consume the pure geometry from
@@ -39,4 +40,21 @@ fun ribbonPath(outline: List<Vec2>): Path {
     }
     path.close()
     return path
+}
+
+/**
+ * The filled outline of a whole stroke (variable-width ribbon, or a disc for a
+ * single dab) in the stroke's own coordinates. The watercolor wet interaction
+ * uses this to mask the region of existing paint it re-wets. Ported from
+ * `strokeRibbon` in the Flutter `stroke.dart`.
+ */
+fun strokeRegionPath(stroke: Stroke): Path {
+    val pts = stroke.points
+    if (pts.size == 1) {
+        val p = pts.first()
+        return Path().apply {
+            addCircle(p.position.x, p.position.y, max(0.5f, p.width / 2f), Path.Direction.CW)
+        }
+    }
+    return ribbonPath(ribbonOutline(pts, strokeNormals(pts)))
 }

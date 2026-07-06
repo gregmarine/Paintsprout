@@ -2,14 +2,18 @@ package com.symmetricalpalmtree.paintsprout
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BlendMode
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Rect
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
 import androidx.annotation.ColorInt
 import androidx.core.graphics.createBitmap
+import com.symmetricalpalmtree.paintsprout.paint.GpuRender
 import com.symmetricalpalmtree.paintsprout.paint.PigmentMixer
 import com.symmetricalpalmtree.paintsprout.paint.Stroke
 import com.symmetricalpalmtree.paintsprout.paint.StrokePoint
@@ -21,12 +25,14 @@ import com.symmetricalpalmtree.paintsprout.paint.Vec2
 import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
 import com.symmetricalpalmtree.paintsprout.paint.resolveDensity
 import com.symmetricalpalmtree.paintsprout.paint.resolveWidth
+import com.symmetricalpalmtree.paintsprout.paint.strokeRegionPath
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.random.Random
 
@@ -294,25 +300,80 @@ class PaintCanvasView @JvmOverloads constructor(
     }
 
     /**
-     * Composites one watercolor stroke: renders the wash, then blends it onto
-     * [base] through the spectral pigment mixer. Falls back to a plain over-
-     * composite if the shader failed to load or the GPU render throws. Runs on
-     * the bake thread. Returns a new bitmap (never recycles [base]).
+     * Composites one watercolor stroke, mirroring `_compositeWatercolor` in the
+     * Flutter reference: within the brush region the existing paint is diluted
+     * (faded toward the surface) and pushed outward (blurred bloom), then the new
+     * pigment is deposited and mixed spectrally so its colour bleeds into what was
+     * there. Runs on the bake thread. Returns a new bitmap (never recycles [base]).
      */
     private fun compositeWatercolor(base: Bitmap, stroke: Stroke): Bitmap {
+        val backdrop = wetBackdrop(base, stroke)
+
         val wash = createBitmap(bufW, bufH)
         Canvas(wash).apply {
             scale(SUPER_SAMPLE, SUPER_SAMPLE)
             StrokeRenderer.paintStroke(this, stroke, surface)
         }
+
         val agsl = pigmentAgsl
         val result = if (agsl == null) {
-            overComposite(base, wash)
+            overComposite(backdrop, wash)
         } else {
-            runCatching { PigmentMixer.mix(agsl, base, wash) }.getOrElse { overComposite(base, wash) }
+            runCatching { PigmentMixer.mix(agsl, backdrop, wash) }.getOrElse { overComposite(backdrop, wash) }
         }
+        backdrop.recycle()
         wash.recycle()
         return result
+    }
+
+    /**
+     * The wet backdrop: [base] with the stroke region diluted and pushed, but
+     * without the new pigment yet. Ports `applyWetInteraction` — the blurs run on
+     * the GPU ([GpuRender.blur]); the dstOut/dstIn/alpha compositing is software.
+     */
+    private fun wetBackdrop(base: Bitmap, stroke: Stroke): Bitmap {
+        val region = strokeRegionPath(stroke)
+        val avgW = avgWidth(stroke) * SUPER_SAMPLE
+        val soften = max(2f, avgW * 0.14f)
+        val clearFeather = max(2f, avgW * 0.10f)
+        val spread = max(4f, avgW * 0.30f)
+
+        val backdrop = base.copy(Bitmap.Config.ARGB_8888, true)
+
+        // 1. Dilute: clear the paint inside the stroke (tight feathered edge) so
+        //    the centre fades toward the surface where the water floods it.
+        val clearMask = softRegion(region, clearFeather)
+        Canvas(backdrop).drawBitmap(clearMask, 0f, 0f, Paint().apply { blendMode = BlendMode.DST_OUT })
+        clearMask.recycle()
+
+        // 2. Push: a blurred, faded copy of the paint, masked to a WIDER region so
+        //    displaced pigment blooms past the stroke edges instead of staying put.
+        val push = GpuRender.blur(base, soften)
+        val spreadMask = softRegion(region, spread)
+        Canvas(push).drawBitmap(spreadMask, 0f, 0f, Paint().apply { blendMode = BlendMode.DST_IN })
+        spreadMask.recycle()
+        Canvas(backdrop).drawBitmap(push, 0f, 0f, Paint().apply { alpha = WET_DILUTE_ALPHA })
+        push.recycle()
+
+        return backdrop
+    }
+
+    /** A soft-edged (blurred) white mask of [region] — feathers the wet effect. */
+    private fun softRegion(region: Path, feather: Float): Bitmap {
+        val tmp = createBitmap(bufW, bufH)
+        Canvas(tmp).apply {
+            scale(SUPER_SAMPLE, SUPER_SAMPLE)
+            drawPath(region, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+        }
+        val blurred = GpuRender.blur(tmp, feather)
+        tmp.recycle()
+        return blurred
+    }
+
+    private fun avgWidth(stroke: Stroke): Float {
+        var sum = 0f
+        for (p in stroke.points) sum += p.width
+        return sum / stroke.points.size
     }
 
     /** Plain over-composite of [wash] onto [base] (the no-shader fallback). */
@@ -346,6 +407,10 @@ class PaintCanvasView @JvmOverloads constructor(
 
     private companion object {
         const val INVALID_POINTER = -1
+
+        // Fraction of the softened underlying paint kept in the wet "push" step
+        // (WetConfig.dilute = 0.5 in the Flutter reference), as an 8-bit alpha.
+        const val WET_DILUTE_ALPHA = 128
 
         // Backing buffer resolution over the view. The view already reports
         // physical pixels (unlike Flutter's logical px, which drove its 2x
