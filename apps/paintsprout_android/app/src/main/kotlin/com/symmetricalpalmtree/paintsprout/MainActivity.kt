@@ -1,80 +1,480 @@
 package com.symmetricalpalmtree.paintsprout
 
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
-import android.widget.Toast
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.widget.GridLayout
+import android.widget.ImageButton
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.res.ResourcesCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.slider.Slider
+import com.google.android.material.snackbar.Snackbar
 import com.symmetricalpalmtree.paintsprout.databinding.ActivityMainBinding
 import com.symmetricalpalmtree.paintsprout.paint.AVAILABLE_SURFACES
 import com.symmetricalpalmtree.paintsprout.paint.SurfaceKind
 import com.symmetricalpalmtree.paintsprout.paint.Tool
+import kotlin.math.roundToInt
 
 /**
- * Single launcher activity. Hosts [PaintCanvasView] with a bare-bones toolbar
- * (tools + surface cycle + clear) for verification. The real tool chrome (color
- * picker, surface picker) grows from here as it is ported from the Flutter
- * reference in apps/paintsprout_flutter.
+ * Hosts [PaintCanvasView] behind a floating tool rail — the native counterpart
+ * of the Flutter reference's `CanvasScreen` + `_ToolRail`. The rail's buttons are
+ * built in code: a loop over the tools, then context-sensitive color / size /
+ * surface / selection / history / save actions. Landscape-locked and immersive.
+ *
+ * Undo/redo map straight to the canvas's own op history (paint ops). Surface and
+ * plain-colour changes are not yet on that timeline (a known gap vs. Flutter,
+ * which snapshots the whole document).
  */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
+
+    private var tool = Tool.PENCIL
+    private var color = Color.BLACK
     private var surfaceIndex = AVAILABLE_SURFACES.indexOf(SurfaceKind.PAPER).coerceAtLeast(0)
+    private var plainColor = Color.WHITE
+    private var hasSelection = false
+
+    // Magic-wand settings (Flutter defaults).
+    private var wandTolerance = 0.15f
+    private var wandEdgeSensitivity = 0.5f
+    private var wandGap = 3
+
+    // Each tool remembers its own base size.
+    private val sizes = Tool.values().associateWith { it.defaultSize }.toMutableMap()
+
+    // Rail views kept for state updates.
+    private val toolButtons = mutableMapOf<Tool, ImageButton>()
+    private lateinit var colorBtn: ImageButton
+    private lateinit var sizeBtn: TextView
+    private lateinit var toleranceBtn: TextView
+    private lateinit var surfaceBtn: ImageButton
+    private lateinit var fillBtn: ImageButton
+    private lateinit var eraseBtn: ImageButton
+    private lateinit var deselectBtn: ImageButton
+    private lateinit var undoBtn: ImageButton
+    private lateinit var redoBtn: ImageButton
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
 
-        binding.btnPencil.setOnClickListener { binding.canvas.tool = Tool.PENCIL }
-        binding.btnPen.setOnClickListener { binding.canvas.tool = Tool.PEN }
-        binding.btnMarker.setOnClickListener { binding.canvas.tool = Tool.MARKER }
-        binding.btnBrush.setOnClickListener { binding.canvas.tool = Tool.BRUSH }
-        binding.btnWater.setOnClickListener { binding.canvas.tool = Tool.WATERCOLOR }
-        binding.btnSpray.setOnClickListener { binding.canvas.tool = Tool.SPRAY }
-        binding.btnEraser.setOnClickListener { binding.canvas.tool = Tool.ERASER }
-        binding.btnWand.setOnClickListener { binding.canvas.tool = Tool.WAND }
-        binding.btnFill.setOnClickListener { binding.canvas.fillSelection(binding.canvas.strokeColor) }
-        binding.btnDelete.setOnClickListener { binding.canvas.deleteSelection() }
-        binding.btnDeselect.setOnClickListener { binding.canvas.clearSelection() }
-        binding.btnClear.setOnClickListener { binding.canvas.clear() }
-        binding.btnSurface.setOnClickListener { cycleSurface() }
-        binding.btnUndo.setOnClickListener { binding.canvas.undo() }
-        binding.btnRedo.setOnClickListener { binding.canvas.redo() }
-        binding.btnSave.setOnClickListener { save() }
-        binding.canvas.onHistoryChanged = { updateHistoryButtons() }
-        binding.canvas.onSelectionChanged = { updateSelectionButtons(it) }
-        updateSurfaceLabel()
-        updateHistoryButtons()
-        updateSelectionButtons(false)
+        buildRail()
+        binding.btnShowRail.setOnClickListener { setRailVisible(true) }
+
+        binding.canvas.tool = tool
+        binding.canvas.strokeColor = color
+        binding.canvas.baseSize = sizes[tool]
+        binding.canvas.plainColor = plainColor
+        applyWandSettings()
+        binding.canvas.onHistoryChanged = { updateRail() }
+        binding.canvas.onSelectionChanged = {
+            hasSelection = it
+            updateRail()
+        }
+        updateRail()
     }
 
-    private fun updateHistoryButtons() {
-        binding.btnUndo.isEnabled = binding.canvas.canUndo
-        binding.btnRedo.isEnabled = binding.canvas.canRedo
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemBars()
     }
 
-    private fun updateSelectionButtons(hasSelection: Boolean) {
-        binding.btnFill.isEnabled = hasSelection
-        binding.btnDelete.isEnabled = hasSelection
-        binding.btnDeselect.isEnabled = hasSelection
+    private fun hideSystemBars() {
+        WindowInsetsControllerCompat(window, binding.root).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
+    // --- Rail construction --------------------------------------------------
+
+    private fun buildRail() {
+        val rail = binding.rail
+        for (t in Tool.values()) {
+            val b = iconButton(toolIcon(t), t.label) { onToolChanged(t) }
+            toolButtons[t] = b
+            rail.addView(b)
+        }
+        rail.addView(divider())
+
+        colorBtn = iconButton(0, "Color") { pickColor("Stroke color", color) { onColorChanged(it) } }
+        rail.addView(colorBtn)
+
+        sizeBtn = textButton("Size") { pickSize() }
+        rail.addView(sizeBtn)
+        toleranceBtn = textButton("Wand tolerance") { pickWand() }
+        rail.addView(toleranceBtn)
+
+        surfaceBtn = iconButton(surfaceIcon(currentSurface()), "Surface") { pickSurface() }
+        rail.addView(surfaceBtn)
+
+        fillBtn = iconButton(R.drawable.ic_fill, "Fill selection") { binding.canvas.fillSelection(color) }
+        eraseBtn = iconButton(R.drawable.ic_erase_sel, "Erase inside selection") { binding.canvas.deleteSelection() }
+        deselectBtn = iconButton(R.drawable.ic_deselect, "Deselect") { binding.canvas.clearSelection() }
+        rail.addView(fillBtn)
+        rail.addView(eraseBtn)
+        rail.addView(deselectBtn)
+
+        rail.addView(divider())
+        undoBtn = iconButton(R.drawable.ic_undo, "Undo") { binding.canvas.undo() }
+        redoBtn = iconButton(R.drawable.ic_redo, "Redo") { binding.canvas.redo() }
+        rail.addView(undoBtn)
+        rail.addView(redoBtn)
+
+        rail.addView(divider())
+        rail.addView(iconButton(R.drawable.ic_save, "Save PNG") { save() })
+        rail.addView(iconButton(R.drawable.ic_clear, "Clear") { confirmClear() })
+        rail.addView(iconButton(R.drawable.ic_hide, "Hide toolbar") { setRailVisible(false) })
+    }
+
+    private fun updateRail() {
+        for ((t, b) in toolButtons) b.background = if (t == tool) selectedBg() else rippleBg()
+
+        colorBtn.visibility = if (tool == Tool.ERASER) View.GONE else View.VISIBLE
+        colorBtn.setImageDrawable(swatchDrawable(color))
+
+        sizeBtn.visibility = if (tool == Tool.WAND) View.GONE else View.VISIBLE
+        sizeBtn.text = (sizes[tool] ?: tool.defaultSize).roundToInt().toString()
+        toleranceBtn.visibility = if (tool == Tool.WAND) View.VISIBLE else View.GONE
+        toleranceBtn.text = "${(wandTolerance * 100).roundToInt()}%"
+
+        surfaceBtn.setImageResource(surfaceIcon(currentSurface()))
+
+        val selVis = if (hasSelection) View.VISIBLE else View.GONE
+        fillBtn.visibility = selVis
+        eraseBtn.visibility = selVis
+        deselectBtn.visibility = selVis
+        fillBtn.imageTintList = android.content.res.ColorStateList.valueOf(color)
+
+        setEnabled(undoBtn, binding.canvas.canUndo)
+        setEnabled(redoBtn, binding.canvas.canRedo)
+    }
+
+    private fun onToolChanged(t: Tool) {
+        tool = t
+        binding.canvas.tool = t
+        binding.canvas.baseSize = sizes[t]
+        updateRail()
+    }
+
+    private fun onColorChanged(c: Int) {
+        color = c
+        binding.canvas.strokeColor = c
+        updateRail()
+    }
+
+    private fun setRailVisible(visible: Boolean) {
+        binding.railCard.visibility = if (visible) View.VISIBLE else View.GONE
+        binding.btnShowRail.visibility = if (visible) View.GONE else View.VISIBLE
+    }
+
+    // --- Pickers ------------------------------------------------------------
+
+    private fun pickSize() {
+        var working = sizes[tool] ?: tool.defaultSize
+        val label = TextView(this).apply {
+            text = working.roundToInt().toString()
+            textSize = 28f
+            gravity = Gravity.CENTER
+        }
+        val slider = Slider(this).apply {
+            valueFrom = 1f
+            valueTo = 80f
+            value = working.coerceIn(1f, 80f)
+            addOnChangeListener { _, v, _ ->
+                working = v
+                label.text = v.roundToInt().toString()
+            }
+        }
+        val content = vbox(label, slider)
+        MaterialAlertDialogBuilder(this)
+            .setTitle("${tool.label} size")
+            .setView(content)
+            .setPositiveButton("Done") { _, _ ->
+                sizes[tool] = working
+                binding.canvas.baseSize = working
+                updateRail()
+            }
+            .show()
+    }
+
+    private fun pickWand() {
+        var tol = wandTolerance
+        var edge = wandEdgeSensitivity
+        var gap = wandGap.toFloat()
+        val tolLabel = TextView(this)
+        val edgeLabel = TextView(this)
+        val gapLabel = TextView(this)
+        fun refresh() {
+            tolLabel.text = "Tolerance  ${(tol * 100).roundToInt()}%"
+            edgeLabel.text = "Edge sensitivity  ${(edge * 100).roundToInt()}%"
+            gapLabel.text = "Close gaps  ${gap.roundToInt()} px"
+        }
+        refresh()
+        val tolSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 1f; value = tol
+            addOnChangeListener { _, v, _ -> tol = v; refresh() }
+        }
+        val edgeSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 1f; value = edge
+            addOnChangeListener { _, v, _ -> edge = v; refresh() }
+        }
+        val gapSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 8f; stepSize = 1f; value = gap
+            addOnChangeListener { _, v, _ -> gap = v; refresh() }
+        }
+        val content = vbox(
+            tolLabel, tolSlider, hint("Higher = matches a wider range of colors."),
+            edgeLabel, edgeSlider, hint("Higher = fainter lines (soft pencil) stop the fill."),
+            gapLabel, gapSlider, hint("Bridges holes in a grainy/broken boundary."),
+        )
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Magic wand")
+            .setView(content)
+            .setPositiveButton("Done") { _, _ ->
+                wandTolerance = tol
+                wandEdgeSensitivity = edge
+                wandGap = gap.roundToInt()
+                applyWandSettings()
+                updateRail()
+            }
+            .show()
+    }
+
+    private fun pickSurface() {
+        val labels = AVAILABLE_SURFACES.map { it.label }.toTypedArray()
+        val current = surfaceIndex
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Surface")
+            .setSingleChoiceItems(labels, current) { dialog, which ->
+                dialog.dismiss()
+                onSurfaceChosen(which)
+            }
+            .show()
+    }
+
+    private fun onSurfaceChosen(index: Int) {
+        surfaceIndex = index
+        val kind = AVAILABLE_SURFACES[index]
+        if (kind == SurfaceKind.PLAIN) {
+            binding.canvas.setSurface(kind)
+            pickColor("Background color", plainColor) { c ->
+                plainColor = c
+                binding.canvas.plainColor = c
+                binding.canvas.setSurface(SurfaceKind.PLAIN)
+            }
+        } else {
+            binding.canvas.setSurface(kind)
+        }
+        updateRail()
+    }
+
+    /** Swatch grid + RGB sliders. [onUse] fires with the chosen ARGB colour. */
+    private fun pickColor(title: String, initial: Int, onUse: (Int) -> Unit) {
+        var working = initial or (0xFF shl 24)
+        val preview = View(this)
+        val r = channelSlider()
+        val g = channelSlider()
+        val b = channelSlider()
+        fun syncPreview() {
+            working = Color.rgb(r.value.toInt(), g.value.toInt(), b.value.toInt())
+            preview.background = swatchDrawable(working)
+        }
+        r.value = Color.red(working).toFloat()
+        g.value = Color.green(working).toFloat()
+        b.value = Color.blue(working).toFloat()
+        listOf(r, g, b).forEach { it.addOnChangeListener { _, _, _ -> syncPreview() } }
+
+        val grid = GridLayout(this).apply {
+            columnCount = 6
+            setPadding(0, dp(4), 0, dp(8))
+        }
+        for (c in SWATCHES) {
+            grid.addView(swatchCell(c) {
+                r.value = Color.red(c).toFloat()
+                g.value = Color.green(c).toFloat()
+                b.value = Color.blue(c).toFloat()
+                syncPreview()
+            })
+        }
+        preview.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(28))
+        preview.background = swatchDrawable(working)
+
+        val content = vbox(grid, preview, labelled("R", r), labelled("G", g), labelled("B", b))
+        MaterialAlertDialogBuilder(this)
+            .setTitle(title)
+            .setView(content)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Use") { _, _ -> onUse(working) }
+            .show()
+    }
+
+    private fun confirmClear() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Clear canvas?")
+            .setMessage("This erases everything. There is no undo.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Clear") { _, _ -> binding.canvas.clear() }
+            .show()
     }
 
     private fun save() {
         binding.canvas.savePng { result ->
             val msg = result.fold(
-                onSuccess = { "Saved: $it" },
+                onSuccess = { "Saved to $it" },
                 onFailure = { "Save failed: ${it.message}" },
             )
-            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+            Snackbar.make(binding.root, msg, Snackbar.LENGTH_SHORT).show()
         }
     }
 
-    private fun cycleSurface() {
-        surfaceIndex = (surfaceIndex + 1) % AVAILABLE_SURFACES.size
-        binding.canvas.setSurface(AVAILABLE_SURFACES[surfaceIndex])
-        updateSurfaceLabel()
+    private fun applyWandSettings() {
+        binding.canvas.wandTolerance = wandTolerance
+        binding.canvas.wandEdgeSensitivity = wandEdgeSensitivity
+        binding.canvas.wandGap = wandGap
     }
 
-    private fun updateSurfaceLabel() {
-        binding.btnSurface.text = "Surface: ${AVAILABLE_SURFACES[surfaceIndex].label}"
+    private fun currentSurface() = AVAILABLE_SURFACES[surfaceIndex]
+
+    // --- View helpers -------------------------------------------------------
+
+    private fun iconButton(iconRes: Int, desc: String, onClick: () -> Unit): ImageButton =
+        ImageButton(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            if (iconRes != 0) setImageResource(iconRes)
+            scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
+            setPadding(dp(9), dp(9), dp(9), dp(9))
+            background = rippleBg()
+            imageTintList = android.content.res.ColorStateList.valueOf(0xFF37474F.toInt())
+            contentDescription = desc
+            setOnClickListener { onClick() }
+        }
+
+    private fun textButton(desc: String, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            gravity = Gravity.CENTER
+            setTextColor(0xFF37474F.toInt())
+            textSize = 13f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            background = rippleBg()
+            isClickable = true
+            contentDescription = desc
+            setOnClickListener { onClick() }
+        }
+
+    private fun divider(): View = View(this).apply {
+        layoutParams = LinearLayout.LayoutParams(dp(28), dp(1)).apply {
+            topMargin = dp(6); bottomMargin = dp(6)
+        }
+        setBackgroundColor(0x22000000)
+    }
+
+    private fun channelSlider() = Slider(this).apply {
+        valueFrom = 0f; valueTo = 255f; stepSize = 1f
+    }
+
+    private fun swatchCell(color: Int, onClick: () -> Unit): View = View(this).apply {
+        layoutParams = GridLayout.LayoutParams().apply {
+            width = dp(34); height = dp(34)
+            setMargins(dp(3), dp(3), dp(3), dp(3))
+        }
+        background = swatchDrawable(color)
+        setOnClickListener { onClick() }
+    }
+
+    private fun swatchDrawable(color: Int): GradientDrawable = GradientDrawable().apply {
+        shape = GradientDrawable.OVAL
+        setColor(color)
+        setStroke(dp(1), 0x33000000)
+        setSize(dp(24), dp(24))
+    }
+
+    private fun selectedBg(): GradientDrawable = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = dp(12).toFloat()
+        setColor(0x333DA35A)
+    }
+
+    /** A fresh borderless-ripple background (each view needs its own instance). */
+    private fun rippleBg(): android.graphics.drawable.Drawable? {
+        val outValue = TypedValue()
+        theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, outValue, true)
+        return ResourcesCompat.getDrawable(resources, outValue.resourceId, theme)
+    }
+
+    private fun labelled(name: String, slider: Slider): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(TextView(context).apply { text = name; width = dp(20) })
+        addView(slider, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+    }
+
+    private fun hint(text: String): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 12f
+        setTextColor(0x8A000000.toInt())
+        setPadding(0, 0, 0, dp(8))
+    }
+
+    private fun vbox(vararg views: View): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(20), dp(8), dp(20), dp(0))
+        for (v in views) addView(v)
+    }
+
+    private fun setEnabled(b: ImageButton, enabled: Boolean) {
+        b.isEnabled = enabled
+        b.alpha = if (enabled) 1f else 0.3f
+    }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).roundToInt()
+
+    private fun toolIcon(t: Tool): Int = when (t) {
+        Tool.PENCIL -> R.drawable.ic_tool_pencil
+        Tool.PEN -> R.drawable.ic_tool_pen
+        Tool.BRUSH -> R.drawable.ic_tool_brush
+        Tool.WATERCOLOR -> R.drawable.ic_tool_watercolor
+        Tool.MARKER -> R.drawable.ic_tool_marker
+        Tool.SPRAY -> R.drawable.ic_tool_spray
+        Tool.ERASER -> R.drawable.ic_tool_eraser
+        Tool.WAND -> R.drawable.ic_tool_wand
+    }
+
+    private fun surfaceIcon(s: SurfaceKind): Int = when (s) {
+        SurfaceKind.PAPER -> R.drawable.ic_surface_paper
+        SurfaceKind.CANVAS -> R.drawable.ic_surface_canvas
+        SurfaceKind.METAL -> R.drawable.ic_surface_metal
+        SurfaceKind.STONE -> R.drawable.ic_surface_stone
+        SurfaceKind.WOOD -> R.drawable.ic_surface_wood
+        SurfaceKind.WATERCOLOR -> R.drawable.ic_surface_watercolor
+        SurfaceKind.CHALKBOARD -> R.drawable.ic_surface_chalkboard
+        SurfaceKind.CONCRETE -> R.drawable.ic_surface_concrete
+        SurfaceKind.PLAIN -> R.drawable.ic_surface_plain
+    }
+
+    private companion object {
+        // Material palette, matching the Flutter reference's swatch list.
+        val SWATCHES = intArrayOf(
+            0xFF000000.toInt(), 0xFFFFFFFF.toInt(), 0xFF9E9E9E.toInt(),
+            0xFF795548.toInt(), 0xFFF44336.toInt(), 0xFFFF5722.toInt(),
+            0xFFFF9800.toInt(), 0xFFFFC107.toInt(), 0xFFFFEB3B.toInt(),
+            0xFF8BC34A.toInt(), 0xFF4CAF50.toInt(), 0xFF009688.toInt(),
+            0xFF00BCD4.toInt(), 0xFF03A9F4.toInt(), 0xFF2196F3.toInt(),
+            0xFF3F51B5.toInt(), 0xFF9C27B0.toInt(), 0xFFE91E63.toInt(),
+        )
     }
 }

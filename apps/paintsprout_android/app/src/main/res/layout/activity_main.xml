@@ -1,63 +1,57 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical">
-
-    <!-- Bare-bones toolbar for Stage 3 verification. The real tool chrome
-         (color picker, surface picker, full tool set) is a later stage. -->
-    <HorizontalScrollView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="#EEEEEE"
-        android:scrollbars="none">
-
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:padding="8dp">
-
-            <Button android:id="@+id/btnPencil" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Pencil" />
-            <Button android:id="@+id/btnPen" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Pen" />
-            <Button android:id="@+id/btnMarker" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Marker" />
-            <Button android:id="@+id/btnBrush" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Brush" />
-            <Button android:id="@+id/btnWater" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Water" />
-            <Button android:id="@+id/btnSpray" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Spray" />
-            <Button android:id="@+id/btnEraser" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Eraser" />
-            <Button android:id="@+id/btnWand" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Wand" />
-            <Button android:id="@+id/btnFill" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Fill" />
-            <Button android:id="@+id/btnDelete" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Del" />
-            <Button android:id="@+id/btnDeselect" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Deselect" />
-            <Button android:id="@+id/btnSurface" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Surface" />
-            <Button android:id="@+id/btnUndo" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Undo" />
-            <Button android:id="@+id/btnRedo" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Redo" />
-            <Button android:id="@+id/btnSave" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Save" />
-            <Button android:id="@+id/btnClear" style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Clear" />
-
-        </LinearLayout>
-    </HorizontalScrollView>
+    android:layout_height="match_parent">
 
     <com.symmetricalpalmtree.paintsprout.PaintCanvasView
         android:id="@+id/canvas"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
+        android:layout_height="match_parent" />
 
-</LinearLayout>
+    <!-- Floating tool rail. Its buttons are built in code (a loop over the
+         tools, plus context-sensitive color/size/surface/selection actions),
+         mirroring the Flutter reference's _ToolRail. -->
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/railCard"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="start|center_vertical"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="12dp"
+        android:layout_marginBottom="12dp"
+        app:cardBackgroundColor="#F0FFFFFF"
+        app:cardCornerRadius="28dp"
+        app:cardElevation="6dp">
+
+        <ScrollView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:id="@+id/rail"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center_horizontal"
+                android:paddingVertical="8dp"
+                android:paddingHorizontal="4dp" />
+        </ScrollView>
+    </com.google.android.material.card.MaterialCardView>
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnShowRail"
+        style="@style/Widget.Material3.Button.IconButton.Filled.Tonal"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="start|center_vertical"
+        android:layout_marginStart="12dp"
+        android:visibility="gone"
+        app:icon="@drawable/ic_show"
+        app:iconGravity="textStart"
+        app:iconPadding="0dp" />
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

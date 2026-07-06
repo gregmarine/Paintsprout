@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Paintsprout" parent="Theme.AppCompat.Light.NoActionBar">
+    <style name="Theme.Paintsprout" parent="Theme.Material3.Light.NoActionBar">
         <item name="colorPrimary">@color/sproutGreen</item>
         <item name="colorPrimaryDark">@color/sproutGreen</item>
+        <item name="colorSecondary">@color/sproutGreen</item>
         <item name="colorAccent">@color/sproutGreen</item>
 
         <item name="android:windowBackground">@color/canvasWhite</item>
