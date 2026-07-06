@@ -31,19 +31,31 @@ class MainActivity : AppCompatActivity() {
         binding.btnWater.setOnClickListener { binding.canvas.tool = Tool.WATERCOLOR }
         binding.btnSpray.setOnClickListener { binding.canvas.tool = Tool.SPRAY }
         binding.btnEraser.setOnClickListener { binding.canvas.tool = Tool.ERASER }
+        binding.btnWand.setOnClickListener { binding.canvas.tool = Tool.WAND }
+        binding.btnFill.setOnClickListener { binding.canvas.fillSelection(binding.canvas.strokeColor) }
+        binding.btnDelete.setOnClickListener { binding.canvas.deleteSelection() }
+        binding.btnDeselect.setOnClickListener { binding.canvas.clearSelection() }
         binding.btnClear.setOnClickListener { binding.canvas.clear() }
         binding.btnSurface.setOnClickListener { cycleSurface() }
         binding.btnUndo.setOnClickListener { binding.canvas.undo() }
         binding.btnRedo.setOnClickListener { binding.canvas.redo() }
         binding.btnSave.setOnClickListener { save() }
         binding.canvas.onHistoryChanged = { updateHistoryButtons() }
+        binding.canvas.onSelectionChanged = { updateSelectionButtons(it) }
         updateSurfaceLabel()
         updateHistoryButtons()
+        updateSelectionButtons(false)
     }
 
     private fun updateHistoryButtons() {
         binding.btnUndo.isEnabled = binding.canvas.canUndo
         binding.btnRedo.isEnabled = binding.canvas.canRedo
+    }
+
+    private fun updateSelectionButtons(hasSelection: Boolean) {
+        binding.btnFill.isEnabled = hasSelection
+        binding.btnDelete.isEnabled = hasSelection
+        binding.btnDeselect.isEnabled = hasSelection
     }
 
     private fun save() {

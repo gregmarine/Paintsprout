@@ -1,22 +1,34 @@
 package com.symmetricalpalmtree.paintsprout
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapShader
 import android.graphics.BlendMode
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PathMeasure
+import android.graphics.PointF
 import android.graphics.Rect
+import android.graphics.RectF
+import android.graphics.RuntimeShader
+import android.graphics.Shader
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
 import androidx.annotation.ColorInt
 import androidx.core.graphics.createBitmap
+import com.symmetricalpalmtree.paintsprout.paint.EraseOp
+import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.GalleryExport
 import com.symmetricalpalmtree.paintsprout.paint.GpuRender
+import com.symmetricalpalmtree.paintsprout.paint.MoveOp
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
 import com.symmetricalpalmtree.paintsprout.paint.PigmentMixer
+import com.symmetricalpalmtree.paintsprout.paint.SelectionRender
 import com.symmetricalpalmtree.paintsprout.paint.Stroke
 import com.symmetricalpalmtree.paintsprout.paint.StrokeOp
 import com.symmetricalpalmtree.paintsprout.paint.StrokePoint
@@ -25,6 +37,7 @@ import com.symmetricalpalmtree.paintsprout.paint.SurfaceKind
 import com.symmetricalpalmtree.paintsprout.paint.Tool
 import com.symmetricalpalmtree.paintsprout.paint.ToothCache
 import com.symmetricalpalmtree.paintsprout.paint.Vec2
+import com.symmetricalpalmtree.paintsprout.paint.WandFloodFill
 import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
 import com.symmetricalpalmtree.paintsprout.paint.resolveDensity
 import com.symmetricalpalmtree.paintsprout.paint.resolveWidth
@@ -33,8 +46,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.atan2
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.random.Random
@@ -46,10 +62,12 @@ import kotlin.random.Random
  * [paintBmp] (committed strokes, transparent where unpainted so the surface
  * shows through). The stroke under the pointer is previewed on top in [onDraw]
  * until pointer-up, then baked into [paintBmp] off-thread. Only stylus input
- * draws; touch is ignored (touch gestures come in a later stage).
+ * draws; touch is ignored.
  *
- * Stage 2 keeps the surface a flat white fill and draws only solid strokes;
- * procedural surfaces, the tooth, and the other tools arrive in Stage 3.
+ * The magic wand (Tool.WAND) selects a contiguous painted region, then fills /
+ * erases inside it, constrains further painting to it (a frisket), or lifts it
+ * to move / scale / rotate. Selection edits join [committed] as [FillOp] /
+ * [EraseOp] / [MoveOp] so they undo/redo like strokes.
  */
 class PaintCanvasView @JvmOverloads constructor(
     context: Context,
@@ -57,8 +75,13 @@ class PaintCanvasView @JvmOverloads constructor(
     defStyleAttr: Int = 0,
 ) : View(context, attrs, defStyleAttr) {
 
-    /** The active drawing tool. */
+    /** The active drawing tool. Leaving the wand while a move is floating bakes it. */
     var tool: Tool = Tool.PEN
+        set(value) {
+            val old = field
+            field = value
+            if (old != value && old == Tool.WAND && isFloating) scope.launch { commitFloating() }
+        }
 
     /** Deposit color (ARGB). Ignored by the eraser. */
     @ColorInt
@@ -75,6 +98,11 @@ class PaintCanvasView @JvmOverloads constructor(
     @ColorInt
     var plainColor: Int = Color.WHITE
 
+    // Magic-wand tuning (Flutter reference defaults).
+    var wandTolerance: Float = 0.15f
+    var wandEdgeSensitivity: Float = 0.5f
+    var wandGap: Int = 3
+
     private fun sizeFor(t: Tool): Float = baseSize ?: t.defaultSize
 
     // --- Buffers ------------------------------------------------------------
@@ -87,36 +115,87 @@ class PaintCanvasView @JvmOverloads constructor(
 
     // --- Live stroke --------------------------------------------------------
     private var active: Stroke? = null
+    private var activeClip: Bitmap? = null
     private var activePointerId = INVALID_POINTER
     private val unbaked = mutableListOf<Stroke>()
+    private val unbakedClips = mutableListOf<Bitmap?>()
     private var pressureMax = 1.0f
 
     // --- History ------------------------------------------------------------
-    /** Every committed op in paint order — the source of truth replayed on undo. */
     private val committed = mutableListOf<PaintOp>()
     private val redoStack = mutableListOf<PaintOp>()
-
-    /** Fired after the undo/redo state changes, so the UI can refresh its buttons. */
     var onHistoryChanged: (() -> Unit)? = null
-
     val canUndo: Boolean get() = committed.isNotEmpty()
     val canRedo: Boolean get() = redoStack.isNotEmpty()
+
+    // --- Magic-wand selection -----------------------------------------------
+    /** White where selected (half-buffer resolution), or null when unselected. */
+    private var selectionMask: Bitmap? = null
+
+    /** Selection bounds in VIEW (= buffer) pixels. */
+    private val selRect = RectF()
+
+    /** Fired when a selection appears (true) or is cleared (false). */
+    var onSelectionChanged: ((Boolean) -> Unit)? = null
+    val hasSelection: Boolean get() = selectionMask != null || isFloating
+
+    // Floating move/transform.
+    private var floating: Bitmap? = null       // lifted paint (buffer res)
+    private var paintHole: Bitmap? = null      // committed paint with the region removed
+    private var floatSourceMask: Bitmap? = null
+    private val floatTranslate = PointF(0f, 0f)
+    private var floatScale = 1f
+    private var floatRotation = 0f // radians
+    private var lifting = false
+    private val isFloating: Boolean get() = floating != null
+
+    // Wand-gesture tracking (single stylus pointer).
+    private var wandPointerId = INVALID_POINTER
+    private var wandDownPos: PointF? = null
+    private var wandMoved = false
+    private var movePointerId = INVALID_POINTER
+    private var xformMode: Xform? = null
+    private val moveLastPos = PointF()
+    private var gestureStartScale = 1f
+    private var gestureStartDist = 1f
+    private var gestureStartRotation = 0f
+    private var gestureStartAngle = 0f
+
+    private enum class Xform { TRANSLATE, SCALE, ROTATE }
+
+    // Marching-ants animation.
+    private var antsPhase = 0f
+    private val antsAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 700L
+        repeatCount = ValueAnimator.INFINITE
+        interpolator = null
+        addUpdateListener {
+            antsPhase = it.animatedValue as Float
+            invalidate()
+        }
+    }
 
     // --- Baking -------------------------------------------------------------
     private var baking = false
     private var rebuilding = false
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    /**
-     * Spectral pigment-mixing shader source (res/raw/pigment_mix.agsl), loaded
-     * once. Null if it fails to load, in which case watercolor falls back to a
-     * plain over-composite (no true pigment mixing).
-     */
     private val pigmentAgsl: String? by lazy {
         runCatching {
             resources.openRawResource(R.raw.pigment_mix).bufferedReader().use { it.readText() }
         }.getOrNull()
     }
+
+    /** Marching-ants overlay shader (res/raw/selection_overlay.agsl). */
+    private val antsShader: RuntimeShader? by lazy {
+        runCatching {
+            val src = resources.openRawResource(R.raw.selection_overlay)
+                .bufferedReader().use { it.readText() }
+            RuntimeShader(src)
+        }.getOrNull()
+    }
+
+    private val hqPaint = Paint().apply { isFilterBitmap = true }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
@@ -126,17 +205,17 @@ class PaintCanvasView @JvmOverloads constructor(
         srcRect.set(0, 0, bufW, bufH)
         dstRect.set(0, 0, w, h)
 
-        // A flat placeholder surface so drawing works immediately; the textured
-        // surface is built off-thread and swapped in a frame later.
         val placeholder = createBitmap(bufW, bufH).apply { Canvas(this).drawColor(plainColor) }
-        val newPaint = createBitmap(bufW, bufH) // transparent
+        val newPaint = createBitmap(bufW, bufH)
 
         surfaceBmp?.recycle()
         paintBmp?.recycle()
         surfaceBmp = placeholder
         paintBmp = newPaint
         unbaked.clear()
+        unbakedClips.clear()
         active = null
+        clearSelectionState()
         invalidate()
         regenerateSurface()
     }
@@ -147,10 +226,6 @@ class PaintCanvasView @JvmOverloads constructor(
         regenerateSurface()
     }
 
-    /**
-     * Builds the (procedural) surface visual off-thread and swaps it in. Also
-     * ensures the tooth textures are baked (idempotent).
-     */
     private fun regenerateSurface() {
         val w = bufW
         val h = bufH
@@ -162,7 +237,7 @@ class PaintCanvasView @JvmOverloads constructor(
                 ToothCache.init()
                 buildSurfaceVisual(kind, w, h, pc)
             }
-            if (bufW != w || bufH != h) { // size changed while building
+            if (bufW != w || bufH != h) {
                 bmp.recycle()
                 return@launch
             }
@@ -177,20 +252,130 @@ class PaintCanvasView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         val surfaceLayer = surfaceBmp ?: return
-        val paintLayer = paintBmp ?: return
-
-        // Base surface, scaled from the buffer to the view.
         canvas.drawBitmap(surfaceLayer, srcRect, dstRect, null)
 
-        // Composite the paint in an isolated layer so an eraser stroke (CLEAR)
-        // punches through to reveal the surface, not the window behind the view.
+        // Moving a selection: the committed paint with a hole where the region was
+        // lifted, then the floating paint on top under its live transform.
+        val fl = floating
+        val hole = paintHole
+        if (fl != null && hole != null) {
+            canvas.drawBitmap(hole, srcRect, dstRect, hqPaint)
+            canvas.save()
+            canvas.concat(floatMatrix(1f))
+            canvas.drawBitmap(fl, srcRect, dstRect, hqPaint)
+            canvas.restore()
+            drawSelectionOverlay(canvas)
+            return
+        }
+
+        val paintLayer = paintBmp ?: return
+        val liveClip = activeClip ?: unbakedClips.lastOrNull { it != null }
+        val hasEdits = unbaked.isNotEmpty() || active != null
+
+        // Isolated layer so an eraser stroke (CLEAR) punches through to the surface
+        // rather than the window behind the view.
         val layer = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
-        canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
-        // Live strokes are in view (logical) coordinates, drawn straight onto the
-        // view canvas — SUPER_SAMPLE only affects the buffer bitmaps above.
-        for (s in unbaked) StrokeRenderer.paintStroke(canvas, s, surface)
-        active?.let { StrokeRenderer.paintStroke(canvas, it, surface) }
+        if (liveClip == null || !hasEdits) {
+            canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
+            for (s in unbaked) StrokeRenderer.paintStroke(canvas, s, surface)
+            active?.let { StrokeRenderer.paintStroke(canvas, it, surface) }
+        } else {
+            // Frisket: committed paint outside the selection, the edited result
+            // inside — `committed*(1-m) + edited*m` — so live strokes (and the
+            // eraser) can't spill past the boundary.
+            val mSrc = Rect(0, 0, liveClip.width, liveClip.height)
+            val punch = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
+            canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
+            canvas.drawBitmap(liveClip, mSrc, dstRect, dstOutPaint)
+            canvas.restoreToCount(punch)
+            val inside = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
+            canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
+            for (s in unbaked) StrokeRenderer.paintStroke(canvas, s, surface)
+            active?.let { StrokeRenderer.paintStroke(canvas, it, surface) }
+            canvas.drawBitmap(liveClip, mSrc, dstRect, dstInPaint)
+            canvas.restoreToCount(inside)
+        }
         canvas.restoreToCount(layer)
+
+        drawSelectionOverlay(canvas)
+    }
+
+    /** Marching ants over the selection, or the transform frame while floating. */
+    private fun drawSelectionOverlay(canvas: Canvas) {
+        if (isFloating) {
+            drawFloatFrame(canvas)
+            return
+        }
+        val mask = selectionMask ?: return
+        val shader = antsShader
+        if (shader != null) {
+            val bmpShader = BitmapShader(mask, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+                setLocalMatrix(Matrix().apply {
+                    setScale(width.toFloat() / mask.width, height.toFloat() / mask.height)
+                })
+            }
+            shader.setInputShader("uMask", bmpShader)
+            shader.setFloatUniform("uTime", antsPhase)
+            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), Paint().apply { this.shader = shader })
+            return
+        }
+        // Fallback: dim outside + faint tint.
+        val mSrc = Rect(0, 0, mask.width, mask.height)
+        val dim = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
+        canvas.drawColor(0x47000000)
+        canvas.drawBitmap(mask, mSrc, dstRect, dstOutPaint)
+        canvas.restoreToCount(dim)
+    }
+
+    /** Dashed transform frame with corner scale handles and a rotate stalk. */
+    private fun drawFloatFrame(canvas: Canvas) {
+        val quad = floatCorners()
+        val rotate = rotateHandle()
+        val outline = Path().apply {
+            moveTo(quad[0].x, quad[0].y)
+            for (i in 1 until quad.size) lineTo(quad[i].x, quad[i].y)
+            close()
+            val topMid = PointF((quad[0].x + quad[1].x) / 2, (quad[0].y + quad[1].y) / 2)
+            moveTo(topMid.x, topMid.y)
+            lineTo(rotate.x, rotate.y)
+        }
+        val white = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 1.6f
+        }
+        val black = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 1.6f
+        }
+        val dash = 9f
+        val phase = antsPhase * dash * 2
+        val measure = PathMeasure(outline, false)
+        do {
+            val len = measure.length
+            var d = -phase
+            var i = 0
+            val seg = Path()
+            while (d < len) {
+                val start = if (d < 0f) 0f else d
+                val end = (d + dash).coerceIn(0f, len)
+                if (end > start) {
+                    seg.reset()
+                    measure.getSegment(start, end, seg, true)
+                    canvas.drawPath(seg, if (i % 2 == 0) white else black)
+                }
+                d += dash
+                i++
+            }
+        } while (measure.nextContour())
+
+        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+        val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xDD000000.toInt(); style = Paint.Style.STROKE; strokeWidth = 1.4f
+        }
+        for (c in quad) {
+            canvas.drawRect(c.x - 6, c.y - 6, c.x + 6, c.y + 6, fill)
+            canvas.drawRect(c.x - 6, c.y - 6, c.x + 6, c.y + 6, border)
+        }
+        canvas.drawCircle(rotate.x, rotate.y, 7f, fill)
+        canvas.drawCircle(rotate.x, rotate.y, 7f, border)
     }
 
     // --- Input --------------------------------------------------------------
@@ -198,11 +383,15 @@ class PaintCanvasView @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val actionIndex = event.actionIndex
         if (!isStylus(event.getToolType(actionIndex))) {
-            return false // Stage 2: stylus only; touch gestures land later.
+            return false // stylus only; touch gestures land later.
         }
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                if (tool == Tool.WAND) {
+                    handleWandDown(event, actionIndex)
+                    return true
+                }
                 if (active != null) return true
                 activePointerId = event.getPointerId(actionIndex)
                 pressureMax = event.device
@@ -210,6 +399,8 @@ class PaintCanvasView @JvmOverloads constructor(
                     ?.max
                     ?.takeIf { it > 0f } ?: 1.0f
                 val color = if (tool == Tool.ERASER) Color.WHITE else strokeColor
+                // Capture the frisket this stroke is drawn under, if any.
+                activeClip = selectionMask?.copy(Bitmap.Config.ARGB_8888, false)
                 active = Stroke(tool, color, seed = Random.nextInt()).apply {
                     add(sample(event, actionIndex))
                 }
@@ -218,11 +409,13 @@ class PaintCanvasView @JvmOverloads constructor(
             }
 
             MotionEvent.ACTION_MOVE -> {
+                if (tool == Tool.WAND) {
+                    handleWandMove(event)
+                    return true
+                }
                 val stroke = active ?: return true
                 val pi = event.findPointerIndex(activePointerId)
                 if (pi < 0) return true
-                // MotionEvent batches samples between frames — replay the history
-                // for smooth, high-rate capture, then the current sample.
                 for (h in 0 until event.historySize) {
                     stroke.add(sampleHistorical(event, pi, h))
                 }
@@ -232,10 +425,16 @@ class PaintCanvasView @JvmOverloads constructor(
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (tool == Tool.WAND) {
+                    handleWandUp(event, actionIndex)
+                    return true
+                }
                 val stroke = active
                 if (stroke != null && event.getPointerId(actionIndex) == activePointerId) {
                     unbaked.add(stroke)
+                    unbakedClips.add(activeClip)
                     active = null
+                    activeClip = null
                     activePointerId = INVALID_POINTER
                     kickBake()
                     invalidate()
@@ -244,6 +443,84 @@ class PaintCanvasView @JvmOverloads constructor(
             }
         }
         return true
+    }
+
+    // --- Wand gestures ------------------------------------------------------
+
+    private fun handleWandDown(e: MotionEvent, ai: Int) {
+        val p = PointF(e.getX(ai), e.getY(ai))
+        // A corner scales, the top handle rotates, dragging inside moves.
+        val mode = hitTransform(p)
+        if (mode != null) {
+            movePointerId = e.getPointerId(ai)
+            moveLastPos.set(p)
+            xformMode = mode
+            if (!isFloating && !lifting) scope.launch { liftSelection() }
+            return
+        }
+        // Otherwise a stylus tap selects; a drag is ignored (no stroke is created).
+        wandPointerId = e.getPointerId(ai)
+        wandDownPos = PointF(p.x, p.y)
+        wandMoved = false
+    }
+
+    private fun handleWandMove(e: MotionEvent) {
+        if (movePointerId != INVALID_POINTER) {
+            val pi = e.findPointerIndex(movePointerId)
+            if (pi < 0) return
+            val p = PointF(e.getX(pi), e.getY(pi))
+            if (!isFloating) { // lift still in flight — just track position.
+                moveLastPos.set(p)
+                return
+            }
+            when (xformMode) {
+                Xform.TRANSLATE -> {
+                    floatTranslate.offset(p.x - moveLastPos.x, p.y - moveLastPos.y)
+                    moveLastPos.set(p)
+                    invalidate()
+                }
+                Xform.SCALE -> {
+                    val piv = visiblePivot()
+                    val d = hypot(p.x - piv.x, p.y - piv.y)
+                    floatScale = (gestureStartScale * d / gestureStartDist).coerceIn(0.05f, 20f)
+                    invalidate()
+                }
+                Xform.ROTATE -> {
+                    val piv = visiblePivot()
+                    val ang = atan2(p.y - piv.y, p.x - piv.x)
+                    floatRotation = gestureStartRotation + (ang - gestureStartAngle)
+                    invalidate()
+                }
+                null -> {}
+            }
+            return
+        }
+        if (wandPointerId != INVALID_POINTER) {
+            val pi = e.findPointerIndex(wandPointerId)
+            val down = wandDownPos
+            if (pi >= 0 && down != null && hypot(e.getX(pi) - down.x, e.getY(pi) - down.y) > 8f) {
+                wandMoved = true
+            }
+        }
+    }
+
+    private fun handleWandUp(e: MotionEvent, ai: Int) {
+        val pid = e.getPointerId(ai)
+        if (pid == movePointerId) {
+            // Drag ended; the selection stays floating so it can be transformed
+            // again. It bakes on deselect, tool switch, or a new selection.
+            movePointerId = INVALID_POINTER
+            xformMode = null
+            return
+        }
+        if (pid == wandPointerId) {
+            val pos = wandDownPos
+            val moved = wandMoved
+            wandPointerId = INVALID_POINTER
+            wandDownPos = null
+            wandMoved = false
+            if (!moved && pos != null) scope.launch { runWandSelection(pos) }
+        }
     }
 
     private fun sample(e: MotionEvent, pi: Int): StrokePoint =
@@ -268,28 +545,23 @@ class PaintCanvasView @JvmOverloads constructor(
 
     // --- Baking -------------------------------------------------------------
 
-    /**
-     * Bakes any finished-but-unbaked strokes into [paintBmp]. Composites a fresh
-     * buffer off-thread (a copy of the paint plus the strokes), then swaps it in
-     * on the main thread — mirroring Flutter's immutable-image bakes, so the
-     * paint layer is never mutated while [onDraw] reads it.
-     */
     private fun kickBake() {
         if (baking || rebuilding || unbaked.isEmpty()) return
         val base = paintBmp ?: return
         baking = true
         val batch = unbaked.toList()
-        val ops = batch.map { StrokeOp(it) }
+        val clips = unbakedClips.toList()
+        val ops = batch.indices.map { StrokeOp(batch[it], clips[it]) }
         scope.launch {
-            // Fold the new ops onto a copy of the committed paint (incremental).
             val next = withContext(Dispatchers.Default) {
                 foldOps(base.copy(Bitmap.Config.ARGB_8888, true), ops)
             }
             val old = paintBmp
             paintBmp = next
             unbaked.subList(0, batch.size).clear()
+            unbakedClips.subList(0, batch.size).clear()
             committed.addAll(ops)
-            redoStack.clear()
+            clearRedo()
             old?.recycle()
             baking = false
             invalidate()
@@ -300,9 +572,9 @@ class PaintCanvasView @JvmOverloads constructor(
 
     /**
      * Folds [ops] onto [start] (which it takes ownership of), returning the
-     * result. Ordinary strokes deposit directly; a watercolor stroke reads the
-     * paint underneath and mixes spectrally. Shared by the incremental bake and
-     * the full undo/redo rebuild.
+     * result. Ordinary strokes deposit directly; watercolor mixes spectrally; the
+     * wand ops fill / erase / move within their region. Bitmaps the ops own (clip
+     * / mask / sourceMask) are read but never recycled here — they belong to the op.
      */
     private fun foldOps(start: Bitmap, ops: List<PaintOp>): Bitmap {
         var cur = start
@@ -310,41 +582,76 @@ class PaintCanvasView @JvmOverloads constructor(
             when (op) {
                 is StrokeOp -> {
                     val s = op.stroke
-                    if (s.tool == Tool.WATERCOLOR) {
-                        val mixed = compositeWatercolor(cur, s)
-                        if (mixed !== cur) {
-                            cur.recycle()
-                            cur = mixed
+                    val clip = op.clip
+                    if (clip == null) {
+                        if (s.tool == Tool.WATERCOLOR) {
+                            val mixed = compositeWatercolor(cur, s)
+                            if (mixed !== cur) {
+                                cur.recycle()
+                                cur = mixed
+                            }
+                        } else {
+                            Canvas(cur).apply {
+                                save()
+                                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                                StrokeRenderer.paintStroke(this, s, surface)
+                                restore()
+                            }
                         }
                     } else {
-                        Canvas(cur).apply {
-                            save()
-                            scale(SUPER_SAMPLE, SUPER_SAMPLE)
-                            StrokeRenderer.paintStroke(this, s, surface)
-                            restore()
+                        val full = if (s.tool == Tool.WATERCOLOR) {
+                            compositeWatercolor(cur, s)
+                        } else {
+                            cur.copy(Bitmap.Config.ARGB_8888, true).also {
+                                Canvas(it).apply {
+                                    save()
+                                    scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                                    StrokeRenderer.paintStroke(this, s, surface)
+                                    restore()
+                                }
+                            }
                         }
+                        val out = blendMasked(cur, full, clip)
+                        if (full !== cur) full.recycle()
+                        cur.recycle()
+                        cur = out
                     }
+                }
+                is FillOp -> {
+                    Canvas(cur).let {
+                        SelectionRender.paintToothedFill(
+                            it, op.mask, RectF(0f, 0f, bufW.toFloat(), bufH.toFloat()),
+                            op.color, surface, surface.toothScale * SUPER_SAMPLE,
+                        )
+                    }
+                }
+                is EraseOp -> {
+                    SelectionRender.paintMaskedErase(
+                        Canvas(cur), op.mask, RectF(0f, 0f, bufW.toFloat(), bufH.toFloat()),
+                    )
+                }
+                is MoveOp -> {
+                    val out = compositeMove(cur, op)
+                    cur.recycle()
+                    cur = out
                 }
             }
         }
         return cur
     }
 
-    /** Undoes the last committed op, replaying the rest onto a blank paint layer. */
     fun undo() {
         if (baking || rebuilding || committed.isEmpty()) return
         redoStack.add(committed.removeAt(committed.lastIndex))
         rebuild()
     }
 
-    /** Re-applies the most recently undone op. */
     fun redo() {
         if (baking || rebuilding || redoStack.isEmpty()) return
         committed.add(redoStack.removeAt(redoStack.lastIndex))
         rebuild()
     }
 
-    /** Rebuilds the paint layer from [committed] (blank + fold all ops). */
     private fun rebuild() {
         rebuilding = true
         val ops = committed.toList()
@@ -361,6 +668,472 @@ class PaintCanvasView @JvmOverloads constructor(
         }
     }
 
+    /** Drops (and recycles) the redo history — called when a new op is committed. */
+    private fun clearRedo() {
+        for (op in redoStack) op.recycle()
+        redoStack.clear()
+    }
+
+    // --- Selection ops ------------------------------------------------------
+
+    /** Flood-fills a contiguous painted region at [logical] (view px). */
+    private suspend fun runWandSelection(logical: PointF) {
+        commitFloating()
+        val paint = paintBmp ?: return
+        val seedX = logical.x.roundToInt().coerceIn(0, bufW - 1)
+        val seedY = logical.y.roundToInt().coerceIn(0, bufH - 1)
+        val w = bufW
+        val h = bufH
+        val result = withContext(Dispatchers.Default) {
+            val pixels = IntArray(w * h)
+            paint.getPixels(pixels, 0, w, 0, 0, w, h)
+            WandFloodFill.run(
+                WandFloodFill.Request(
+                    pixels, w, h, seedX, seedY,
+                    wandTolerance, wandEdgeSensitivity, wandGap,
+                ),
+            )
+        }
+        if (result.isEmpty) {
+            clearSelection()
+            return
+        }
+        val maskBmp = createBitmap(result.width, result.height).apply {
+            setPixels(result.mask, 0, result.width, 0, 0, result.width, result.height)
+        }
+        val ds = WandFloodFill.DOWNSAMPLE.toFloat()
+        val old = selectionMask
+        selectionMask = maskBmp
+        selRect.set(
+            result.bounds.left * ds, result.bounds.top * ds,
+            result.bounds.right * ds, result.bounds.bottom * ds,
+        )
+        floatTranslate.set(0f, 0f)
+        floatScale = 1f
+        floatRotation = 0f
+        old?.recycle()
+        startAnts()
+        onSelectionChanged?.invoke(true)
+        invalidate()
+    }
+
+    /** Fills the current selection with [color] (toothed), as one undoable op. */
+    fun fillSelection(@ColorInt color: Int) {
+        scope.launch {
+            if (selectionMask == null) return@launch
+            commitFloating()
+            flushPending()
+            val mask = selectionMask ?: return@launch
+            applyCommittedOp(FillOp(mask.copy(Bitmap.Config.ARGB_8888, false), color))
+        }
+    }
+
+    /** Erases paint within the current selection, as one undoable op. */
+    fun deleteSelection() {
+        scope.launch {
+            if (selectionMask == null) return@launch
+            commitFloating()
+            flushPending()
+            val mask = selectionMask ?: return@launch
+            applyCommittedOp(EraseOp(mask.copy(Bitmap.Config.ARGB_8888, false)))
+        }
+    }
+
+    /** Clears the current selection (baking any floating move first). */
+    fun clearSelection() {
+        scope.launch {
+            if (selectionMask == null && !isFloating) return@launch
+            commitFloating()
+            val old = selectionMask
+            selectionMask = null
+            old?.recycle()
+            selRect.setEmpty()
+            stopAnts()
+            onSelectionChanged?.invoke(false)
+            invalidate()
+        }
+    }
+
+    /** Bakes [op] onto the paint layer and records it as a committed step. */
+    private suspend fun applyCommittedOp(op: PaintOp) {
+        val base = paintBmp ?: return
+        val next = withContext(Dispatchers.Default) {
+            foldOps(base.copy(Bitmap.Config.ARGB_8888, true), listOf(op))
+        }
+        val old = paintBmp
+        paintBmp = next
+        committed.add(op)
+        clearRedo()
+        old?.recycle()
+        invalidate()
+        onHistoryChanged?.invoke()
+    }
+
+    /** Waits for pending strokes to bake so a following op composites on top. */
+    private suspend fun flushPending() {
+        while (unbaked.isNotEmpty() || baking) {
+            if (!baking && unbaked.isNotEmpty()) kickBake()
+            delay(8)
+        }
+    }
+
+    // --- Floating move/transform --------------------------------------------
+
+    private fun visiblePivot(): PointF =
+        PointF(selRect.centerX() + floatTranslate.x, selRect.centerY() + floatTranslate.y)
+
+    /**
+     * The current float transform (scale + rotate about the selection centre, then
+     * translate) as an affine [Matrix]. [sampleScale] scales the pivot/translation
+     * into the target space: 1 for buffer/view coords, 1/DOWNSAMPLE for the mask.
+     */
+    private fun floatMatrix(sampleScale: Float): Matrix {
+        val px = selRect.centerX() * sampleScale
+        val py = selRect.centerY() * sampleScale
+        val tx = floatTranslate.x * sampleScale
+        val ty = floatTranslate.y * sampleScale
+        return Matrix().apply {
+            postTranslate(-px, -py)
+            postScale(floatScale, floatScale)
+            postRotate(Math.toDegrees(floatRotation.toDouble()).toFloat())
+            postTranslate(px + tx, py + ty)
+        }
+    }
+
+    private fun floatCorners(): List<PointF> {
+        val pts = floatArrayOf(
+            selRect.left, selRect.top,
+            selRect.right, selRect.top,
+            selRect.right, selRect.bottom,
+            selRect.left, selRect.bottom,
+        )
+        floatMatrix(1f).mapPoints(pts)
+        return listOf(
+            PointF(pts[0], pts[1]), PointF(pts[2], pts[3]),
+            PointF(pts[4], pts[5]), PointF(pts[6], pts[7]),
+        )
+    }
+
+    private fun rotateHandle(): PointF {
+        val pts = floatArrayOf(
+            selRect.centerX(), selRect.top,
+            selRect.centerX(), selRect.centerY(),
+        )
+        floatMatrix(1f).mapPoints(pts)
+        val topMid = PointF(pts[0], pts[1])
+        val pivot = PointF(pts[2], pts[3])
+        val dx = topMid.x - pivot.x
+        val dy = topMid.y - pivot.y
+        val len = hypot(dx, dy)
+        val nx = if (len == 0f) 0f else dx / len
+        val ny = if (len == 0f) -1f else dy / len
+        return PointF(topMid.x + nx * 30f, topMid.y + ny * 30f)
+    }
+
+    private fun hitTransform(p: PointF): Xform? {
+        if (selectionMask == null && !isFloating) return null
+        if (selRect.isEmpty) return null
+        val hit = 26f
+        val pivot = visiblePivot()
+        val rot = rotateHandle()
+        if (hypot(p.x - rot.x, p.y - rot.y) <= hit) {
+            gestureStartRotation = floatRotation
+            gestureStartAngle = atan2(p.y - pivot.y, p.x - pivot.x)
+            return Xform.ROTATE
+        }
+        val corners = floatCorners()
+        for (c in corners) {
+            if (hypot(p.x - c.x, p.y - c.y) <= hit) {
+                gestureStartScale = floatScale
+                gestureStartDist = max(1f, hypot(p.x - pivot.x, p.y - pivot.y))
+                return Xform.SCALE
+            }
+        }
+        if (pointInQuad(p, corners)) return Xform.TRANSLATE
+        return null
+    }
+
+    private fun pointInQuad(p: PointF, q: List<PointF>): Boolean {
+        var sign = 0
+        for (i in 0 until 4) {
+            val a = q[i]
+            val b = q[(i + 1) % 4]
+            val cross = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
+            val s = if (cross > 0) 1 else if (cross < 0) -1 else 0
+            if (s != 0) {
+                if (sign == 0) sign = s else if (s != sign) return false
+            }
+        }
+        return true
+    }
+
+    /** Lifts the selected paint into a floating layer, clearing its original spot. */
+    private suspend fun liftSelection() {
+        val base = paintBmp ?: return
+        val mask = selectionMask ?: return
+        if (isFloating || lifting) return
+        lifting = true
+        try {
+            val (fl, ho) = withContext(Dispatchers.Default) {
+                maskedCopy(base, mask, keepInside = true) to maskedCopy(base, mask, keepInside = false)
+            }
+            floating = fl
+            paintHole = ho
+            floatSourceMask = mask.copy(Bitmap.Config.ARGB_8888, false)
+            floatTranslate.set(0f, 0f)
+            floatScale = 1f
+            floatRotation = 0f
+            invalidate()
+        } finally {
+            lifting = false
+        }
+    }
+
+    /** Bakes the floating move into the paint as a [MoveOp] and re-lands the mask. */
+    private suspend fun commitFloating() {
+        val sourceMask = floatSourceMask
+        val base = paintBmp
+        if (floating == null || sourceMask == null || base == null) {
+            discardFloating()
+            return
+        }
+        if (floatTranslate.x == 0f && floatTranslate.y == 0f && floatScale == 1f && floatRotation == 0f) {
+            discardFloating()
+            return
+        }
+        val bufMatrix = floatMatrix(1f)
+        val maskMatrix = floatMatrix(1f / WandFloodFill.DOWNSAMPLE)
+        val newRect = boundsOf(floatCorners())
+        val op = MoveOp(sourceMask.copy(Bitmap.Config.ARGB_8888, false), Matrix(bufMatrix))
+        val liveMask = selectionMask
+        val (newPaint, movedMask) = withContext(Dispatchers.Default) {
+            compositeMove(base, op) to (liveMask?.let { transformMask(it, maskMatrix) })
+        }
+        val oldPaint = paintBmp
+        val oldMask = selectionMask
+        val f = floating
+        val hh = paintHole
+        val m = floatSourceMask
+        paintBmp = newPaint
+        committed.add(op)
+        clearRedo()
+        if (movedMask != null) selectionMask = movedMask
+        selRect.set(newRect)
+        floating = null
+        paintHole = null
+        floatSourceMask = null
+        floatTranslate.set(0f, 0f)
+        floatScale = 1f
+        floatRotation = 0f
+        oldPaint?.recycle()
+        if (movedMask != null) oldMask?.recycle()
+        f?.recycle()
+        hh?.recycle()
+        m?.recycle()
+        invalidate()
+        onHistoryChanged?.invoke()
+    }
+
+    private fun discardFloating() {
+        if (floating == null && paintHole == null && floatSourceMask == null) return
+        floating?.recycle()
+        paintHole?.recycle()
+        floatSourceMask?.recycle()
+        floating = null
+        paintHole = null
+        floatSourceMask = null
+        floatTranslate.set(0f, 0f)
+        floatScale = 1f
+        floatRotation = 0f
+        invalidate()
+    }
+
+    private fun boundsOf(pts: List<PointF>): RectF {
+        var l = pts.first().x
+        var t = pts.first().y
+        var r = l
+        var b = t
+        for (p in pts) {
+            if (p.x < l) l = p.x
+            if (p.x > r) r = p.x
+            if (p.y < t) t = p.y
+            if (p.y > b) b = p.y
+        }
+        return RectF(l, t, r, b)
+    }
+
+    /** Copies [src], keeping only the paint inside (or outside) [mask]. Buffer res. */
+    private fun maskedCopy(src: Bitmap, mask: Bitmap, keepInside: Boolean): Bitmap {
+        val out = src.copy(Bitmap.Config.ARGB_8888, true)
+        val paint = Paint().apply { blendMode = if (keepInside) BlendMode.DST_IN else BlendMode.DST_OUT }
+        Canvas(out).drawBitmap(mask, Rect(0, 0, mask.width, mask.height), Rect(0, 0, bufW, bufH), paint)
+        return out
+    }
+
+    /** Returns a copy of [mask] under [matrix] (mask-resolution coordinates). */
+    private fun transformMask(mask: Bitmap, matrix: Matrix): Bitmap {
+        val out = createBitmap(mask.width, mask.height)
+        Canvas(out).apply {
+            concat(matrix)
+            drawBitmap(mask, 0f, 0f, null)
+        }
+        return out
+    }
+
+    /** Bakes a [MoveOp]: lift under the source mask, clear the spot, re-lay transformed. */
+    private fun compositeMove(base: Bitmap, op: MoveOp): Bitmap {
+        val fl = maskedCopy(base, op.sourceMask, keepInside = true)
+        val ho = maskedCopy(base, op.sourceMask, keepInside = false)
+        val out = createBitmap(bufW, bufH)
+        Canvas(out).apply {
+            drawBitmap(ho, 0f, 0f, null)
+            save()
+            concat(op.transform)
+            drawBitmap(fl, 0f, 0f, null)
+            restore()
+        }
+        fl.recycle()
+        ho.recycle()
+        return out
+    }
+
+    /**
+     * Per-pixel select between [base] (outside [mask]) and [full] (inside it):
+     * `out = base*(1-m) + full*m`. Constrains an edit to the selection uniformly.
+     */
+    private fun blendMasked(base: Bitmap, full: Bitmap, mask: Bitmap): Bitmap {
+        val out = createBitmap(bufW, bufH)
+        val c = Canvas(out)
+        val mSrc = Rect(0, 0, mask.width, mask.height)
+        val bDst = Rect(0, 0, bufW, bufH)
+        c.drawBitmap(base, 0f, 0f, null)
+        val l1 = c.saveLayer(0f, 0f, bufW.toFloat(), bufH.toFloat(), dstOutPaint)
+        c.drawBitmap(mask, mSrc, bDst, null)
+        c.restoreToCount(l1)
+        val l2 = c.saveLayer(0f, 0f, bufW.toFloat(), bufH.toFloat(), null)
+        c.drawBitmap(full, 0f, 0f, null)
+        c.drawBitmap(mask, mSrc, bDst, dstInPaint)
+        c.restoreToCount(l2)
+        return out
+    }
+
+    // --- Marching-ants animation --------------------------------------------
+
+    private fun startAnts() {
+        if (!antsAnimator.isStarted) antsAnimator.start()
+    }
+
+    private fun stopAnts() {
+        if (!hasSelection) antsAnimator.cancel()
+    }
+
+    private fun clearSelectionState() {
+        selectionMask?.recycle()
+        selectionMask = null
+        discardFloating()
+        selRect.setEmpty()
+        antsAnimator.cancel()
+    }
+
+    // --- Watercolor (from Stage 4b) -----------------------------------------
+
+    private fun compositeWatercolor(base: Bitmap, stroke: Stroke): Bitmap {
+        val backdrop = wetBackdrop(base, stroke)
+        val wash = createBitmap(bufW, bufH)
+        Canvas(wash).apply {
+            scale(SUPER_SAMPLE, SUPER_SAMPLE)
+            StrokeRenderer.paintStroke(this, stroke, surface)
+        }
+        val agsl = pigmentAgsl
+        val result = if (agsl == null) {
+            overComposite(backdrop, wash)
+        } else {
+            runCatching { PigmentMixer.mix(agsl, backdrop, wash) }.getOrElse { overComposite(backdrop, wash) }
+        }
+        backdrop.recycle()
+        wash.recycle()
+        return result
+    }
+
+    private fun wetBackdrop(base: Bitmap, stroke: Stroke): Bitmap {
+        val region = strokeRegionPath(stroke)
+        val avgW = avgWidth(stroke) * SUPER_SAMPLE
+        val soften = max(2f, avgW * 0.14f)
+        val clearFeather = max(2f, avgW * 0.10f)
+        val spread = max(4f, avgW * 0.30f)
+
+        val backdrop = base.copy(Bitmap.Config.ARGB_8888, true)
+
+        val clearMask = softRegion(region, clearFeather)
+        Canvas(backdrop).drawBitmap(clearMask, 0f, 0f, Paint().apply { blendMode = BlendMode.DST_OUT })
+        clearMask.recycle()
+
+        val push = GpuRender.blur(base, soften)
+        val spreadMask = softRegion(region, spread)
+        Canvas(push).drawBitmap(spreadMask, 0f, 0f, Paint().apply { blendMode = BlendMode.DST_IN })
+        spreadMask.recycle()
+        Canvas(backdrop).drawBitmap(push, 0f, 0f, Paint().apply { alpha = WET_DILUTE_ALPHA })
+        push.recycle()
+
+        return backdrop
+    }
+
+    private fun softRegion(region: Path, feather: Float): Bitmap {
+        val tmp = createBitmap(bufW, bufH)
+        Canvas(tmp).apply {
+            scale(SUPER_SAMPLE, SUPER_SAMPLE)
+            drawPath(region, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+        }
+        val blurred = GpuRender.blur(tmp, feather)
+        tmp.recycle()
+        return blurred
+    }
+
+    private fun avgWidth(stroke: Stroke): Float {
+        var sum = 0f
+        for (p in stroke.points) sum += p.width
+        return sum / stroke.points.size
+    }
+
+    private fun overComposite(base: Bitmap, wash: Bitmap): Bitmap {
+        val out = createBitmap(bufW, bufH)
+        Canvas(out).apply {
+            drawBitmap(base, 0f, 0f, null)
+            drawBitmap(wash, 0f, 0f, null)
+        }
+        return out
+    }
+
+    /** Clears painted strokes, history, and any selection, keeping the surface. */
+    fun clear() {
+        val old = paintBmp ?: return
+        unbaked.clear()
+        unbakedClips.forEach { it?.recycle() }
+        unbakedClips.clear()
+        active = null
+        activeClip?.recycle()
+        activeClip = null
+        for (op in committed) op.recycle()
+        committed.clear()
+        clearRedo()
+        clearSelectionState()
+        onSelectionChanged?.invoke(false)
+        paintBmp = createBitmap(bufW, bufH)
+        old.recycle()
+        invalidate()
+        onHistoryChanged?.invoke()
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        antsAnimator.cancel()
+        scope.cancel()
+        surfaceBmp?.recycle()
+        paintBmp?.recycle()
+        surfaceBmp = null
+        paintBmp = null
+    }
+
     /**
      * Flattens surface + paint and saves it as a PNG in the gallery, off-thread.
      * [onResult] is delivered on the main thread.
@@ -372,7 +1145,6 @@ class PaintCanvasView @JvmOverloads constructor(
             onResult(Result.failure(IllegalStateException("Nothing to save yet")))
             return
         }
-        // Copy on the main thread so a concurrent bake can't recycle these mid-encode.
         val surfaceCopy = surface.copy(Bitmap.Config.ARGB_8888, false)
         val paintCopy = paint.copy(Bitmap.Config.ARGB_8888, false)
         scope.launch {
@@ -395,130 +1167,17 @@ class PaintCanvasView @JvmOverloads constructor(
         }
     }
 
-    /**
-     * Composites one watercolor stroke, mirroring `_compositeWatercolor` in the
-     * Flutter reference: within the brush region the existing paint is diluted
-     * (faded toward the surface) and pushed outward (blurred bloom), then the new
-     * pigment is deposited and mixed spectrally so its colour bleeds into what was
-     * there. Runs on the bake thread. Returns a new bitmap (never recycles [base]).
-     */
-    private fun compositeWatercolor(base: Bitmap, stroke: Stroke): Bitmap {
-        val backdrop = wetBackdrop(base, stroke)
-
-        val wash = createBitmap(bufW, bufH)
-        Canvas(wash).apply {
-            scale(SUPER_SAMPLE, SUPER_SAMPLE)
-            StrokeRenderer.paintStroke(this, stroke, surface)
-        }
-
-        val agsl = pigmentAgsl
-        val result = if (agsl == null) {
-            overComposite(backdrop, wash)
-        } else {
-            runCatching { PigmentMixer.mix(agsl, backdrop, wash) }.getOrElse { overComposite(backdrop, wash) }
-        }
-        backdrop.recycle()
-        wash.recycle()
-        return result
-    }
-
-    /**
-     * The wet backdrop: [base] with the stroke region diluted and pushed, but
-     * without the new pigment yet. Ports `applyWetInteraction` — the blurs run on
-     * the GPU ([GpuRender.blur]); the dstOut/dstIn/alpha compositing is software.
-     */
-    private fun wetBackdrop(base: Bitmap, stroke: Stroke): Bitmap {
-        val region = strokeRegionPath(stroke)
-        val avgW = avgWidth(stroke) * SUPER_SAMPLE
-        val soften = max(2f, avgW * 0.14f)
-        val clearFeather = max(2f, avgW * 0.10f)
-        val spread = max(4f, avgW * 0.30f)
-
-        val backdrop = base.copy(Bitmap.Config.ARGB_8888, true)
-
-        // 1. Dilute: clear the paint inside the stroke (tight feathered edge) so
-        //    the centre fades toward the surface where the water floods it.
-        val clearMask = softRegion(region, clearFeather)
-        Canvas(backdrop).drawBitmap(clearMask, 0f, 0f, Paint().apply { blendMode = BlendMode.DST_OUT })
-        clearMask.recycle()
-
-        // 2. Push: a blurred, faded copy of the paint, masked to a WIDER region so
-        //    displaced pigment blooms past the stroke edges instead of staying put.
-        val push = GpuRender.blur(base, soften)
-        val spreadMask = softRegion(region, spread)
-        Canvas(push).drawBitmap(spreadMask, 0f, 0f, Paint().apply { blendMode = BlendMode.DST_IN })
-        spreadMask.recycle()
-        Canvas(backdrop).drawBitmap(push, 0f, 0f, Paint().apply { alpha = WET_DILUTE_ALPHA })
-        push.recycle()
-
-        return backdrop
-    }
-
-    /** A soft-edged (blurred) white mask of [region] — feathers the wet effect. */
-    private fun softRegion(region: Path, feather: Float): Bitmap {
-        val tmp = createBitmap(bufW, bufH)
-        Canvas(tmp).apply {
-            scale(SUPER_SAMPLE, SUPER_SAMPLE)
-            drawPath(region, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
-        }
-        val blurred = GpuRender.blur(tmp, feather)
-        tmp.recycle()
-        return blurred
-    }
-
-    private fun avgWidth(stroke: Stroke): Float {
-        var sum = 0f
-        for (p in stroke.points) sum += p.width
-        return sum / stroke.points.size
-    }
-
-    /** Plain over-composite of [wash] onto [base] (the no-shader fallback). */
-    private fun overComposite(base: Bitmap, wash: Bitmap): Bitmap {
-        val out = createBitmap(bufW, bufH)
-        Canvas(out).apply {
-            drawBitmap(base, 0f, 0f, null)
-            drawBitmap(wash, 0f, 0f, null)
-        }
-        return out
-    }
-
-    /** Clears painted strokes and history, keeping the surface. */
-    fun clear() {
-        val old = paintBmp ?: return
-        unbaked.clear()
-        active = null
-        committed.clear()
-        redoStack.clear()
-        paintBmp = createBitmap(bufW, bufH)
-        old.recycle()
-        invalidate()
-        onHistoryChanged?.invoke()
-    }
-
-    override fun onDetachedFromWindow() {
-        super.onDetachedFromWindow()
-        scope.cancel()
-        surfaceBmp?.recycle()
-        paintBmp?.recycle()
-        surfaceBmp = null
-        paintBmp = null
-    }
-
     private companion object {
         const val INVALID_POINTER = -1
-
-        // Fraction of the softened underlying paint kept in the wet "push" step
-        // (WetConfig.dilute = 0.5 in the Flutter reference), as an 8-bit alpha.
         const val WET_DILUTE_ALPHA = 128
-
-        // Backing buffer resolution over the view. The view already reports
-        // physical pixels (unlike Flutter's logical px, which drove its 2x
-        // supersample), so 1.0 renders at native resolution and keeps buffer
-        // memory minimal. Bump if edge AA proves insufficient on-device.
         const val SUPER_SAMPLE = 1.0f
 
         fun isStylus(toolType: Int): Boolean =
             toolType == MotionEvent.TOOL_TYPE_STYLUS ||
                 toolType == MotionEvent.TOOL_TYPE_ERASER
     }
+
+    // Reusable mask-compositing paints.
+    private val dstOutPaint = Paint().apply { blendMode = BlendMode.DST_OUT }
+    private val dstInPaint = Paint().apply { blendMode = BlendMode.DST_IN }
 }

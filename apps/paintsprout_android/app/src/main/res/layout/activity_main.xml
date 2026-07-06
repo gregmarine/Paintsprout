@@ -32,6 +32,14 @@
                 android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Spray" />
             <Button android:id="@+id/btnEraser" style="?android:attr/buttonStyleSmall"
                 android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Eraser" />
+            <Button android:id="@+id/btnWand" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Wand" />
+            <Button android:id="@+id/btnFill" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Fill" />
+            <Button android:id="@+id/btnDelete" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Del" />
+            <Button android:id="@+id/btnDeselect" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Deselect" />
             <Button android:id="@+id/btnSurface" style="?android:attr/buttonStyleSmall"
                 android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Surface" />
             <Button android:id="@+id/btnUndo" style="?android:attr/buttonStyleSmall"

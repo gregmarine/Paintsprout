@@ -1,0 +1,44 @@
+// Magic-wand selection overlay: dims everything outside the selection and draws
+// animated "marching ants" (a moving black/white dashed line) along the mask
+// border. The border is found by comparing each pixel's mask value to its
+// neighbours, so no contour extraction is needed. AGSL port of the Flutter
+// reference's selection_overlay.frag.
+//
+// uMask is bound as a shader already scaled to the display, so uMask.eval(fc)
+// samples the selection coverage at display pixel fc directly (.a = selected).
+
+uniform float uTime;     // 0..1, wraps once per animation period
+uniform shader uMask;    // selection mask: alpha 1 = selected
+
+float selected(float2 fc) {
+    return uMask.eval(fc).a;
+}
+
+half4 main(float2 fc) {
+    float m = selected(fc);
+
+    // Border = a selected pixel that has a non-selected neighbour (within ~1.5px).
+    const float s = 1.5;
+    float border = 0.0;
+    if (m > 0.5) {
+        float mn = min(
+            min(selected(fc + float2(-s, 0.0)), selected(fc + float2(s, 0.0))),
+            min(selected(fc + float2(0.0, -s)), selected(fc + float2(0.0, s))));
+        if (mn < 0.5) border = 1.0;
+    }
+
+    half4 col = half4(0.0);
+    if (m < 0.5) {
+        col = half4(0.0, 0.0, 0.0, 0.26); // scrim over the unselected area
+    }
+    if (border > 0.5) {
+        // Dashes march along the diagonal; travel one full period per uTime cycle
+        // so the wrap from 1->0 is seamless.
+        const float period = 10.0;
+        float phase = mod(fc.x + fc.y - uTime * period, period);
+        half3 ant = phase < period * 0.5 ? half3(0.0) : half3(1.0);
+        col = half4(ant, 1.0);
+    }
+
+    return half4(col.rgb * col.a, col.a); // premultiplied
+}
