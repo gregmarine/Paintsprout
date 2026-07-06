@@ -13,9 +13,12 @@ import android.view.MotionEvent
 import android.view.View
 import androidx.annotation.ColorInt
 import androidx.core.graphics.createBitmap
+import com.symmetricalpalmtree.paintsprout.paint.GalleryExport
 import com.symmetricalpalmtree.paintsprout.paint.GpuRender
+import com.symmetricalpalmtree.paintsprout.paint.PaintOp
 import com.symmetricalpalmtree.paintsprout.paint.PigmentMixer
 import com.symmetricalpalmtree.paintsprout.paint.Stroke
+import com.symmetricalpalmtree.paintsprout.paint.StrokeOp
 import com.symmetricalpalmtree.paintsprout.paint.StrokePoint
 import com.symmetricalpalmtree.paintsprout.paint.StrokeRenderer
 import com.symmetricalpalmtree.paintsprout.paint.SurfaceKind
@@ -88,8 +91,20 @@ class PaintCanvasView @JvmOverloads constructor(
     private val unbaked = mutableListOf<Stroke>()
     private var pressureMax = 1.0f
 
+    // --- History ------------------------------------------------------------
+    /** Every committed op in paint order — the source of truth replayed on undo. */
+    private val committed = mutableListOf<PaintOp>()
+    private val redoStack = mutableListOf<PaintOp>()
+
+    /** Fired after the undo/redo state changes, so the UI can refresh its buttons. */
+    var onHistoryChanged: (() -> Unit)? = null
+
+    val canUndo: Boolean get() = committed.isNotEmpty()
+    val canRedo: Boolean get() = redoStack.isNotEmpty()
+
     // --- Baking -------------------------------------------------------------
     private var baking = false
+    private var rebuilding = false
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     /**
@@ -260,18 +275,41 @@ class PaintCanvasView @JvmOverloads constructor(
      * paint layer is never mutated while [onDraw] reads it.
      */
     private fun kickBake() {
-        if (baking || unbaked.isEmpty()) return
+        if (baking || rebuilding || unbaked.isEmpty()) return
         val base = paintBmp ?: return
         baking = true
         val batch = unbaked.toList()
+        val ops = batch.map { StrokeOp(it) }
         scope.launch {
+            // Fold the new ops onto a copy of the committed paint (incremental).
             val next = withContext(Dispatchers.Default) {
-                // Start from a copy of the committed paint, then fold in each
-                // stroke in order. Ordinary strokes deposit directly; a watercolor
-                // stroke reads the paint underneath and mixes spectrally.
-                var cur = createBitmap(bufW, bufH)
-                Canvas(cur).drawBitmap(base, 0f, 0f, null)
-                for (s in batch) {
+                foldOps(base.copy(Bitmap.Config.ARGB_8888, true), ops)
+            }
+            val old = paintBmp
+            paintBmp = next
+            unbaked.subList(0, batch.size).clear()
+            committed.addAll(ops)
+            redoStack.clear()
+            old?.recycle()
+            baking = false
+            invalidate()
+            onHistoryChanged?.invoke()
+            if (unbaked.isNotEmpty()) kickBake()
+        }
+    }
+
+    /**
+     * Folds [ops] onto [start] (which it takes ownership of), returning the
+     * result. Ordinary strokes deposit directly; a watercolor stroke reads the
+     * paint underneath and mixes spectrally. Shared by the incremental bake and
+     * the full undo/redo rebuild.
+     */
+    private fun foldOps(start: Bitmap, ops: List<PaintOp>): Bitmap {
+        var cur = start
+        for (op in ops) {
+            when (op) {
+                is StrokeOp -> {
+                    val s = op.stroke
                     if (s.tool == Tool.WATERCOLOR) {
                         val mixed = compositeWatercolor(cur, s)
                         if (mixed !== cur) {
@@ -287,15 +325,73 @@ class PaintCanvasView @JvmOverloads constructor(
                         }
                     }
                 }
-                cur
+            }
+        }
+        return cur
+    }
+
+    /** Undoes the last committed op, replaying the rest onto a blank paint layer. */
+    fun undo() {
+        if (baking || rebuilding || committed.isEmpty()) return
+        redoStack.add(committed.removeAt(committed.lastIndex))
+        rebuild()
+    }
+
+    /** Re-applies the most recently undone op. */
+    fun redo() {
+        if (baking || rebuilding || redoStack.isEmpty()) return
+        committed.add(redoStack.removeAt(redoStack.lastIndex))
+        rebuild()
+    }
+
+    /** Rebuilds the paint layer from [committed] (blank + fold all ops). */
+    private fun rebuild() {
+        rebuilding = true
+        val ops = committed.toList()
+        scope.launch {
+            val next = withContext(Dispatchers.Default) {
+                foldOps(createBitmap(bufW, bufH), ops)
             }
             val old = paintBmp
             paintBmp = next
-            unbaked.subList(0, batch.size).clear()
             old?.recycle()
-            baking = false
+            rebuilding = false
             invalidate()
-            if (unbaked.isNotEmpty()) kickBake()
+            onHistoryChanged?.invoke()
+        }
+    }
+
+    /**
+     * Flattens surface + paint and saves it as a PNG in the gallery, off-thread.
+     * [onResult] is delivered on the main thread.
+     */
+    fun savePng(onResult: (Result<String>) -> Unit) {
+        val surface = surfaceBmp
+        val paint = paintBmp
+        if (surface == null || paint == null) {
+            onResult(Result.failure(IllegalStateException("Nothing to save yet")))
+            return
+        }
+        // Copy on the main thread so a concurrent bake can't recycle these mid-encode.
+        val surfaceCopy = surface.copy(Bitmap.Config.ARGB_8888, false)
+        val paintCopy = paint.copy(Bitmap.Config.ARGB_8888, false)
+        scope.launch {
+            val result = withContext(Dispatchers.Default) {
+                runCatching {
+                    val flat = createBitmap(bufW, bufH)
+                    Canvas(flat).apply {
+                        drawBitmap(surfaceCopy, 0f, 0f, null)
+                        drawBitmap(paintCopy, 0f, 0f, null)
+                    }
+                    val name = "paintsprout_${System.currentTimeMillis()}"
+                    val where = GalleryExport.savePng(context, flat, name)
+                    flat.recycle()
+                    where
+                }
+            }
+            surfaceCopy.recycle()
+            paintCopy.recycle()
+            onResult(result)
         }
     }
 
@@ -386,14 +482,17 @@ class PaintCanvasView @JvmOverloads constructor(
         return out
     }
 
-    /** Clears painted strokes, keeping the surface. */
+    /** Clears painted strokes and history, keeping the surface. */
     fun clear() {
         val old = paintBmp ?: return
         unbaked.clear()
         active = null
+        committed.clear()
+        redoStack.clear()
         paintBmp = createBitmap(bufW, bufH)
         old.recycle()
         invalidate()
+        onHistoryChanged?.invoke()
     }
 
     override fun onDetachedFromWindow() {

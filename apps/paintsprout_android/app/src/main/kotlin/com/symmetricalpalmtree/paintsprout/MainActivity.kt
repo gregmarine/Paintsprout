@@ -1,6 +1,7 @@
 package com.symmetricalpalmtree.paintsprout
 
 import android.os.Bundle
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.symmetricalpalmtree.paintsprout.databinding.ActivityMainBinding
 import com.symmetricalpalmtree.paintsprout.paint.AVAILABLE_SURFACES
@@ -32,7 +33,27 @@ class MainActivity : AppCompatActivity() {
         binding.btnEraser.setOnClickListener { binding.canvas.tool = Tool.ERASER }
         binding.btnClear.setOnClickListener { binding.canvas.clear() }
         binding.btnSurface.setOnClickListener { cycleSurface() }
+        binding.btnUndo.setOnClickListener { binding.canvas.undo() }
+        binding.btnRedo.setOnClickListener { binding.canvas.redo() }
+        binding.btnSave.setOnClickListener { save() }
+        binding.canvas.onHistoryChanged = { updateHistoryButtons() }
         updateSurfaceLabel()
+        updateHistoryButtons()
+    }
+
+    private fun updateHistoryButtons() {
+        binding.btnUndo.isEnabled = binding.canvas.canUndo
+        binding.btnRedo.isEnabled = binding.canvas.canRedo
+    }
+
+    private fun save() {
+        binding.canvas.savePng { result ->
+            val msg = result.fold(
+                onSuccess = { "Saved: $it" },
+                onFailure = { "Save failed: ${it.message}" },
+            )
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun cycleSurface() {

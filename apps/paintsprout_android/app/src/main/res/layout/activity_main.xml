@@ -34,6 +34,12 @@
                 android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Eraser" />
             <Button android:id="@+id/btnSurface" style="?android:attr/buttonStyleSmall"
                 android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Surface" />
+            <Button android:id="@+id/btnUndo" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Undo" />
+            <Button android:id="@+id/btnRedo" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Redo" />
+            <Button android:id="@+id/btnSave" style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Save" />
             <Button android:id="@+id/btnClear" style="?android:attr/buttonStyleSmall"
                 android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Clear" />
 
