@@ -132,6 +132,16 @@ class PaintCanvasView @JvmOverloads constructor(
     private val unbakedClips = mutableListOf<Bitmap?>()
     private var pressureMax = 1.0f
 
+    // --- Touch history gestures (finger, not stylus) ------------------------
+    // A 2-finger double-tap undoes; a 3-finger double-tap redoes. Drawing is
+    // stylus-only, so finger touches are free for these. Ported from Flutter.
+    private val touchStart = HashMap<Int, PointF>()
+    private var touchSessionStart = 0L
+    private var touchMaxCount = 0        // most fingers down at once this session
+    private var touchMoved = false       // any finger dragged past the tap slop
+    private var pendingTapCount = 0      // finger-count of a first tap awaiting its pair
+    private var pendingTapTime = 0L
+
     /**
      * Scratch bitmap the live watercolor render draws the wash into each frame so
      * it can feed the pigment shader as a texture. The wet look is drawn straight
@@ -608,7 +618,7 @@ class PaintCanvasView @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val actionIndex = event.actionIndex
         if (!isStylus(event.getToolType(actionIndex))) {
-            return false // stylus only; touch gestures land later.
+            return handleTouchGesture(event) // finger: history gestures, not drawing.
         }
 
         when (event.actionMasked) {
@@ -667,6 +677,65 @@ class PaintCanvasView @JvmOverloads constructor(
                     invalidate()
                 }
                 return true
+            }
+        }
+        return true
+    }
+
+    /**
+     * Finger-touch history gestures: a two-finger double-tap undoes, a
+     * three-finger double-tap redoes. A "tap" = all fingers down and up within
+     * ~400 ms with no finger dragged past the slop; the tap's count is the most
+     * fingers down at once. Two matching taps within [DOUBLE_TAP_WINDOW_MS] make
+     * the double-tap. Mirrors Flutter's `_onTouch*` handlers. Always consumes.
+     */
+    private fun handleTouchGesture(event: MotionEvent): Boolean {
+        val slop = TOUCH_TAP_SLOP_DP * resources.displayMetrics.density
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                if (touchStart.isEmpty()) {
+                    touchSessionStart = event.eventTime
+                    touchMaxCount = 0
+                    touchMoved = false
+                }
+                val ai = event.actionIndex
+                touchStart[event.getPointerId(ai)] = PointF(event.getX(ai), event.getY(ai))
+                if (touchStart.size > touchMaxCount) touchMaxCount = touchStart.size
+            }
+            MotionEvent.ACTION_MOVE -> {
+                for (i in 0 until event.pointerCount) {
+                    val start = touchStart[event.getPointerId(i)] ?: continue
+                    if (hypot(event.getX(i) - start.x, event.getY(i) - start.y) > slop) {
+                        touchMoved = true
+                    }
+                }
+            }
+            MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP -> {
+                if (touchStart.remove(event.getPointerId(event.actionIndex)) == null) return true
+                if (touchStart.isNotEmpty()) return true // still fingers down; wait
+                val tapped = !touchMoved && event.eventTime - touchSessionStart < TAP_MAX_MS
+                val count = touchMaxCount
+                touchMaxCount = 0
+                touchMoved = false
+                if (!tapped || (count != 2 && count != 3)) {
+                    pendingTapCount = 0
+                    return true
+                }
+                val now = event.eventTime
+                if (pendingTapCount == count && now - pendingTapTime < DOUBLE_TAP_WINDOW_MS) {
+                    pendingTapCount = 0
+                    pendingTapTime = 0L
+                    if (count == 2) undo() else redo()
+                } else {
+                    pendingTapCount = count // first tap; wait for its pair
+                    pendingTapTime = now
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                touchStart.clear()
+                touchMaxCount = 0
+                touchMoved = false
+                pendingTapCount = 0
             }
         }
         return true
@@ -1499,6 +1568,11 @@ class PaintCanvasView @JvmOverloads constructor(
         // (most-recent), so an undo replays at most STRIDE ops from a checkpoint.
         const val CHECKPOINT_STRIDE = 6
         const val MAX_CHECKPOINTS = 6
+
+        // Finger history gestures (undo/redo double-tap).
+        const val TOUCH_TAP_SLOP_DP = 18f
+        const val TAP_MAX_MS = 400L
+        const val DOUBLE_TAP_WINDOW_MS = 450L
 
         fun isStylus(toolType: Int): Boolean =
             toolType == MotionEvent.TOOL_TYPE_STYLUS ||
