@@ -69,4 +69,6 @@ class SurfaceOp(
     @param:ColorInt val plainColor: Int,
     /** Canvas customisation in effect at this point (ignored by other surfaces). */
     val canvas: CanvasParams = CanvasParams(),
+    /** Watercolor customisation in effect at this point (ignored by others). */
+    val watercolor: WatercolorParams = WatercolorParams(),
 ) : PaintOp()

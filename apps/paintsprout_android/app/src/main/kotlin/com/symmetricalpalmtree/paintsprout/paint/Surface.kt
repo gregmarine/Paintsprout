@@ -78,6 +78,29 @@ data class CanvasParams(
     }
 }
 
+/**
+ * User-tweakable parameters for the Watercolor surface. The paper itself is
+ * generated per artwork (see [buildSurfaceVisual]'s seed); these shape its
+ * character. Defaults reproduce the built-in cold-press sheet.
+ */
+data class WatercolorParams(
+    /** Paper colour at full tone, before the cold-press shading. */
+    @param:ColorInt val tint: Int = DEFAULT_TINT,
+    /** Cold-press pit strength — smooth hot-press ↔ rough cold-press. */
+    val texture: Float = DEFAULT_TEXTURE,
+    /** Broad cloudiness, like a hand-made sheet. */
+    val mottle: Float = DEFAULT_MOTTLE,
+    /** Fine fibre speckle. */
+    val grain: Float = DEFAULT_GRAIN,
+) {
+    companion object {
+        const val DEFAULT_TINT: Int = 0xFFFBF9F4.toInt() // soft natural white
+        const val DEFAULT_TEXTURE: Float = 0.12f
+        const val DEFAULT_MOTTLE: Float = 0.05f
+        const val DEFAULT_GRAIN: Float = 0.035f
+    }
+}
+
 /** Surfaces wired into the picker so far. */
 val AVAILABLE_SURFACES: List<SurfaceKind> = listOf(
     SurfaceKind.PLAIN,
@@ -103,10 +126,11 @@ fun buildSurfaceVisual(
     @ColorInt plainColor: Int = Color.WHITE,
     canvasParams: CanvasParams = CanvasParams(),
     seed: Long = 0L,
+    watercolorParams: WatercolorParams = WatercolorParams(),
 ): Bitmap {
     // Organic surfaces are drawn across the whole buffer (no tiling, so no visible
     // repeat) and are fully determined by [seed] — one seed per artwork.
-    if (kind == SurfaceKind.WATERCOLOR) return watercolorFull(w, h, seed)
+    if (kind == SurfaceKind.WATERCOLOR) return watercolorFull(w, h, seed, watercolorParams)
     val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(out)
     if (kind == SurfaceKind.PLAIN) {
@@ -354,8 +378,13 @@ private fun woodTile(): Bitmap {
  * paper looks the same physical scale at any buffer resolution: a broad tonal
  * mottle like hand-made paper, two octaves of cold-press pits, and fine grain.
  */
-private fun watercolorFull(w: Int, h: Int, seed: Long): Bitmap {
-    val baseR = 0.985; val baseG = 0.975; val baseB = 0.955 // soft natural white
+private fun watercolorFull(w: Int, h: Int, seed: Long, p: WatercolorParams): Bitmap {
+    val baseR = Color.red(p.tint) / 255.0
+    val baseG = Color.green(p.tint) / 255.0
+    val baseB = Color.blue(p.tint) / 255.0
+    val texture = p.texture.toDouble()
+    val mottleAmt = p.mottle.toDouble()
+    val grainAmt = p.grain.toDouble()
     // The paper is soft, so build the field at half resolution (a quarter of the
     // pixels) and let a filtered upscale smooth it back — visually identical, far
     // cheaper. Feature sizes are given in output px and scaled down to match.
@@ -373,11 +402,11 @@ private fun watercolorFull(w: Int, h: Int, seed: Long): Bitmap {
         for (x in 0 until lw) {
             val m = mottle.sample(x, y)
             val dimple = 0.65 * dimpleA.sample(x, y) + 0.35 * dimpleB.sample(x, y)
-            val grain = hashGrain(x, y, seed) * 0.035
+            val grain = hashGrain(x, y, seed) * grainAmt
             // Texture rides both sides of the base: hollows shadow, crests catch light.
             val shade = 0.90 +
-                0.05 * (m - 0.5) + // gentle cloud
-                0.12 * (dimple - 0.5) + // cold-press pits
+                mottleAmt * (m - 0.5) + // gentle cloud
+                texture * (dimple - 0.5) + // cold-press pits
                 grain
             px[i++] = argb(baseR * shade, baseG * shade, baseB * shade)
         }
