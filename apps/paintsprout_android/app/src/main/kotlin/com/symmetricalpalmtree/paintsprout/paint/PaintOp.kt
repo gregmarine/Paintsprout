@@ -64,4 +64,9 @@ class MoveOp(val sourceMask: Bitmap, val transform: Matrix) : PaintOp() {
  * not touch the paint layer, so a rebuild skips it; the effective surface state
  * is resolved separately by scanning the committed history.
  */
-class SurfaceOp(val kind: SurfaceKind, @param:ColorInt val plainColor: Int) : PaintOp()
+class SurfaceOp(
+    val kind: SurfaceKind,
+    @param:ColorInt val plainColor: Int,
+    /** Canvas customisation in effect at this point (ignored by other surfaces). */
+    val canvas: CanvasParams = CanvasParams(),
+) : PaintOp()

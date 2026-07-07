@@ -41,6 +41,7 @@ import com.symmetricalpalmtree.paintsprout.paint.Tool
 import com.symmetricalpalmtree.paintsprout.paint.ToothCache
 import com.symmetricalpalmtree.paintsprout.paint.Vec2
 import com.symmetricalpalmtree.paintsprout.paint.WandFloodFill
+import com.symmetricalpalmtree.paintsprout.paint.CanvasParams
 import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
 import com.symmetricalpalmtree.paintsprout.paint.resolveDensity
 import com.symmetricalpalmtree.paintsprout.paint.resolveWidth
@@ -102,12 +103,17 @@ class PaintCanvasView @JvmOverloads constructor(
     var plainColor: Int = Color.WHITE
         private set
 
+    /** Customisation for the Canvas surface (ignored by other surfaces). */
+    var canvasParams: CanvasParams = CanvasParams()
+        private set
+
     /**
      * The surface/background at the base of the undo timeline — the state restored
      * when every [SurfaceOp] has been undone. Re-based on [clear].
      */
     private var initialSurface: SurfaceKind = SurfaceKind.PAPER
     @ColorInt private var initialPlainColor: Int = Color.WHITE
+    private var initialCanvasParams: CanvasParams = CanvasParams()
 
     // Magic-wand tuning (Flutter reference defaults).
     var wandTolerance: Float = 0.15f
@@ -298,11 +304,17 @@ class PaintCanvasView @JvmOverloads constructor(
      * Sets the starting surface/background — the base of the undo timeline — without
      * recording history. For initial setup (e.g. restoring saved prefs), not user edits.
      */
-    fun setInitialSurface(kind: SurfaceKind, @ColorInt bgColor: Int) {
+    fun setInitialSurface(
+        kind: SurfaceKind,
+        @ColorInt bgColor: Int,
+        canvas: CanvasParams = CanvasParams(),
+    ) {
         surface = kind
         plainColor = bgColor
+        canvasParams = canvas
         initialSurface = kind
         initialPlainColor = bgColor
+        initialCanvasParams = canvas
         regenerateSurface()
     }
 
@@ -314,12 +326,17 @@ class PaintCanvasView @JvmOverloads constructor(
      * The surface is a document property: every committed stroke re-tooths to the
      * new material (grain follows the substrate), so the paint layer is rebuilt.
      */
-    fun commitSurfaceChange(kind: SurfaceKind, @ColorInt bgColor: Int) {
-        if (kind == surface && bgColor == plainColor) return
+    fun commitSurfaceChange(
+        kind: SurfaceKind,
+        @ColorInt bgColor: Int,
+        canvas: CanvasParams = CanvasParams(),
+    ) {
+        if (kind == surface && bgColor == plainColor && canvas == canvasParams) return
         clearRedo()
         surface = kind
         plainColor = bgColor
-        committed.add(SurfaceOp(kind, bgColor))
+        canvasParams = canvas
+        committed.add(SurfaceOp(kind, bgColor, canvas))
         regenerateSurface()
         // Checkpoints hold paint toothed for the OLD surface, so drop them and
         // rebuild from blank — foldOps re-tooths each stroke with the new surface.
@@ -337,10 +354,12 @@ class PaintCanvasView @JvmOverloads constructor(
     private fun syncSurfaceToHistory() {
         var kind = initialSurface
         var bg = initialPlainColor
-        for (op in committed) if (op is SurfaceOp) { kind = op.kind; bg = op.plainColor }
-        if (kind != surface || bg != plainColor) {
+        var cp = initialCanvasParams
+        for (op in committed) if (op is SurfaceOp) { kind = op.kind; bg = op.plainColor; cp = op.canvas }
+        if (kind != surface || bg != plainColor || cp != canvasParams) {
             surface = kind
             plainColor = bg
+            canvasParams = cp
             regenerateSurface()
             recycleCheckpoints()
         }
@@ -352,10 +371,11 @@ class PaintCanvasView @JvmOverloads constructor(
         if (w <= 0 || h <= 0) return
         val kind = surface
         val pc = plainColor
+        val cp = canvasParams
         scope.launch {
             val bmp = withContext(Dispatchers.Default) {
                 ToothCache.init()
-                buildSurfaceVisual(kind, w, h, pc)
+                buildSurfaceVisual(kind, w, h, pc, cp)
             }
             if (bufW != w || bufH != h) {
                 bmp.recycle()
@@ -1513,6 +1533,7 @@ class PaintCanvasView @JvmOverloads constructor(
         // The current surface becomes the new timeline base — undo can't cross clear.
         initialSurface = surface
         initialPlainColor = plainColor
+        initialCanvasParams = canvasParams
         paintBmp = createBitmap(bufW, bufH)
         old.recycle()
         invalidate()

@@ -1,6 +1,9 @@
 package com.symmetricalpalmtree.paintsprout
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.util.TypedValue
@@ -21,7 +24,9 @@ import com.google.android.material.slider.Slider
 import com.google.android.material.snackbar.Snackbar
 import com.symmetricalpalmtree.paintsprout.databinding.ActivityMainBinding
 import com.symmetricalpalmtree.paintsprout.paint.AVAILABLE_SURFACES
+import com.symmetricalpalmtree.paintsprout.paint.CanvasParams
 import com.symmetricalpalmtree.paintsprout.paint.SurfaceKind
+import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
 import com.symmetricalpalmtree.paintsprout.paint.Tool
 import kotlin.math.roundToInt
 
@@ -43,6 +48,7 @@ class MainActivity : AppCompatActivity() {
     private var color = Color.BLACK
     private var surfaceIndex = AVAILABLE_SURFACES.indexOf(SurfaceKind.PAPER).coerceAtLeast(0)
     private var plainColor = Color.WHITE
+    private var canvasParams = CanvasParams()
     private var hasSelection = false
 
     // Magic-wand settings (Flutter defaults).
@@ -77,7 +83,7 @@ class MainActivity : AppCompatActivity() {
         binding.canvas.tool = tool
         binding.canvas.strokeColor = color
         binding.canvas.baseSize = sizes[tool]
-        binding.canvas.setInitialSurface(currentSurface(), plainColor)
+        binding.canvas.setInitialSurface(currentSurface(), plainColor, canvasParams)
         applyWandSettings()
         binding.canvas.onHistoryChanged = {
             // Undo/redo may have reverted the surface — mirror it back into the rail.
@@ -271,19 +277,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onSurfaceChosen(index: Int) {
-        val kind = AVAILABLE_SURFACES[index]
-        if (kind == SurfaceKind.PLAIN) {
-            // Pick the background first, then commit the surface + colour as one op.
-            pickColor("Background color", plainColor) { c ->
-                plainColor = c
+        when (val kind = AVAILABLE_SURFACES[index]) {
+            SurfaceKind.PLAIN ->
+                // Pick the background first, then commit the surface + colour as one op.
+                pickColor("Background color", plainColor) { c ->
+                    plainColor = c
+                    surfaceIndex = index
+                    binding.canvas.commitSurfaceChange(SurfaceKind.PLAIN, c)
+                    updateRail()
+                }
+            SurfaceKind.CANVAS ->
+                // Dial in the weave first, then commit surface + params as one op.
+                customizeCanvas(canvasParams) { params ->
+                    canvasParams = params
+                    surfaceIndex = index
+                    binding.canvas.commitSurfaceChange(SurfaceKind.CANVAS, plainColor, params)
+                    updateRail()
+                }
+            else -> {
                 surfaceIndex = index
-                binding.canvas.commitSurfaceChange(SurfaceKind.PLAIN, c)
+                binding.canvas.commitSurfaceChange(kind, plainColor)
                 updateRail()
             }
-        } else {
-            surfaceIndex = index
-            binding.canvas.commitSurfaceChange(kind, plainColor)
-            updateRail()
         }
     }
 
@@ -291,6 +306,7 @@ class MainActivity : AppCompatActivity() {
     private fun syncSurfaceFromCanvas() {
         surfaceIndex = AVAILABLE_SURFACES.indexOf(binding.canvas.surface).coerceAtLeast(0)
         plainColor = binding.canvas.plainColor
+        canvasParams = binding.canvas.canvasParams
     }
 
     /** HSV colour wheel + brightness slider, with swatch quick-picks. */
@@ -339,6 +355,93 @@ class MainActivity : AppCompatActivity() {
             .setView(content)
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Use") { _, _ -> onUse(working) }
+            .show()
+    }
+
+    /**
+     * Canvas customisation — "not all canvas is the same". A live weave preview
+     * over tint / weave / grain controls; visual only (the tooth is unchanged).
+     * Mirrors [pickColor]: dial it in, then the caller commits it as one op.
+     */
+    private fun customizeCanvas(initial: CanvasParams, onUse: (CanvasParams) -> Unit) {
+        var tint = initial.tint or (0xFF shl 24)
+        var weave = initial.weave
+        var grain = initial.grain
+
+        val borderPaint = Paint().apply {
+            style = Paint.Style.STROKE
+            strokeWidth = dp(1).toFloat()
+            color = 0x33000000
+        }
+        // A true 1:1 swatch: renders the surface at the view's own pixel size with
+        // no scaling or tiling tricks, so the weave reads exactly as it will on the
+        // real canvas — no zoom, no distortion.
+        val preview = object : View(this) {
+            var params: CanvasParams = CanvasParams(tint, weave, grain)
+            private var bmp: Bitmap? = null
+            fun refreshTexture() {
+                if (width <= 0 || height <= 0) return
+                val old = bmp
+                bmp = buildSurfaceVisual(SurfaceKind.CANVAS, width, height, Color.WHITE, params)
+                old?.recycle()
+                invalidate()
+            }
+            override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+                super.onSizeChanged(w, h, ow, oh)
+                refreshTexture()
+            }
+            override fun onDraw(canvas: Canvas) {
+                bmp?.let { canvas.drawBitmap(it, 0f, 0f, null) }
+                canvas.drawRect(0.5f, 0.5f, width - 0.5f, height - 0.5f, borderPaint)
+            }
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(dp(300), dp(300)).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = dp(14)
+            }
+        }
+        fun refresh() {
+            preview.params = CanvasParams(tint, weave, grain)
+            preview.refreshTexture()
+        }
+
+        val tintSwatch = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(28))
+            background = previewSwatch(tint)
+        }
+        val tintRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(4), 0, dp(8))
+            isClickable = true
+            addView(TextView(context).apply { text = "Tint"; width = dp(64) })
+            addView(tintSwatch)
+            setOnClickListener {
+                pickColor("Canvas tint", tint) { c ->
+                    tint = c
+                    tintSwatch.background = previewSwatch(c)
+                    refresh()
+                }
+            }
+        }
+
+        val weaveSlider = Slider(this).apply {
+            valueFrom = 0.05f; valueTo = 0.45f; value = weave.coerceIn(0.05f, 0.45f)
+            addOnChangeListener { _, v, _ -> weave = v; refresh() }
+        }
+        val grainSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 0.10f; value = grain.coerceIn(0f, 0.10f)
+            addOnChangeListener { _, v, _ -> grain = v; refresh() }
+        }
+
+        refresh()
+        val content = vbox(preview, tintRow, sliderRow("Weave", weaveSlider), sliderRow("Grain", grainSlider))
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Canvas")
+            .setView(content)
+            .setNeutralButton("Reset") { _, _ -> customizeCanvas(CanvasParams(), onUse) }
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Use") { _, _ -> onUse(CanvasParams(tint, weave, grain)) }
             .show()
     }
 
@@ -444,6 +547,14 @@ class MainActivity : AppCompatActivity() {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         addView(TextView(context).apply { text = name; width = dp(20) })
+        addView(slider, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+    }
+
+    /** A slider preceded by a fixed-width text label (wider than [labelled]). */
+    private fun sliderRow(name: String, slider: Slider): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(TextView(context).apply { text = name; width = dp(64) })
         addView(slider, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
     }
 

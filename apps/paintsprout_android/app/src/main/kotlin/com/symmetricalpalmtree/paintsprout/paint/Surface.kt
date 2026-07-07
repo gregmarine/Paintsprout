@@ -57,6 +57,26 @@ enum class SurfaceKind {
         }
 }
 
+/**
+ * User-tweakable parameters for the Canvas surface — "not all canvas is the same".
+ * Purely the visual (colour) tile; the paint-grab [buildToothField] tooth is
+ * unaffected. The defaults reproduce the built-in whitened linen.
+ */
+data class CanvasParams(
+    /** Linen tint before weave shading is applied. */
+    @param:ColorInt val tint: Int = DEFAULT_TINT,
+    /** Weave prominence: how much brighter thread crowns sit above the troughs. */
+    val weave: Float = DEFAULT_WEAVE,
+    /** Fibre-speckle amount sprinkled over the weave. */
+    val grain: Float = DEFAULT_GRAIN,
+) {
+    companion object {
+        const val DEFAULT_TINT: Int = 0xFFF5F2EA.toInt() // warm primed white
+        const val DEFAULT_WEAVE: Float = 0.28f
+        const val DEFAULT_GRAIN: Float = 0.04f
+    }
+}
+
 /** Surfaces wired into the picker so far. */
 val AVAILABLE_SURFACES: List<SurfaceKind> = listOf(
     SurfaceKind.PLAIN,
@@ -80,6 +100,7 @@ fun buildSurfaceVisual(
     w: Int,
     h: Int,
     @ColorInt plainColor: Int = Color.WHITE,
+    canvasParams: CanvasParams = CanvasParams(),
 ): Bitmap {
     val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(out)
@@ -87,7 +108,7 @@ fun buildSurfaceVisual(
         canvas.drawColor(plainColor)
         return out
     }
-    val tile = visualTile(kind)
+    val tile = visualTile(kind, canvasParams)
     val paint = Paint().apply {
         shader = BitmapShader(tile, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
     }
@@ -96,8 +117,8 @@ fun buildSurfaceVisual(
     return out
 }
 
-private fun visualTile(kind: SurfaceKind): Bitmap = when (kind) {
-    SurfaceKind.CANVAS -> canvasTile()
+private fun visualTile(kind: SurfaceKind, canvas: CanvasParams): Bitmap = when (kind) {
+    SurfaceKind.CANVAS -> canvasTile(canvas)
     SurfaceKind.METAL -> metalTile()
     SurfaceKind.STONE -> stoneTile()
     SurfaceKind.WOOD -> woodTile()
@@ -240,10 +261,15 @@ private fun paperTile(): Bitmap {
     return Bitmap.createBitmap(px, size, size, Bitmap.Config.ARGB_8888)
 }
 
-private fun canvasTile(): Bitmap {
+private fun canvasTile(p: CanvasParams): Bitmap {
     val size = 24
     val half = size / 2.0 / 2.0 // 6px individual thread
-    val baseR = 0xE9 / 255.0; val baseG = 0xE0 / 255.0; val baseB = 0xCB / 255.0
+    val baseR = Color.red(p.tint) / 255.0
+    val baseG = Color.green(p.tint) / 255.0
+    val baseB = Color.blue(p.tint) / 255.0
+    val floor = 0.72 // darkest thread trough, as a fraction of the tint
+    val weave = p.weave.toDouble()
+    val grain = p.grain.toDouble()
     val rnd = Random(3)
     val px = IntArray(size * size)
     for (y in 0 until size) {
@@ -252,7 +278,7 @@ private fun canvasTile(): Bitmap {
             val weftCrown = 0.5 - 0.5 * cos(2 * PI * y / half)
             val over = ((x / half).toInt() + (y / half).toInt()) % 2 == 0
             val crown = if (over) warpCrown else weftCrown
-            val shade = 0.72 + 0.28 * crown + (rnd.nextDouble() - 0.5) * 0.04
+            val shade = floor + weave * crown + (rnd.nextDouble() - 0.5) * grain
             px[y * size + x] = argb(baseR * shade, baseG * shade, baseB * shade)
         }
     }
