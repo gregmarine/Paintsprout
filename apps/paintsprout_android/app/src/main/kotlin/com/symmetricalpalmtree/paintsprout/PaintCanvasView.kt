@@ -34,6 +34,7 @@ import com.symmetricalpalmtree.paintsprout.paint.SelectionRender
 import com.symmetricalpalmtree.paintsprout.paint.Stroke
 import com.symmetricalpalmtree.paintsprout.paint.StrokeOp
 import com.symmetricalpalmtree.paintsprout.paint.StrokePoint
+import com.symmetricalpalmtree.paintsprout.paint.SurfaceOp
 import com.symmetricalpalmtree.paintsprout.paint.StrokeRenderer
 import com.symmetricalpalmtree.paintsprout.paint.SurfaceKind
 import com.symmetricalpalmtree.paintsprout.paint.Tool
@@ -92,13 +93,21 @@ class PaintCanvasView @JvmOverloads constructor(
     /** Base size override; null uses the tool's default. */
     var baseSize: Float? = null
 
-    /** The surface being painted on. Change via [setSurface]. */
+    /** The surface being painted on. User changes go through [commitSurfaceChange]. */
     var surface: SurfaceKind = SurfaceKind.PAPER
         private set
 
     /** Background color for the Plain surface (ignored by textured surfaces). */
     @ColorInt
     var plainColor: Int = Color.WHITE
+        private set
+
+    /**
+     * The surface/background at the base of the undo timeline — the state restored
+     * when every [SurfaceOp] has been undone. Re-based on [clear].
+     */
+    private var initialSurface: SurfaceKind = SurfaceKind.PAPER
+    @ColorInt private var initialPlainColor: Int = Color.WHITE
 
     // Magic-wand tuning (Flutter reference defaults).
     var wandTolerance: Float = 0.15f
@@ -275,10 +284,48 @@ class PaintCanvasView @JvmOverloads constructor(
         regenerateSurface()
     }
 
-    /** Switches the surface, rebuilding the base layer (keeps the paint). */
-    fun setSurface(kind: SurfaceKind) {
+    /**
+     * Sets the starting surface/background — the base of the undo timeline — without
+     * recording history. For initial setup (e.g. restoring saved prefs), not user edits.
+     */
+    fun setInitialSurface(kind: SurfaceKind, @ColorInt bgColor: Int) {
         surface = kind
+        plainColor = bgColor
+        initialSurface = kind
+        initialPlainColor = bgColor
         regenerateSurface()
+    }
+
+    /**
+     * A user-initiated surface / background-colour change, recorded on the undo
+     * timeline as a [SurfaceOp] so it can be undone/redone like a stroke. No-op if
+     * nothing actually changes (e.g. re-picking the current surface).
+     */
+    fun commitSurfaceChange(kind: SurfaceKind, @ColorInt bgColor: Int) {
+        if (kind == surface && bgColor == plainColor) return
+        clearRedo()
+        surface = kind
+        plainColor = bgColor
+        committed.add(SurfaceOp(kind, bgColor))
+        paintBmp?.let { storeCheckpoint(committed.size, it) }
+        regenerateSurface()
+        onHistoryChanged?.invoke()
+    }
+
+    /**
+     * Restores the surface/background to whatever the last [SurfaceOp] on the
+     * current timeline dictates (or the initial state if none), after an undo/redo
+     * moved the boundary. Regenerates the base layer only when it actually changed.
+     */
+    private fun syncSurfaceToHistory() {
+        var kind = initialSurface
+        var bg = initialPlainColor
+        for (op in committed) if (op is SurfaceOp) { kind = op.kind; bg = op.plainColor }
+        if (kind != surface || bg != plainColor) {
+            surface = kind
+            plainColor = bg
+            regenerateSurface()
+        }
     }
 
     private fun regenerateSurface() {
@@ -833,6 +880,9 @@ class PaintCanvasView @JvmOverloads constructor(
                     cur.recycle()
                     cur = out
                 }
+                // Surface changes don't touch the paint layer; the surface state is
+                // resolved separately (see syncSurfaceToHistory).
+                is SurfaceOp -> {}
             }
         }
         return cur
@@ -841,12 +891,14 @@ class PaintCanvasView @JvmOverloads constructor(
     fun undo() {
         if (baking || rebuilding || committed.isEmpty()) return
         redoStack.add(committed.removeAt(committed.lastIndex))
+        syncSurfaceToHistory()
         rebuild()
     }
 
     fun redo() {
         if (baking || rebuilding || redoStack.isEmpty()) return
         committed.add(redoStack.removeAt(redoStack.lastIndex))
+        syncSurfaceToHistory()
         rebuild()
     }
 
@@ -1381,6 +1433,9 @@ class PaintCanvasView @JvmOverloads constructor(
         recycleCheckpoints()
         clearSelectionState()
         onSelectionChanged?.invoke(false)
+        // The current surface becomes the new timeline base — undo can't cross clear.
+        initialSurface = surface
+        initialPlainColor = plainColor
         paintBmp = createBitmap(bufW, bufH)
         old.recycle()
         invalidate()

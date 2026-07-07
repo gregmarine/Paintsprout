@@ -57,3 +57,11 @@ class MoveOp(val sourceMask: Bitmap, val transform: Matrix) : PaintOp() {
         sourceMask.recycle()
     }
 }
+
+/**
+ * Records a document-level surface / background-colour change so it sits on the
+ * undo timeline alongside strokes. Paint-neutral — it owns no bitmaps and does
+ * not touch the paint layer, so a rebuild skips it; the effective surface state
+ * is resolved separately by scanning the committed history.
+ */
+class SurfaceOp(val kind: SurfaceKind, @param:ColorInt val plainColor: Int) : PaintOp()

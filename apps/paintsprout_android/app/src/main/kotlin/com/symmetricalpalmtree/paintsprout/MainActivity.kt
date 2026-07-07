@@ -77,9 +77,13 @@ class MainActivity : AppCompatActivity() {
         binding.canvas.tool = tool
         binding.canvas.strokeColor = color
         binding.canvas.baseSize = sizes[tool]
-        binding.canvas.plainColor = plainColor
+        binding.canvas.setInitialSurface(currentSurface(), plainColor)
         applyWandSettings()
-        binding.canvas.onHistoryChanged = { updateRail() }
+        binding.canvas.onHistoryChanged = {
+            // Undo/redo may have reverted the surface — mirror it back into the rail.
+            syncSurfaceFromCanvas()
+            updateRail()
+        }
         binding.canvas.onSelectionChanged = {
             hasSelection = it
             updateRail()
@@ -267,19 +271,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onSurfaceChosen(index: Int) {
-        surfaceIndex = index
         val kind = AVAILABLE_SURFACES[index]
         if (kind == SurfaceKind.PLAIN) {
-            binding.canvas.setSurface(kind)
+            // Pick the background first, then commit the surface + colour as one op.
             pickColor("Background color", plainColor) { c ->
                 plainColor = c
-                binding.canvas.plainColor = c
-                binding.canvas.setSurface(SurfaceKind.PLAIN)
+                surfaceIndex = index
+                binding.canvas.commitSurfaceChange(SurfaceKind.PLAIN, c)
+                updateRail()
             }
         } else {
-            binding.canvas.setSurface(kind)
+            surfaceIndex = index
+            binding.canvas.commitSurfaceChange(kind, plainColor)
+            updateRail()
         }
-        updateRail()
+    }
+
+    /** Mirrors the canvas's current surface/background into the rail state. */
+    private fun syncSurfaceFromCanvas() {
+        surfaceIndex = AVAILABLE_SURFACES.indexOf(binding.canvas.surface).coerceAtLeast(0)
+        plainColor = binding.canvas.plainColor
     }
 
     /** Swatch grid + RGB sliders. [onUse] fires with the chosen ARGB colour. */
