@@ -108,6 +108,15 @@ class PaintCanvasView @JvmOverloads constructor(
         private set
 
     /**
+     * Random seed for organic (non-tiled) surfaces like Watercolor — the paper's
+     * unique "batch". Generated once per artwork so the texture is stable across
+     * surface switches, undo/redo and reloads, and re-generated on [clear] (a new
+     * piece). Persist this with the document when save/load lands.
+     */
+    var surfaceSeed: Long = java.util.Random().nextLong()
+        private set
+
+    /**
      * The surface/background at the base of the undo timeline — the state restored
      * when every [SurfaceOp] has been undone. Re-based on [clear].
      */
@@ -372,10 +381,11 @@ class PaintCanvasView @JvmOverloads constructor(
         val kind = surface
         val pc = plainColor
         val cp = canvasParams
+        val sd = surfaceSeed
         scope.launch {
             val bmp = withContext(Dispatchers.Default) {
                 ToothCache.init()
-                buildSurfaceVisual(kind, w, h, pc, cp)
+                buildSurfaceVisual(kind, w, h, pc, cp, sd)
             }
             if (bufW != w || bufH != h) {
                 bmp.recycle()
@@ -1534,6 +1544,9 @@ class PaintCanvasView @JvmOverloads constructor(
         initialSurface = surface
         initialPlainColor = plainColor
         initialCanvasParams = canvasParams
+        // A cleared canvas is a new piece of art: fresh paper for organic surfaces.
+        surfaceSeed = java.util.Random().nextLong()
+        regenerateSurface()
         paintBmp = createBitmap(bufW, bufH)
         old.recycle()
         invalidate()

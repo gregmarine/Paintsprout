@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.Shader
 import androidx.annotation.ColorInt
 import java.util.Random
+import java.util.stream.IntStream
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.pow
@@ -101,7 +102,11 @@ fun buildSurfaceVisual(
     h: Int,
     @ColorInt plainColor: Int = Color.WHITE,
     canvasParams: CanvasParams = CanvasParams(),
+    seed: Long = 0L,
 ): Bitmap {
+    // Organic surfaces are drawn across the whole buffer (no tiling, so no visible
+    // repeat) and are fully determined by [seed] — one seed per artwork.
+    if (kind == SurfaceKind.WATERCOLOR) return watercolorFull(w, h, seed)
     val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(out)
     if (kind == SurfaceKind.PLAIN) {
@@ -122,7 +127,6 @@ private fun visualTile(kind: SurfaceKind, canvas: CanvasParams): Bitmap = when (
     SurfaceKind.METAL -> metalTile()
     SurfaceKind.STONE -> stoneTile()
     SurfaceKind.WOOD -> woodTile()
-    SurfaceKind.WATERCOLOR -> watercolorTile()
     SurfaceKind.CHALKBOARD -> chalkboardTile()
     SurfaceKind.CONCRETE -> concreteTile()
     else -> paperTile() // paper + fallback
@@ -340,23 +344,83 @@ private fun woodTile(): Bitmap {
     return Bitmap.createBitmap(px, size, size, Bitmap.Config.ARGB_8888)
 }
 
-private fun watercolorTile(): Bitmap {
-    val size = 256
-    val baseR = 0.98; val baseG = 0.97; val baseB = 0.93
-    val dimple = noiseGrid(27, 27, 51)
-    val fine = noiseGrid(61, 61, 52)
-    val rnd = Random(53)
-    val px = IntArray(size * size)
-    for (y in 0 until size) {
-        for (x in 0 until size) {
-            val d = noise2(dimple, 27, 27, x.toDouble() / size * 27, y.toDouble() / size * 27)
-            val fn = noise2(fine, 61, 61, x.toDouble() / size * 61, y.toDouble() / size * 61)
-            val grain = (rnd.nextDouble() - 0.5) * 0.03
-            val shade = 0.87 + 0.12 * d + 0.06 * (fn - 0.5) + grain
-            px[y * size + x] = argb(baseR * shade, baseG * shade, baseB * shade)
+/**
+ * Cold-press watercolor paper across the WHOLE buffer — not a repeating tile — so
+ * the pitting never reads as a pattern. Fully determined by [seed]: the same seed
+ * reproduces the same sheet every render, while a new artwork (new seed) gets a
+ * fresh, unique sheet.
+ *
+ * The texture is layered value noise (fBm) at pixel-fixed feature sizes, so the
+ * paper looks the same physical scale at any buffer resolution: a broad tonal
+ * mottle like hand-made paper, two octaves of cold-press pits, and fine grain.
+ */
+private fun watercolorFull(w: Int, h: Int, seed: Long): Bitmap {
+    val baseR = 0.985; val baseG = 0.975; val baseB = 0.955 // soft natural white
+    // The paper is soft, so build the field at half resolution (a quarter of the
+    // pixels) and let a filtered upscale smooth it back — visually identical, far
+    // cheaper. Feature sizes are given in output px and scaled down to match.
+    val scale = 2
+    val lw = (w + scale - 1) / scale
+    val lh = (h + scale - 1) / scale
+    val mottle = seededGrid(lw, lh, 240.0 / scale, seed + 50) // large soft cloudiness
+    val dimpleA = seededGrid(lw, lh, 14.0 / scale, seed + 51) // primary cold-press pits
+    val dimpleB = seededGrid(lw, lh, 6.0 / scale, seed + 52) // finer secondary pits
+    val px = IntArray(lw * lh)
+    // Rows are independent (grain is a pure per-pixel hash, not a running stream),
+    // so fan them out across all cores.
+    IntStream.range(0, lh).parallel().forEach { y ->
+        var i = y * lw
+        for (x in 0 until lw) {
+            val m = mottle.sample(x, y)
+            val dimple = 0.65 * dimpleA.sample(x, y) + 0.35 * dimpleB.sample(x, y)
+            val grain = hashGrain(x, y, seed) * 0.035
+            // Texture rides both sides of the base: hollows shadow, crests catch light.
+            val shade = 0.90 +
+                0.05 * (m - 0.5) + // gentle cloud
+                0.12 * (dimple - 0.5) + // cold-press pits
+                grain
+            px[i++] = argb(baseR * shade, baseG * shade, baseB * shade)
         }
     }
-    return Bitmap.createBitmap(px, size, size, Bitmap.Config.ARGB_8888)
+    val small = Bitmap.createBitmap(px, lw, lh, Bitmap.Config.ARGB_8888)
+    val full = Bitmap.createScaledBitmap(small, w, h, /* filter = */ true)
+    small.recycle()
+    return full
+}
+
+/**
+ * A value-noise grid covering the buffer, with cells [cellPx] logical px across.
+ * Sized with a 2-cell margin so sampling anywhere in the buffer never needs to
+ * wrap — [sample] can skip the modulo the general [noise2] pays.
+ */
+private class Grid(val g: DoubleArray, val gx: Int, val cellPx: Double) {
+    fun sample(x: Int, y: Int): Double {
+        val u = x / cellPx; val v = y / cellPx
+        val x0 = u.toInt(); val y0 = v.toInt() // u,v >= 0, so toInt() == floor
+        val fx = u - x0; val fy = v - y0
+        val sx = fx * fx * (3 - 2 * fx); val sy = fy * fy * (3 - 2 * fy)
+        val i = y0 * gx + x0
+        val a = g[i]; val b = g[i + 1]
+        val c = g[i + gx]; val d = g[i + gx + 1]
+        val top = a + (b - a) * sx
+        return top + ((c + (d - c) * sx) - top) * sy
+    }
+}
+
+private fun seededGrid(w: Int, h: Int, cellPx: Double, seed: Long): Grid {
+    val gx = kotlin.math.ceil(w / cellPx).toInt() + 2
+    val gy = kotlin.math.ceil(h / cellPx).toInt() + 2
+    val rnd = Random(seed)
+    return Grid(DoubleArray(gx * gy) { rnd.nextDouble() }, gx, cellPx)
+}
+
+/** Cheap, order-independent per-pixel speckle in [-0.5, 0.5) (parallel-safe). */
+private fun hashGrain(x: Int, y: Int, seed: Long): Double {
+    var h = (x * 0x1000193) xor (y * 0x1B873593) xor seed.toInt()
+    h = (h xor (h ushr 15)) * 0x85EBCA6B.toInt()
+    h = (h xor (h ushr 13)) * 0xC2B2AE35.toInt()
+    h = h xor (h ushr 16)
+    return ((h ushr 8) and 0xFFFF).toDouble() / 65535.0 - 0.5
 }
 
 private fun chalkboardTile(): Bitmap {
