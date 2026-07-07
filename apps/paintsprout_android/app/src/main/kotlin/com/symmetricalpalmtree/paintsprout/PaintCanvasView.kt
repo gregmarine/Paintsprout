@@ -310,6 +310,9 @@ class PaintCanvasView @JvmOverloads constructor(
      * A user-initiated surface / background-colour change, recorded on the undo
      * timeline as a [SurfaceOp] so it can be undone/redone like a stroke. No-op if
      * nothing actually changes (e.g. re-picking the current surface).
+     *
+     * The surface is a document property: every committed stroke re-tooths to the
+     * new material (grain follows the substrate), so the paint layer is rebuilt.
      */
     fun commitSurfaceChange(kind: SurfaceKind, @ColorInt bgColor: Int) {
         if (kind == surface && bgColor == plainColor) return
@@ -317,15 +320,19 @@ class PaintCanvasView @JvmOverloads constructor(
         surface = kind
         plainColor = bgColor
         committed.add(SurfaceOp(kind, bgColor))
-        paintBmp?.let { storeCheckpoint(committed.size, it) }
         regenerateSurface()
-        onHistoryChanged?.invoke()
+        // Checkpoints hold paint toothed for the OLD surface, so drop them and
+        // rebuild from blank — foldOps re-tooths each stroke with the new surface.
+        recycleCheckpoints()
+        if (!baking && !rebuilding && bufW > 0) rebuild() else onHistoryChanged?.invoke()
     }
 
     /**
      * Restores the surface/background to whatever the last [SurfaceOp] on the
      * current timeline dictates (or the initial state if none), after an undo/redo
-     * moved the boundary. Regenerates the base layer only when it actually changed.
+     * moved the boundary. Regenerates the base layer only when it actually changed;
+     * also drops now-stale (wrong-tooth) checkpoints so the following rebuild
+     * re-tooths every stroke to the restored surface.
      */
     private fun syncSurfaceToHistory() {
         var kind = initialSurface
@@ -335,6 +342,7 @@ class PaintCanvasView @JvmOverloads constructor(
             surface = kind
             plainColor = bg
             regenerateSurface()
+            recycleCheckpoints()
         }
     }
 
