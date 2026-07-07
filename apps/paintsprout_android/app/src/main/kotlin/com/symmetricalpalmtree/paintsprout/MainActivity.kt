@@ -293,38 +293,47 @@ class MainActivity : AppCompatActivity() {
         plainColor = binding.canvas.plainColor
     }
 
-    /** Swatch grid + RGB sliders. [onUse] fires with the chosen ARGB colour. */
+    /** HSV colour wheel + brightness slider, with swatch quick-picks. */
     private fun pickColor(title: String, initial: Int, onUse: (Int) -> Unit) {
         var working = initial or (0xFF shl 24)
         val preview = View(this)
-        val r = channelSlider()
-        val g = channelSlider()
-        val b = channelSlider()
-        fun syncPreview() {
-            working = Color.rgb(r.value.toInt(), g.value.toInt(), b.value.toInt())
-            preview.background = swatchDrawable(working)
+        val wheel = ColorWheelView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(240), dp(240)).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = dp(4)
+            }
         }
-        r.value = Color.red(working).toFloat()
-        g.value = Color.green(working).toFloat()
-        b.value = Color.blue(working).toFloat()
-        listOf(r, g, b).forEach { it.addOnChangeListener { _, _, _ -> syncPreview() } }
+        val valueSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 1f
+        }
+        fun show(c: Int) {
+            working = c
+            preview.background = previewSwatch(c)
+        }
+        wheel.setColor(working)
+        valueSlider.value = FloatArray(3).also { Color.colorToHSV(working, it) }[2]
+
+        wheel.onColorChanged = { c -> show(c) }
+        valueSlider.addOnChangeListener { _, v, _ ->
+            wheel.setValue(v)
+            show(wheel.color)
+        }
 
         val grid = GridLayout(this).apply {
-            columnCount = 6
-            setPadding(0, dp(4), 0, dp(8))
+            columnCount = 9
+            setPadding(0, dp(8), 0, dp(4))
         }
         for (c in SWATCHES) {
             grid.addView(swatchCell(c) {
-                r.value = Color.red(c).toFloat()
-                g.value = Color.green(c).toFloat()
-                b.value = Color.blue(c).toFloat()
-                syncPreview()
+                wheel.setColor(c)
+                valueSlider.value = FloatArray(3).also { Color.colorToHSV(c, it) }[2]
+                show(c)
             })
         }
         preview.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(28))
-        preview.background = swatchDrawable(working)
+        preview.background = previewSwatch(working)
 
-        val content = vbox(grid, preview, labelled("R", r), labelled("G", g), labelled("B", b))
+        val content = vbox(wheel, labelled("V", valueSlider), preview, grid)
         MaterialAlertDialogBuilder(this)
             .setTitle(title)
             .setView(content)
@@ -394,10 +403,6 @@ class MainActivity : AppCompatActivity() {
         setBackgroundColor(0x22000000)
     }
 
-    private fun channelSlider() = Slider(this).apply {
-        valueFrom = 0f; valueTo = 255f; stepSize = 1f
-    }
-
     private fun swatchCell(color: Int, onClick: () -> Unit): View = View(this).apply {
         layoutParams = GridLayout.LayoutParams().apply {
             width = dp(34); height = dp(34)
@@ -405,6 +410,14 @@ class MainActivity : AppCompatActivity() {
         }
         background = swatchDrawable(color)
         setOnClickListener { onClick() }
+    }
+
+    /** A rounded-rectangle colour chip for the picker's preview bar. */
+    private fun previewSwatch(color: Int): GradientDrawable = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = dp(6).toFloat()
+        setColor(color)
+        setStroke(dp(1), 0x33000000)
     }
 
     private fun swatchDrawable(color: Int): GradientDrawable = GradientDrawable().apply {
