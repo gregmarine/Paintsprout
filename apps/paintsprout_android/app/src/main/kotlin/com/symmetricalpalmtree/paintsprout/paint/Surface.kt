@@ -175,6 +175,29 @@ data class ConcreteParams(
     }
 }
 
+/**
+ * User-tweakable parameters for the Metal surface. The sheet is generated per
+ * artwork (see [buildSurfaceVisual]'s seed); these shape its look. Defaults
+ * reproduce the built-in cool brushed-steel sheet.
+ */
+data class MetalParams(
+    /** Base metal colour. */
+    @param:ColorInt val tint: Int = DEFAULT_TINT,
+    /** Brush grain — how pronounced the horizontal streak lines are. */
+    val grain: Float = DEFAULT_GRAIN,
+    /** Sheen — broad reflection unevenness across the sheet. */
+    val sheen: Float = DEFAULT_SHEEN,
+    /** Scratches — density of the longer polished/dark scratch lines. */
+    val scratches: Float = DEFAULT_SCRATCHES,
+) {
+    companion object {
+        const val DEFAULT_TINT: Int = 0xFFC4C3C1.toInt() // neutral stainless steel
+        const val DEFAULT_GRAIN: Float = 0.16f
+        const val DEFAULT_SHEEN: Float = 0.14f
+        const val DEFAULT_SCRATCHES: Float = 1.0f
+    }
+}
+
 /** Surfaces wired into the picker so far. */
 val AVAILABLE_SURFACES: List<SurfaceKind> = listOf(
     SurfaceKind.PLAIN,
@@ -204,6 +227,7 @@ fun buildSurfaceVisual(
     woodParams: WoodParams = WoodParams(),
     stoneParams: StoneParams = StoneParams(),
     concreteParams: ConcreteParams = ConcreteParams(),
+    metalParams: MetalParams = MetalParams(),
 ): Bitmap {
     // Organic surfaces are drawn across the whole buffer (no tiling, so no visible
     // repeat) and are fully determined by [seed] — one seed per artwork.
@@ -211,6 +235,7 @@ fun buildSurfaceVisual(
     if (kind == SurfaceKind.WOOD) return woodFull(w, h, seed, woodParams)
     if (kind == SurfaceKind.STONE) return stoneFull(w, h, seed, stoneParams)
     if (kind == SurfaceKind.CONCRETE) return concreteFull(w, h, seed, concreteParams)
+    if (kind == SurfaceKind.METAL) return metalFull(w, h, seed, metalParams)
     val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(out)
     if (kind == SurfaceKind.PLAIN) {
@@ -656,6 +681,100 @@ private fun drawConcretePores(canvas: Canvas, w: Int, h: Int, seed: Long, densit
     // A light uniform scatter of loners across the whole slab.
     val scatter = (((w.toLong() * h) / 44000L).toInt().coerceIn(10, 250) * density).toInt()
     repeat(scatter) { pore(rnd.nextDouble() * w, rnd.nextDouble() * h) }
+}
+
+/**
+ * Brushed metal across the WHOLE buffer — not a tile — so it never repeats. Fully
+ * determined by [seed]: one sheet per artwork. Generated at FULL resolution (no
+ * upscale) so the fine horizontal brush grain stays crisp.
+ *
+ * Cool silver base with layered anisotropic streak grain (long in x, fine in y),
+ * a broad reflection sheen, per-pixel micro-glints, and a few longer scratches
+ * that follow the grain.
+ */
+private fun metalFull(w: Int, h: Int, seed: Long, p: MetalParams): Bitmap {
+    val baseR = ((p.tint ushr 16) and 0xFF) / 255.0
+    val baseG = ((p.tint ushr 8) and 0xFF) / 255.0
+    val baseB = (p.tint and 0xFF) / 255.0
+    val grainAmt = p.grain.toDouble()
+    val sheenAmt = p.sheen.toDouble()
+    // Brush grain: cells anisotropic (wider in x than y) so features read as fine
+    // horizontal striations — but kept SHORT in x so they break up rather than
+    // running the whole sheet, and thin in y. Full res keeps the lines sharp.
+    val grainA = seededGrid(w, h, 380.0, 1.4, seed + 20)
+    val grainB = seededGrid(w, h, 230.0, 1.0, seed + 21)
+    val grainC = seededGrid(w, h, 130.0, 0.8, seed + 22)
+    // Break-up mask: gates the (straight) streaks on/off along their length so they
+    // read as short dashes rather than lines running the whole sheet. Medium blocks
+    // in x, fine in y so adjacent striations break at different points.
+    val breakup = seededGrid(w, h, 95.0, 3.5, seed + 30)
+    // Reflection sheen: broad horizontal bands (smooth in x, varying in y) so the
+    // sheet reads as reflecting light — the stainless-steel look — plus a softer
+    // second octave for richer, less regular banding.
+    val sheenA = seededGrid(w, h, 2200.0, 300.0, seed + 25)
+    val sheenB = seededGrid(w, h, 1300.0, 150.0, seed + 26)
+    val px = IntArray(w * h)
+    IntStream.range(0, h).parallel().forEach { y ->
+        var i = y * w
+        for (x in 0 until w) {
+            val gate = 0.25 + 0.75 * smoothstep(0.30, 0.62, breakup.sample(x, y))
+            val g = (0.4 * (grainA.sample(x, y) - 0.5) +
+                0.35 * (grainB.sample(x, y) - 0.5) +
+                0.25 * (grainC.sample(x, y) - 0.5)) * gate
+            val sh = 0.7 * (sheenA.sample(x, y) - 0.5) + 0.3 * (sheenB.sample(x, y) - 0.5)
+            val spark = hashGrain(x, y, seed) * 0.045 // fine micro-glint
+            val shade = 0.90 + grainAmt * g + sheenAmt * sh + spark
+            px[i++] = argb(baseR * shade, baseG * shade, baseB * shade)
+        }
+    }
+    val result = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    result.setPixels(px, 0, w, 0, 0, w, h)
+    drawMetalScratches(Canvas(result), w, h, seed, p.scratches)
+    return result
+}
+
+/**
+ * Draws a few longer scratches over brushed metal [canvas] — near-horizontal
+ * (following the grain) with slight vertical drift. Deterministic from [seed].
+ * A mix of bright (polished) and dark scratches, thin and low-alpha.
+ */
+private fun drawMetalScratches(canvas: Canvas, w: Int, h: Int, seed: Long, density: Float) {
+    if (density <= 0f) return
+    val rnd = Random(seed * 6364136223846793005L + 1013904223L)
+    val diag = Math.hypot(w.toDouble(), h.toDouble())
+    val paint = Paint().apply {
+        isAntiAlias = true
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
+    val count = (((w.toLong() * h) / 70000L).toInt().coerceIn(10, 70) * density).toInt()
+    repeat(count) {
+        var x = rnd.nextDouble() * w
+        var y = rnd.nextDouble() * h
+        val dir = if (rnd.nextBoolean()) 1.0 else -1.0
+        val len = diag * (0.02 + 0.12 * rnd.nextDouble())
+        val step = diag * 0.005
+        val path = Path()
+        path.moveTo(x.toFloat(), y.toFloat())
+        var traveled = 0.0
+        var slope = (rnd.nextDouble() - 0.5) * 0.04 // near-horizontal
+        while (traveled < len) {
+            slope += (rnd.nextDouble() - 0.5) * 0.01
+            x += dir * step
+            y += slope * step
+            traveled += step
+            path.lineTo(x.toFloat(), y.toFloat())
+            if (x < -step || x > w + step) break
+        }
+        // Half bright (polished), half dark.
+        if (rnd.nextBoolean()) {
+            paint.color = 0xFFFFFFFF.toInt(); paint.alpha = 22 + rnd.nextInt(24)
+        } else {
+            paint.color = 0xFF000000.toInt(); paint.alpha = 18 + rnd.nextInt(20)
+        }
+        paint.strokeWidth = (diag * 0.0005).toFloat().coerceAtLeast(0.6f)
+        canvas.drawPath(path, paint)
+    }
 }
 
 /** Smoothstep from 0 at [a] to 1 at [b]. */

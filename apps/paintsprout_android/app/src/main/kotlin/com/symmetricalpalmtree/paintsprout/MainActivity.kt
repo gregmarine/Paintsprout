@@ -26,6 +26,7 @@ import com.symmetricalpalmtree.paintsprout.databinding.ActivityMainBinding
 import com.symmetricalpalmtree.paintsprout.paint.AVAILABLE_SURFACES
 import com.symmetricalpalmtree.paintsprout.paint.CanvasParams
 import com.symmetricalpalmtree.paintsprout.paint.ConcreteParams
+import com.symmetricalpalmtree.paintsprout.paint.MetalParams
 import com.symmetricalpalmtree.paintsprout.paint.StoneParams
 import com.symmetricalpalmtree.paintsprout.paint.SurfaceKind
 import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
@@ -57,6 +58,7 @@ class MainActivity : AppCompatActivity() {
     private var woodParams = WoodParams()
     private var stoneParams = StoneParams()
     private var concreteParams = ConcreteParams()
+    private var metalParams = MetalParams()
     private var hasSelection = false
 
     // Magic-wand settings (Flutter defaults).
@@ -93,7 +95,7 @@ class MainActivity : AppCompatActivity() {
         binding.canvas.baseSize = sizes[tool]
         binding.canvas.setInitialSurface(
             currentSurface(), plainColor, canvasParams, watercolorParams, woodParams, stoneParams,
-            concreteParams,
+            concreteParams, metalParams,
         )
         applyWandSettings()
         binding.canvas.onHistoryChanged = {
@@ -337,6 +339,14 @@ class MainActivity : AppCompatActivity() {
                     binding.canvas.commitSurfaceChange(SurfaceKind.CONCRETE, plainColor, concrete = params)
                     updateRail()
                 }
+            SurfaceKind.METAL ->
+                // Dial in the sheet first, then commit surface + params as one op.
+                customizeMetal(metalParams) { params ->
+                    metalParams = params
+                    surfaceIndex = index
+                    binding.canvas.commitSurfaceChange(SurfaceKind.METAL, plainColor, metal = params)
+                    updateRail()
+                }
             else -> {
                 surfaceIndex = index
                 binding.canvas.commitSurfaceChange(kind, plainColor)
@@ -354,6 +364,7 @@ class MainActivity : AppCompatActivity() {
         woodParams = binding.canvas.woodParams
         stoneParams = binding.canvas.stoneParams
         concreteParams = binding.canvas.concreteParams
+        metalParams = binding.canvas.metalParams
     }
 
     /** HSV colour wheel + brightness slider, with swatch quick-picks. */
@@ -633,6 +644,53 @@ class MainActivity : AppCompatActivity() {
             .setNeutralButton("Reset") { _, _ -> customizeConcrete(ConcreteParams(), onUse) }
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Use") { _, _ -> onUse(ConcreteParams(tint, staining, pores, grit)) }
+            .show()
+    }
+
+    /**
+     * Metal customisation. The sheet is fixed per artwork (its seed); these
+     * controls shape its look. Live preview is a true-scale window onto the actual sheet.
+     */
+    private fun customizeMetal(initial: MetalParams, onUse: (MetalParams) -> Unit) {
+        var tint = initial.tint or (0xFF shl 24)
+        var grain = initial.grain
+        var sheen = initial.sheen
+        var scratches = initial.scratches
+        val seed = binding.canvas.surfaceSeed // preview the actual sheet
+
+        val preview = SurfacePreview { w, h ->
+            buildSurfaceVisual(
+                SurfaceKind.METAL, w, h,
+                seed = seed,
+                metalParams = MetalParams(tint, grain, sheen, scratches),
+            )
+        }
+        val tintRow = colorRow("Tint", "Metal tint", tint) { c -> tint = c; preview.refresh() }
+        val grainSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 0.35f; value = grain.coerceIn(0f, 0.35f)
+            addOnChangeListener { _, v, _ -> grain = v; preview.refresh() }
+        }
+        val sheenSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 0.20f; value = sheen.coerceIn(0f, 0.20f)
+            addOnChangeListener { _, v, _ -> sheen = v; preview.refresh() }
+        }
+        val scratchSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 2.5f; value = scratches.coerceIn(0f, 2.5f)
+            addOnChangeListener { _, v, _ -> scratches = v; preview.refresh() }
+        }
+
+        val content = vbox(
+            preview, tintRow,
+            sliderRow("Grain", grainSlider),
+            sliderRow("Sheen", sheenSlider),
+            sliderRow("Scratches", scratchSlider),
+        )
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Metal")
+            .setView(content)
+            .setNeutralButton("Reset") { _, _ -> customizeMetal(MetalParams(), onUse) }
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Use") { _, _ -> onUse(MetalParams(tint, grain, sheen, scratches)) }
             .show()
     }
 

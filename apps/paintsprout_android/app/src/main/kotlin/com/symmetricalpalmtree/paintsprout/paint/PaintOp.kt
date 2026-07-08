@@ -77,4 +77,6 @@ class SurfaceOp(
     val stone: StoneParams = StoneParams(),
     /** Concrete customisation in effect at this point (ignored by others). */
     val concrete: ConcreteParams = ConcreteParams(),
+    /** Metal customisation in effect at this point (ignored by others). */
+    val metal: MetalParams = MetalParams(),
 ) : PaintOp()
