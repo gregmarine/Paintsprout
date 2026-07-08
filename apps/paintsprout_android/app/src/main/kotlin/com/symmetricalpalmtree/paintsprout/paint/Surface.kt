@@ -101,6 +101,29 @@ data class WatercolorParams(
     }
 }
 
+/**
+ * User-tweakable parameters for the Wood surface. The board is generated per
+ * artwork (see [buildSurfaceVisual]'s seed); these shape its look. Defaults
+ * reproduce the built-in rustic aged-oak board.
+ */
+data class WoodParams(
+    /** Base timber colour. */
+    @param:ColorInt val tint: Int = DEFAULT_TINT,
+    /** Grain contrast — how pronounced the growth rings are. */
+    val grain: Float = DEFAULT_GRAIN,
+    /** Grain scale — smaller is finer / more zoomed out, larger is coarser. */
+    val scale: Float = DEFAULT_SCALE,
+    /** Weathering — broad aged light/dark patchiness. */
+    val weathering: Float = DEFAULT_WEATHERING,
+) {
+    companion object {
+        const val DEFAULT_TINT: Int = 0xFFBA9C78.toInt() // muted aged oak
+        const val DEFAULT_GRAIN: Float = 0.34f
+        const val DEFAULT_SCALE: Float = 0.48f
+        const val DEFAULT_WEATHERING: Float = 0.09f
+    }
+}
+
 /** Surfaces wired into the picker so far. */
 val AVAILABLE_SURFACES: List<SurfaceKind> = listOf(
     SurfaceKind.PLAIN,
@@ -127,11 +150,12 @@ fun buildSurfaceVisual(
     canvasParams: CanvasParams = CanvasParams(),
     seed: Long = 0L,
     watercolorParams: WatercolorParams = WatercolorParams(),
+    woodParams: WoodParams = WoodParams(),
 ): Bitmap {
     // Organic surfaces are drawn across the whole buffer (no tiling, so no visible
     // repeat) and are fully determined by [seed] — one seed per artwork.
     if (kind == SurfaceKind.WATERCOLOR) return watercolorFull(w, h, seed, watercolorParams)
-    if (kind == SurfaceKind.WOOD) return woodFull(w, h, seed)
+    if (kind == SurfaceKind.WOOD) return woodFull(w, h, seed, woodParams)
     val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(out)
     if (kind == SurfaceKind.PLAIN) {
@@ -360,15 +384,17 @@ private fun stoneTile(): Bitmap {
  * opens and closes the grain. Longitudinal streaks and broad tonal zones break it
  * up; latewood warms to brown. Built at half resolution + upscale, across cores.
  */
-private fun woodFull(w: Int, h: Int, seed: Long): Bitmap {
-    val baseR = 0.73; val baseG = 0.61; val baseB = 0.47 // muted, aged oak
+private fun woodFull(w: Int, h: Int, seed: Long, p: WoodParams): Bitmap {
+    val baseR = Color.red(p.tint) / 255.0
+    val baseG = Color.green(p.tint) / 255.0
+    val baseB = Color.blue(p.tint) / 255.0
     val scale = 2
     val lw = (w + scale - 1) / scale
     val lh = (h + scale - 1) / scale
     // Grain zoom: <1 shrinks every feature together (zoomed out, finer grain). Scales
     // the band spacing, warp and all cell sizes; curv/ky follow so arches stay in
     // proportion (ring*z with curv,ky fixed shrinks arches the same in both axes).
-    val z = 0.48
+    val z = p.scale.toDouble() // grain zoom (<1 = finer / zoomed out)
     val s = z / scale // combined feature scale in lowres px
     val pith = seededGrid(lw, lh, 5000.0, 520.0 * s, seed + 65) // gently meandering apex
     val warpB = seededGrid(lw, lh, 320.0 * s, 240.0 * s, seed + 61) // undulation
@@ -400,7 +426,7 @@ private fun woodFull(w: Int, h: Int, seed: Long): Bitmap {
             val roughness = grit.sample(x, y) - 0.5 // weathered, matte surface
             val streaks = streak.sample(x, y) - 0.5
             val fleck = hashGrain(x, y, seed) * 0.035 // fine matte speckle
-            val shade = 0.93 - 0.34 * figure + 0.09 * weather + 0.045 * zoneTone +
+            val shade = 0.93 - p.grain * figure + p.weathering * weather + 0.045 * zoneTone +
                 0.035 * roughness + 0.03 * streaks + fleck
             val warm = 1.0 - 0.13 * figure // dark grain leans a little browner
             px[i++] = argb(baseR * shade, baseG * shade, baseB * shade * warm)

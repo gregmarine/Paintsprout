@@ -29,6 +29,7 @@ import com.symmetricalpalmtree.paintsprout.paint.SurfaceKind
 import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
 import com.symmetricalpalmtree.paintsprout.paint.Tool
 import com.symmetricalpalmtree.paintsprout.paint.WatercolorParams
+import com.symmetricalpalmtree.paintsprout.paint.WoodParams
 import kotlin.math.roundToInt
 
 /**
@@ -51,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     private var plainColor = Color.WHITE
     private var canvasParams = CanvasParams()
     private var watercolorParams = WatercolorParams()
+    private var woodParams = WoodParams()
     private var hasSelection = false
 
     // Magic-wand settings (Flutter defaults).
@@ -85,7 +87,9 @@ class MainActivity : AppCompatActivity() {
         binding.canvas.tool = tool
         binding.canvas.strokeColor = color
         binding.canvas.baseSize = sizes[tool]
-        binding.canvas.setInitialSurface(currentSurface(), plainColor, canvasParams, watercolorParams)
+        binding.canvas.setInitialSurface(
+            currentSurface(), plainColor, canvasParams, watercolorParams, woodParams,
+        )
         applyWandSettings()
         binding.canvas.onHistoryChanged = {
             // Undo/redo may have reverted the surface — mirror it back into the rail.
@@ -304,6 +308,14 @@ class MainActivity : AppCompatActivity() {
                     binding.canvas.commitSurfaceChange(SurfaceKind.WATERCOLOR, plainColor, watercolor = params)
                     updateRail()
                 }
+            SurfaceKind.WOOD ->
+                // Dial in the board first, then commit surface + params as one op.
+                customizeWood(woodParams) { params ->
+                    woodParams = params
+                    surfaceIndex = index
+                    binding.canvas.commitSurfaceChange(SurfaceKind.WOOD, plainColor, wood = params)
+                    updateRail()
+                }
             else -> {
                 surfaceIndex = index
                 binding.canvas.commitSurfaceChange(kind, plainColor)
@@ -318,6 +330,7 @@ class MainActivity : AppCompatActivity() {
         plainColor = binding.canvas.plainColor
         canvasParams = binding.canvas.canvasParams
         watercolorParams = binding.canvas.watercolorParams
+        woodParams = binding.canvas.woodParams
     }
 
     /** HSV colour wheel + brightness slider, with swatch quick-picks. */
@@ -447,6 +460,54 @@ class MainActivity : AppCompatActivity() {
             .setNeutralButton("Reset") { _, _ -> customizeWatercolor(WatercolorParams(), onUse) }
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Use") { _, _ -> onUse(WatercolorParams(tint, texture, mottle, grain)) }
+            .show()
+    }
+
+    /**
+     * Wood customisation. The board is fixed per artwork (its seed); these controls
+     * shape its look. Live preview is a true-scale window onto the actual board.
+     */
+    private fun customizeWood(initial: WoodParams, onUse: (WoodParams) -> Unit) {
+        var tint = initial.tint or (0xFF shl 24)
+        var grain = initial.grain
+        var scale = initial.scale
+        var weathering = initial.weathering
+        val seed = binding.canvas.surfaceSeed // preview the actual board
+
+        val preview = SurfacePreview { w, h ->
+            buildSurfaceVisual(
+                SurfaceKind.WOOD, w, h,
+                seed = seed,
+                woodParams = WoodParams(tint, grain, scale, weathering),
+            )
+        }
+        val tintRow = colorRow("Tint", "Wood tint", tint) { c -> tint = c; preview.refresh() }
+        val grainSlider = Slider(this).apply {
+            valueFrom = 0.10f; valueTo = 0.60f; value = grain.coerceIn(0.10f, 0.60f)
+            addOnChangeListener { _, v, _ -> grain = v; preview.refresh() }
+        }
+        // Smaller scale = finer / more zoomed out; larger = coarser grain.
+        val scaleSlider = Slider(this).apply {
+            valueFrom = 0.30f; valueTo = 1.00f; value = scale.coerceIn(0.30f, 1.00f)
+            addOnChangeListener { _, v, _ -> scale = v; preview.refresh() }
+        }
+        val weatherSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 0.20f; value = weathering.coerceIn(0f, 0.20f)
+            addOnChangeListener { _, v, _ -> weathering = v; preview.refresh() }
+        }
+
+        val content = vbox(
+            preview, tintRow,
+            sliderRow("Grain", grainSlider),
+            sliderRow("Scale", scaleSlider),
+            sliderRow("Weather", weatherSlider),
+        )
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Wood")
+            .setView(content)
+            .setNeutralButton("Reset") { _, _ -> customizeWood(WoodParams(), onUse) }
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Use") { _, _ -> onUse(WoodParams(tint, grain, scale, weathering)) }
             .show()
     }
 

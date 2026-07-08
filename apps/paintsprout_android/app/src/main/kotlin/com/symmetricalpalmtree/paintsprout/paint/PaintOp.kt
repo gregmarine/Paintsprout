@@ -71,4 +71,6 @@ class SurfaceOp(
     val canvas: CanvasParams = CanvasParams(),
     /** Watercolor customisation in effect at this point (ignored by others). */
     val watercolor: WatercolorParams = WatercolorParams(),
+    /** Wood customisation in effect at this point (ignored by others). */
+    val wood: WoodParams = WoodParams(),
 ) : PaintOp()
