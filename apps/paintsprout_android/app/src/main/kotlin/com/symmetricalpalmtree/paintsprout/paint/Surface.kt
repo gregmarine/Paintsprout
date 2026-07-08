@@ -131,6 +131,7 @@ fun buildSurfaceVisual(
     // Organic surfaces are drawn across the whole buffer (no tiling, so no visible
     // repeat) and are fully determined by [seed] — one seed per artwork.
     if (kind == SurfaceKind.WATERCOLOR) return watercolorFull(w, h, seed, watercolorParams)
+    if (kind == SurfaceKind.WOOD) return woodFull(w, h, seed)
     val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(out)
     if (kind == SurfaceKind.PLAIN) {
@@ -150,7 +151,6 @@ private fun visualTile(kind: SurfaceKind, canvas: CanvasParams): Bitmap = when (
     SurfaceKind.CANVAS -> canvasTile(canvas)
     SurfaceKind.METAL -> metalTile()
     SurfaceKind.STONE -> stoneTile()
-    SurfaceKind.WOOD -> woodTile()
     SurfaceKind.CHALKBOARD -> chalkboardTile()
     SurfaceKind.CONCRETE -> concreteTile()
     else -> paperTile() // paper + fallback
@@ -349,23 +349,67 @@ private fun stoneTile(): Bitmap {
     return Bitmap.createBitmap(px, size, size, Bitmap.Config.ARGB_8888)
 }
 
-private fun woodTile(): Bitmap {
-    val size = 256
-    val baseR = 0.80; val baseG = 0.66; val baseB = 0.46
-    val wave = noiseGrid(4, 8, 41)
-    val rnd = Random(42)
-    val px = IntArray(size * size)
-    for (y in 0 until size) {
-        for (x in 0 until size) {
-            val disp = noise2(wave, 4, 8, x.toDouble() / size * 4, y.toDouble() / size * 8)
-            val g = 0.5 - 0.5 * cos(2 * PI * (7 * x.toDouble() / size + 0.35 * disp))
-            val line = g.pow(2.2)
-            val grain = (rnd.nextDouble() - 0.5) * 0.05
-            val shade = 0.9 - 0.28 * line + 0.06 * (disp - 0.5) + grain
-            px[y * size + x] = argb(baseR * shade, baseG * shade, baseB * shade)
+/**
+ * Wood across the WHOLE buffer — not a tile — so the grain never repeats. Fully
+ * determined by [seed]: one board per artwork.
+ *
+ * Flat-sawn plank: grain runs down the board as near-vertical lines, given long
+ * gentle sweeps (not busy waves) by low-frequency warp. A per-region "weight"
+ * field varies each band's darkness AND width — a few bold latewood lines among
+ * many faint ones, which is what actually reads as timber — while a spacing field
+ * opens and closes the grain. Longitudinal streaks and broad tonal zones break it
+ * up; latewood warms to brown. Built at half resolution + upscale, across cores.
+ */
+private fun woodFull(w: Int, h: Int, seed: Long): Bitmap {
+    val baseR = 0.73; val baseG = 0.61; val baseB = 0.47 // muted, aged oak
+    val scale = 2
+    val lw = (w + scale - 1) / scale
+    val lh = (h + scale - 1) / scale
+    // Grain zoom: <1 shrinks every feature together (zoomed out, finer grain). Scales
+    // the band spacing, warp and all cell sizes; curv/ky follow so arches stay in
+    // proportion (ring*z with curv,ky fixed shrinks arches the same in both axes).
+    val z = 0.48
+    val s = z / scale // combined feature scale in lowres px
+    val pith = seededGrid(lw, lh, 5000.0, 520.0 * s, seed + 65) // gently meandering apex
+    val warpB = seededGrid(lw, lh, 320.0 * s, 240.0 * s, seed + 61) // undulation
+    val warpC = seededGrid(lw, lh, 150.0 * s, 180.0 * s, seed + 67) // spacing irregularity
+    val weight = seededGrid(lw, lh, 280.0 * s, 220.0 * s, seed + 62) // per-region boldness
+    val zone = seededGrid(lw, lh, 560.0 * s, 440.0 * s, seed + 63) // heart/sap tone
+    val stain = seededGrid(lw, lh, 900.0 * s, 720.0 * s, seed + 68) // broad aged patchiness
+    val grit = seededGrid(lw, lh, 40.0 * s, 40.0 * s, seed + 69) // weathered surface roughness
+    val streak = seededGrid(lw, lh, 7.0 * s, 340.0 * s, seed + 64) // longitudinal fibre
+    val ring = 42.0 * s // constant band spacing (constant => contours can't close into loops)
+    val curv = 0.40 / lw // quadratic arch curvature: nested apex-up parabolas
+    val ky = 0.42 // vertical advance -> arches stack up the board
+    val ampB = 14.0 * s; val ampC = 13.0 * s
+    val px = IntArray(lw * lh)
+    IntStream.range(0, lh).parallel().forEach { y ->
+        var i = y * lw
+        for (x in 0 until lw) {
+            val pithX = lw * 0.5 + (pith.sample(x, y) - 0.5) * lw * 0.30
+            val dx = x - pithX
+            val warp = ampB * (warpB.sample(x, y) - 0.5) + ampC * (warpC.sample(x, y) - 0.5)
+            // Smooth cathedral field: parabolic arches (dx^2) advancing up the board.
+            val field = dx * dx * curv + y * ky + warp
+            val band = 0.5 - 0.5 * cos(2 * PI * field / ring)
+            val wgt = weight.sample(x, y) // 0..1: region grain boldness
+            // Soft, mostly-faint grain: a few defined rings among many whispers (rustic).
+            val figure = (band.pow(1.8 + 2.8 * wgt) * (0.06 + 1.1 * wgt)).coerceIn(0.0, 1.0)
+            val zoneTone = zone.sample(x, y) - 0.5
+            val weather = stain.sample(x, y) - 0.5 // broad aged light/dark patches
+            val roughness = grit.sample(x, y) - 0.5 // weathered, matte surface
+            val streaks = streak.sample(x, y) - 0.5
+            val fleck = hashGrain(x, y, seed) * 0.035 // fine matte speckle
+            val shade = 0.93 - 0.34 * figure + 0.09 * weather + 0.045 * zoneTone +
+                0.035 * roughness + 0.03 * streaks + fleck
+            val warm = 1.0 - 0.13 * figure // dark grain leans a little browner
+            px[i++] = argb(baseR * shade, baseG * shade, baseB * shade * warm)
         }
     }
-    return Bitmap.createBitmap(px, size, size, Bitmap.Config.ARGB_8888)
+    val small = Bitmap.createBitmap(px, lw, lh, Bitmap.Config.ARGB_8888)
+    val full = Bitmap.createScaledBitmap(small, w, h, /* filter = */ true)
+    small.recycle()
+    return full
 }
 
 /**
@@ -418,13 +462,14 @@ private fun watercolorFull(w: Int, h: Int, seed: Long, p: WatercolorParams): Bit
 }
 
 /**
- * A value-noise grid covering the buffer, with cells [cellPx] logical px across.
- * Sized with a 2-cell margin so sampling anywhere in the buffer never needs to
- * wrap — [sample] can skip the modulo the general [noise2] pays.
+ * A value-noise grid covering the buffer, with cells [cellX]×[cellY] logical px
+ * (anisotropic — wood grain wants features stretched along the board). Sized with
+ * a 2-cell margin so sampling anywhere in the buffer never needs to wrap, letting
+ * [sample] skip the modulo the general [noise2] pays.
  */
-private class Grid(val g: DoubleArray, val gx: Int, val cellPx: Double) {
+private class Grid(val g: DoubleArray, val gx: Int, val cellX: Double, val cellY: Double) {
     fun sample(x: Int, y: Int): Double {
-        val u = x / cellPx; val v = y / cellPx
+        val u = x / cellX; val v = y / cellY
         val x0 = u.toInt(); val y0 = v.toInt() // u,v >= 0, so toInt() == floor
         val fx = u - x0; val fy = v - y0
         val sx = fx * fx * (3 - 2 * fx); val sy = fy * fy * (3 - 2 * fy)
@@ -436,12 +481,16 @@ private class Grid(val g: DoubleArray, val gx: Int, val cellPx: Double) {
     }
 }
 
-private fun seededGrid(w: Int, h: Int, cellPx: Double, seed: Long): Grid {
-    val gx = kotlin.math.ceil(w / cellPx).toInt() + 2
-    val gy = kotlin.math.ceil(h / cellPx).toInt() + 2
+private fun seededGrid(w: Int, h: Int, cellX: Double, cellY: Double, seed: Long): Grid {
+    val gx = kotlin.math.ceil(w / cellX).toInt() + 2
+    val gy = kotlin.math.ceil(h / cellY).toInt() + 2
     val rnd = Random(seed)
-    return Grid(DoubleArray(gx * gy) { rnd.nextDouble() }, gx, cellPx)
+    return Grid(DoubleArray(gx * gy) { rnd.nextDouble() }, gx, cellX, cellY)
 }
+
+/** Square-cell convenience for isotropic textures. */
+private fun seededGrid(w: Int, h: Int, cellPx: Double, seed: Long): Grid =
+    seededGrid(w, h, cellPx, cellPx, seed)
 
 /** Cheap, order-independent per-pixel speckle in [-0.5, 0.5) (parallel-safe). */
 private fun hashGrain(x: Int, y: Int, seed: Long): Double {
