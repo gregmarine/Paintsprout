@@ -25,6 +25,7 @@ import com.google.android.material.snackbar.Snackbar
 import com.symmetricalpalmtree.paintsprout.databinding.ActivityMainBinding
 import com.symmetricalpalmtree.paintsprout.paint.AVAILABLE_SURFACES
 import com.symmetricalpalmtree.paintsprout.paint.CanvasParams
+import com.symmetricalpalmtree.paintsprout.paint.StoneParams
 import com.symmetricalpalmtree.paintsprout.paint.SurfaceKind
 import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
 import com.symmetricalpalmtree.paintsprout.paint.Tool
@@ -53,6 +54,7 @@ class MainActivity : AppCompatActivity() {
     private var canvasParams = CanvasParams()
     private var watercolorParams = WatercolorParams()
     private var woodParams = WoodParams()
+    private var stoneParams = StoneParams()
     private var hasSelection = false
 
     // Magic-wand settings (Flutter defaults).
@@ -88,7 +90,7 @@ class MainActivity : AppCompatActivity() {
         binding.canvas.strokeColor = color
         binding.canvas.baseSize = sizes[tool]
         binding.canvas.setInitialSurface(
-            currentSurface(), plainColor, canvasParams, watercolorParams, woodParams,
+            currentSurface(), plainColor, canvasParams, watercolorParams, woodParams, stoneParams,
         )
         applyWandSettings()
         binding.canvas.onHistoryChanged = {
@@ -316,6 +318,14 @@ class MainActivity : AppCompatActivity() {
                     binding.canvas.commitSurfaceChange(SurfaceKind.WOOD, plainColor, wood = params)
                     updateRail()
                 }
+            SurfaceKind.STONE ->
+                // Dial in the slab first, then commit surface + params as one op.
+                customizeStone(stoneParams) { params ->
+                    stoneParams = params
+                    surfaceIndex = index
+                    binding.canvas.commitSurfaceChange(SurfaceKind.STONE, plainColor, stone = params)
+                    updateRail()
+                }
             else -> {
                 surfaceIndex = index
                 binding.canvas.commitSurfaceChange(kind, plainColor)
@@ -331,6 +341,7 @@ class MainActivity : AppCompatActivity() {
         canvasParams = binding.canvas.canvasParams
         watercolorParams = binding.canvas.watercolorParams
         woodParams = binding.canvas.woodParams
+        stoneParams = binding.canvas.stoneParams
     }
 
     /** HSV colour wheel + brightness slider, with swatch quick-picks. */
@@ -508,6 +519,61 @@ class MainActivity : AppCompatActivity() {
             .setNeutralButton("Reset") { _, _ -> customizeWood(WoodParams(), onUse) }
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Use") { _, _ -> onUse(WoodParams(tint, grain, scale, weathering)) }
+            .show()
+    }
+
+    /**
+     * Stone (slate) customisation. The slab is fixed per artwork (its seed); these
+     * controls shape its look. Live preview is a true-scale window onto the actual slab.
+     */
+    private fun customizeStone(initial: StoneParams, onUse: (StoneParams) -> Unit) {
+        var tint = initial.tint or (0xFF shl 24)
+        var mottle = initial.mottle
+        var cracks = initial.cracks
+        var crackContrast = initial.crackContrast
+        var grain = initial.grain
+        val seed = binding.canvas.surfaceSeed // preview the actual slab
+
+        val preview = SurfacePreview { w, h ->
+            buildSurfaceVisual(
+                SurfaceKind.STONE, w, h,
+                seed = seed,
+                stoneParams = StoneParams(tint, mottle, cracks, crackContrast, grain),
+            )
+        }
+        val tintRow = colorRow("Tint", "Slate tint", tint) { c -> tint = c; preview.refresh() }
+        val mottleSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 0.50f; value = mottle.coerceIn(0f, 0.50f)
+            addOnChangeListener { _, v, _ -> mottle = v; preview.refresh() }
+        }
+        val cracksSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 2.0f; value = cracks.coerceIn(0f, 2.0f)
+            addOnChangeListener { _, v, _ -> cracks = v; preview.refresh() }
+        }
+        val contrastSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 2.0f; value = crackContrast.coerceIn(0f, 2.0f)
+            addOnChangeListener { _, v, _ -> crackContrast = v; preview.refresh() }
+        }
+        val grainSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 0.20f; value = grain.coerceIn(0f, 0.20f)
+            addOnChangeListener { _, v, _ -> grain = v; preview.refresh() }
+        }
+
+        val content = vbox(
+            preview, tintRow,
+            sliderRow("Mottle", mottleSlider),
+            sliderRow("Cracks", cracksSlider),
+            sliderRow("Crack contrast", contrastSlider),
+            sliderRow("Grain", grainSlider),
+        )
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Stone")
+            .setView(content)
+            .setNeutralButton("Reset") { _, _ -> customizeStone(StoneParams(), onUse) }
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Use") { _, _ ->
+                onUse(StoneParams(tint, mottle, cracks, crackContrast, grain))
+            }
             .show()
     }
 

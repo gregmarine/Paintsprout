@@ -126,6 +126,32 @@ data class WoodParams(
     }
 }
 
+/**
+ * User-tweakable parameters for the Stone (slate) surface. The slab is generated
+ * per artwork (see [buildSurfaceVisual]'s seed); these shape its look. Defaults
+ * reproduce the built-in cloudy dark-slate face with fine cracks.
+ */
+data class StoneParams(
+    /** Base slate colour. */
+    @param:ColorInt val tint: Int = DEFAULT_TINT,
+    /** Mottle — how pronounced the cloudy light/dark blotching is. */
+    val mottle: Float = DEFAULT_MOTTLE,
+    /** Crack density — how many hairline fractures cross the slab. */
+    val cracks: Float = DEFAULT_CRACKS,
+    /** Crack contrast — how dark / visible the fractures are. */
+    val crackContrast: Float = DEFAULT_CRACK_CONTRAST,
+    /** Grain — matte per-pixel grit / fleck strength. */
+    val grain: Float = DEFAULT_GRAIN,
+) {
+    companion object {
+        const val DEFAULT_TINT: Int = 0xFF6B7075.toInt() // dark slate grey
+        const val DEFAULT_MOTTLE: Float = 0.24f
+        const val DEFAULT_CRACKS: Float = 1.0f
+        const val DEFAULT_CRACK_CONTRAST: Float = 1.0f
+        const val DEFAULT_GRAIN: Float = 0.09f
+    }
+}
+
 /** Surfaces wired into the picker so far. */
 val AVAILABLE_SURFACES: List<SurfaceKind> = listOf(
     SurfaceKind.PLAIN,
@@ -153,12 +179,13 @@ fun buildSurfaceVisual(
     seed: Long = 0L,
     watercolorParams: WatercolorParams = WatercolorParams(),
     woodParams: WoodParams = WoodParams(),
+    stoneParams: StoneParams = StoneParams(),
 ): Bitmap {
     // Organic surfaces are drawn across the whole buffer (no tiling, so no visible
     // repeat) and are fully determined by [seed] — one seed per artwork.
     if (kind == SurfaceKind.WATERCOLOR) return watercolorFull(w, h, seed, watercolorParams)
     if (kind == SurfaceKind.WOOD) return woodFull(w, h, seed, woodParams)
-    if (kind == SurfaceKind.STONE) return stoneFull(w, h, seed)
+    if (kind == SurfaceKind.STONE) return stoneFull(w, h, seed, stoneParams)
     val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(out)
     if (kind == SurfaceKind.PLAIN) {
@@ -364,8 +391,12 @@ private fun metalTile(): Bitmap {
  * of light/dark fracture veins, and a green/warm/cool colour drift — natural riven
  * stone, not ruled bands. Half res + upscale, plus a full-res matte grit pass.
  */
-private fun stoneFull(w: Int, h: Int, seed: Long): Bitmap {
-    val baseR = 0.42; val baseG = 0.44; val baseB = 0.46 // dark slate grey
+private fun stoneFull(w: Int, h: Int, seed: Long, p: StoneParams): Bitmap {
+    val baseR = ((p.tint ushr 16) and 0xFF) / 255.0
+    val baseG = ((p.tint ushr 8) and 0xFF) / 255.0
+    val baseB = (p.tint and 0xFF) / 255.0
+    val mottle = p.mottle.toDouble()
+    val grain = p.grain.toDouble()
     val scale = 2
     val lw = (w + scale - 1) / scale
     val lh = (h + scale - 1) / scale
@@ -388,7 +419,7 @@ private fun stoneFull(w: Int, h: Int, seed: Long): Bitmap {
                 0.15 * (cloudC.sample(x, y) - 0.5)
             val t = temp.sample(x, y) - 0.5
             val hg = hue.sample(x, y) - 0.5
-            val shade = 0.86 + 0.24 * cloud
+            val shade = 0.86 + mottle * cloud
             px[i++] = argb(
                 baseR * shade * (1.0 + 0.10 * t),
                 baseG * shade * (1.0 + 0.06 * hg),
@@ -408,7 +439,7 @@ private fun stoneFull(w: Int, h: Int, seed: Long): Bitmap {
         var j = yy * w
         for (xx in 0 until w) {
             val g = hashGrain(xx, yy, seed)
-            var f = 1.0 + g * 0.09
+            var f = 1.0 + g * grain
             if (g < -0.46) f -= 0.14 // occasional dark fleck
             out[j] = scalePixel(out[j], f)
             j++
@@ -419,7 +450,7 @@ private fun stoneFull(w: Int, h: Int, seed: Long): Bitmap {
     // A few sparse, open fracture lines drawn as seeded random walks (NOT ridged
     // noise, which always closes into puzzle loops). Thin, faint, occasionally
     // branching — the hairline cracks of a natural slate face.
-    drawSlateCracks(Canvas(result), w, h, seed)
+    drawSlateCracks(Canvas(result), w, h, seed, p.cracks, p.crackContrast)
     return result
 }
 
@@ -429,7 +460,10 @@ private fun stoneFull(w: Int, h: Int, seed: Long): Bitmap {
  * fork; strokes are thin and low-alpha so they read as hairlines, not gouges. A
  * faint light edge gives the crack a little depth against the matte face.
  */
-private fun drawSlateCracks(canvas: Canvas, w: Int, h: Int, seed: Long) {
+private fun drawSlateCracks(
+    canvas: Canvas, w: Int, h: Int, seed: Long, density: Float, contrast: Float,
+) {
+    if (density <= 0f || contrast <= 0f) return
     val rnd = Random(seed * 6364136223846793005L + 1442695040888963407L)
     val diag = Math.hypot(w.toDouble(), h.toDouble())
     val step = diag * 0.010
@@ -439,10 +473,11 @@ private fun drawSlateCracks(canvas: Canvas, w: Int, h: Int, seed: Long) {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
-    val count = ((w.toLong() * h) / 300000L).toInt().coerceIn(7, 20)
+    val base = ((w.toLong() * h) / 300000L).toInt().coerceIn(7, 20)
+    val count = (base * density).toInt().coerceIn(0, 48)
     repeat(count) {
         drawCrack(
-            canvas, paint, rnd, w, h, diag, step,
+            canvas, paint, rnd, contrast, w, h, diag, step,
             rnd.nextDouble() * w, rnd.nextDouble() * h,
             rnd.nextDouble() * 2 * PI,
             diag * (0.10 + 0.30 * rnd.nextDouble()),
@@ -452,7 +487,7 @@ private fun drawSlateCracks(canvas: Canvas, w: Int, h: Int, seed: Long) {
 }
 
 private fun drawCrack(
-    canvas: Canvas, paint: Paint, rnd: Random,
+    canvas: Canvas, paint: Paint, rnd: Random, contrast: Float,
     w: Int, h: Int, diag: Double, step: Double,
     sx: Double, sy: Double, angle0: Double, length: Double, depth: Int,
 ) {
@@ -474,15 +509,15 @@ private fun drawCrack(
     }
     // Faint light edge first (depth), then the darker crack core over it.
     paint.color = 0xFFFFFFFF.toInt()
-    paint.alpha = 20 + rnd.nextInt(16)
+    paint.alpha = ((20 + rnd.nextInt(16)) * contrast).toInt().coerceIn(0, 255)
     paint.strokeWidth = (diag * 0.0018).toFloat().coerceAtLeast(1.4f)
     canvas.drawPath(path, paint)
     paint.color = 0xFF000000.toInt()
-    paint.alpha = 60 + rnd.nextInt(40)
+    paint.alpha = ((60 + rnd.nextInt(40)) * contrast).toInt().coerceIn(0, 255)
     paint.strokeWidth = (diag * 0.0010).toFloat().coerceAtLeast(1.0f)
     canvas.drawPath(path, paint)
     for (b in branches) {
-        drawCrack(canvas, paint, rnd, w, h, diag, step, b[0], b[1], b[2], length * 0.45, depth + 1)
+        drawCrack(canvas, paint, rnd, contrast, w, h, diag, step, b[0], b[1], b[2], length * 0.45, depth + 1)
     }
 }
 
