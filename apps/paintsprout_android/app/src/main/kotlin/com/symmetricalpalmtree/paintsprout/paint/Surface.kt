@@ -152,6 +152,29 @@ data class StoneParams(
     }
 }
 
+/**
+ * User-tweakable parameters for the Concrete surface. The slab is generated per
+ * artwork (see [buildSurfaceVisual]'s seed); these shape its look. Defaults
+ * reproduce the built-in smooth-troweled cement slab.
+ */
+data class ConcreteParams(
+    /** Base cement colour. */
+    @param:ColorInt val tint: Int = DEFAULT_TINT,
+    /** Staining — how pronounced the cloudy pour/blotch patches are. */
+    val staining: Float = DEFAULT_STAINING,
+    /** Pores — density of small air-bubble holes. */
+    val pores: Float = DEFAULT_PORES,
+    /** Grit — coarse aggregate / sand speckle strength. */
+    val grit: Float = DEFAULT_GRIT,
+) {
+    companion object {
+        const val DEFAULT_TINT: Int = 0xFFADABA6.toInt() // warm cement grey
+        const val DEFAULT_STAINING: Float = 0.20f
+        const val DEFAULT_PORES: Float = 1.0f
+        const val DEFAULT_GRIT: Float = 0.14f
+    }
+}
+
 /** Surfaces wired into the picker so far. */
 val AVAILABLE_SURFACES: List<SurfaceKind> = listOf(
     SurfaceKind.PLAIN,
@@ -180,12 +203,14 @@ fun buildSurfaceVisual(
     watercolorParams: WatercolorParams = WatercolorParams(),
     woodParams: WoodParams = WoodParams(),
     stoneParams: StoneParams = StoneParams(),
+    concreteParams: ConcreteParams = ConcreteParams(),
 ): Bitmap {
     // Organic surfaces are drawn across the whole buffer (no tiling, so no visible
     // repeat) and are fully determined by [seed] — one seed per artwork.
     if (kind == SurfaceKind.WATERCOLOR) return watercolorFull(w, h, seed, watercolorParams)
     if (kind == SurfaceKind.WOOD) return woodFull(w, h, seed, woodParams)
     if (kind == SurfaceKind.STONE) return stoneFull(w, h, seed, stoneParams)
+    if (kind == SurfaceKind.CONCRETE) return concreteFull(w, h, seed, concreteParams)
     val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(out)
     if (kind == SurfaceKind.PLAIN) {
@@ -519,6 +544,118 @@ private fun drawCrack(
     for (b in branches) {
         drawCrack(canvas, paint, rnd, contrast, w, h, diag, step, b[0], b[1], b[2], length * 0.45, depth + 1)
     }
+}
+
+/**
+ * Concrete across the WHOLE buffer — not a tile — so it never repeats. Fully
+ * determined by [seed]: one slab per artwork. Warm-neutral cement grey with
+ * cloudy pour/stain patches, fine aggregate speckle (light and dark grit), and
+ * scattered small dark air-bubble pores — the signature cast-concrete detail.
+ */
+private fun concreteFull(w: Int, h: Int, seed: Long, p: ConcreteParams): Bitmap {
+    val baseR = ((p.tint ushr 16) and 0xFF) / 255.0
+    val baseG = ((p.tint ushr 8) and 0xFF) / 255.0
+    val baseB = (p.tint and 0xFF) / 255.0
+    val staining = p.staining.toDouble()
+    val grit = p.grit.toDouble()
+    val scale = 2
+    val lw = (w + scale - 1) / scale
+    val lh = (h + scale - 1) / scale
+    // Broad cloudy pour/stain unevenness, gently warped.
+    val cloudA = seededGrid(lw, lh, 420.0 / scale, 380.0 / scale, seed + 40)
+    val cloudB = seededGrid(lw, lh, 150.0 / scale, 140.0 / scale, seed + 41)
+    val cloudC = seededGrid(lw, lh, 60.0 / scale, 56.0 / scale, seed + 42)
+    val warp = seededGrid(lw, lh, 320.0 / scale, 300.0 / scale, seed + 46)
+    val stain = seededGrid(lw, lh, 260.0 / scale, 230.0 / scale, seed + 43) // warm/cool drift
+    val speck = seededGrid(lw, lh, 7.0 / scale, 7.0 / scale, seed + 44) // fine aggregate
+    val ampW = 40.0 / scale
+    val px = IntArray(lw * lh)
+    IntStream.range(0, lh).parallel().forEach { y ->
+        var i = y * lw
+        for (x in 0 until lw) {
+            val ws = warp.sample(x, y) - 0.5
+            val cloud = 0.55 * (cloudA.sampleF(x + ampW * ws, y + ampW * 0.7 * ws) - 0.5) +
+                0.30 * (cloudB.sample(x, y) - 0.5) +
+                0.15 * (cloudC.sample(x, y) - 0.5)
+            val sp = speck.sample(x, y) - 0.5
+            val st = stain.sample(x, y) - 0.5
+            val shade = 0.90 + staining * cloud + 0.10 * sp
+            val warm = 0.055 * st // staining pushes some patches warmer/tan
+            px[i++] = argb(
+                baseR * shade * (1.0 + warm),
+                baseG * shade * (1.0 + 0.3 * warm),
+                baseB * shade * (1.0 - 0.5 * warm),
+            )
+        }
+    }
+    // Upscale, then a coarse full-res grit pass — concrete is grittier than slate,
+    // with both light (sand) and dark (aggregate) flecks.
+    val small = Bitmap.createBitmap(px, lw, lh, Bitmap.Config.ARGB_8888)
+    val scaled = Bitmap.createScaledBitmap(small, w, h, /* filter = */ true)
+    small.recycle()
+    val out = IntArray(w * h)
+    scaled.getPixels(out, 0, w, 0, 0, w, h)
+    scaled.recycle()
+    IntStream.range(0, h).parallel().forEach { yy ->
+        var j = yy * w
+        for (xx in 0 until w) {
+            val g = hashGrain(xx, yy, seed)
+            var f = 1.0 + g * grit
+            if (g > 0.46) f += 0.12 // light sand fleck
+            if (g < -0.46) f -= 0.16 // dark aggregate fleck
+            out[j] = scalePixel(out[j], f)
+            j++
+        }
+    }
+    val result = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    result.setPixels(out, 0, w, 0, 0, w, h)
+    drawConcretePores(Canvas(result), w, h, seed, p.pores)
+    return result
+}
+
+/**
+ * Scatters small dark air-bubble pores over [canvas] — the little holes left in
+ * cast concrete. Deterministic from [seed]. Soft-edged dark dots of varied size
+ * and depth, with a faint light rim on the larger ones for a touch of relief.
+ */
+private fun drawConcretePores(canvas: Canvas, w: Int, h: Int, seed: Long, density: Float) {
+    if (density <= 0f) return
+    val rnd = Random(seed * 2862933555777941757L + 3037000493L)
+    val diag = Math.hypot(w.toDouble(), h.toDouble())
+    val paint = Paint().apply { isAntiAlias = true; style = Paint.Style.FILL }
+
+    fun pore(cx: Double, cy: Double) {
+        if (cx < 0 || cx > w || cy < 0 || cy > h) return
+        // Small-biased radius: mostly pinholes, the occasional bigger bubble.
+        val t = rnd.nextDouble() * rnd.nextDouble()
+        val r = (diag * (0.0006 + 0.0022 * t)).toFloat().coerceAtLeast(1.0f)
+        if (r > diag * 0.0018f) { // faint light rim (relief) under bigger holes
+            paint.color = 0xFFFFFFFF.toInt()
+            paint.alpha = 14 + rnd.nextInt(12)
+            canvas.drawCircle(cx.toFloat() + r * 0.35f, cy.toFloat() + r * 0.35f, r * 1.15f, paint)
+        }
+        paint.color = 0xFF000000.toInt()
+        paint.alpha = 34 + rnd.nextInt(46)
+        canvas.drawCircle(cx.toFloat(), cy.toFloat(), r, paint)
+    }
+
+    // Most pores clump into irregular clusters, leaving clean stretches between.
+    val clusters = (((w.toLong() * h) / 900000L).toInt().coerceIn(3, 24) * density).toInt()
+    repeat(clusters) {
+        val ccx = rnd.nextDouble() * w
+        val ccy = rnd.nextDouble() * h
+        val spread = diag * (0.02 + 0.06 * rnd.nextDouble())
+        val n = 6 + rnd.nextInt(34)
+        repeat(n) {
+            // Sum of two uniforms → a soft bell around the cluster centre.
+            val ox = (rnd.nextDouble() - rnd.nextDouble()) * spread
+            val oy = (rnd.nextDouble() - rnd.nextDouble()) * spread
+            pore(ccx + ox, ccy + oy)
+        }
+    }
+    // A light uniform scatter of loners across the whole slab.
+    val scatter = (((w.toLong() * h) / 44000L).toInt().coerceIn(10, 250) * density).toInt()
+    repeat(scatter) { pore(rnd.nextDouble() * w, rnd.nextDouble() * h) }
 }
 
 /** Smoothstep from 0 at [a] to 1 at [b]. */

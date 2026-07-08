@@ -25,6 +25,7 @@ import com.google.android.material.snackbar.Snackbar
 import com.symmetricalpalmtree.paintsprout.databinding.ActivityMainBinding
 import com.symmetricalpalmtree.paintsprout.paint.AVAILABLE_SURFACES
 import com.symmetricalpalmtree.paintsprout.paint.CanvasParams
+import com.symmetricalpalmtree.paintsprout.paint.ConcreteParams
 import com.symmetricalpalmtree.paintsprout.paint.StoneParams
 import com.symmetricalpalmtree.paintsprout.paint.SurfaceKind
 import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
@@ -55,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private var watercolorParams = WatercolorParams()
     private var woodParams = WoodParams()
     private var stoneParams = StoneParams()
+    private var concreteParams = ConcreteParams()
     private var hasSelection = false
 
     // Magic-wand settings (Flutter defaults).
@@ -91,6 +93,7 @@ class MainActivity : AppCompatActivity() {
         binding.canvas.baseSize = sizes[tool]
         binding.canvas.setInitialSurface(
             currentSurface(), plainColor, canvasParams, watercolorParams, woodParams, stoneParams,
+            concreteParams,
         )
         applyWandSettings()
         binding.canvas.onHistoryChanged = {
@@ -326,6 +329,14 @@ class MainActivity : AppCompatActivity() {
                     binding.canvas.commitSurfaceChange(SurfaceKind.STONE, plainColor, stone = params)
                     updateRail()
                 }
+            SurfaceKind.CONCRETE ->
+                // Dial in the slab first, then commit surface + params as one op.
+                customizeConcrete(concreteParams) { params ->
+                    concreteParams = params
+                    surfaceIndex = index
+                    binding.canvas.commitSurfaceChange(SurfaceKind.CONCRETE, plainColor, concrete = params)
+                    updateRail()
+                }
             else -> {
                 surfaceIndex = index
                 binding.canvas.commitSurfaceChange(kind, plainColor)
@@ -342,6 +353,7 @@ class MainActivity : AppCompatActivity() {
         watercolorParams = binding.canvas.watercolorParams
         woodParams = binding.canvas.woodParams
         stoneParams = binding.canvas.stoneParams
+        concreteParams = binding.canvas.concreteParams
     }
 
     /** HSV colour wheel + brightness slider, with swatch quick-picks. */
@@ -574,6 +586,53 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Use") { _, _ ->
                 onUse(StoneParams(tint, mottle, cracks, crackContrast, grain))
             }
+            .show()
+    }
+
+    /**
+     * Concrete customisation. The slab is fixed per artwork (its seed); these
+     * controls shape its look. Live preview is a true-scale window onto the actual slab.
+     */
+    private fun customizeConcrete(initial: ConcreteParams, onUse: (ConcreteParams) -> Unit) {
+        var tint = initial.tint or (0xFF shl 24)
+        var staining = initial.staining
+        var pores = initial.pores
+        var grit = initial.grit
+        val seed = binding.canvas.surfaceSeed // preview the actual slab
+
+        val preview = SurfacePreview { w, h ->
+            buildSurfaceVisual(
+                SurfaceKind.CONCRETE, w, h,
+                seed = seed,
+                concreteParams = ConcreteParams(tint, staining, pores, grit),
+            )
+        }
+        val tintRow = colorRow("Tint", "Cement tint", tint) { c -> tint = c; preview.refresh() }
+        val stainSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 0.45f; value = staining.coerceIn(0f, 0.45f)
+            addOnChangeListener { _, v, _ -> staining = v; preview.refresh() }
+        }
+        val poresSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 2.5f; value = pores.coerceIn(0f, 2.5f)
+            addOnChangeListener { _, v, _ -> pores = v; preview.refresh() }
+        }
+        val gritSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 0.30f; value = grit.coerceIn(0f, 0.30f)
+            addOnChangeListener { _, v, _ -> grit = v; preview.refresh() }
+        }
+
+        val content = vbox(
+            preview, tintRow,
+            sliderRow("Staining", stainSlider),
+            sliderRow("Pores", poresSlider),
+            sliderRow("Grit", gritSlider),
+        )
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Concrete")
+            .setView(content)
+            .setNeutralButton("Reset") { _, _ -> customizeConcrete(ConcreteParams(), onUse) }
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Use") { _, _ -> onUse(ConcreteParams(tint, staining, pores, grit)) }
             .show()
     }
 
