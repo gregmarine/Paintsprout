@@ -2,6 +2,7 @@ package com.symmetricalpalmtree.paintsprout.paint
 
 import android.graphics.Bitmap
 import android.graphics.BitmapShader
+import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -198,6 +199,26 @@ data class MetalParams(
     }
 }
 
+/**
+ * User-tweakable parameters for the Chalkboard surface. The board is generated
+ * per artwork (see [buildSurfaceVisual]'s seed); these shape its look. Defaults
+ * reproduce the built-in classic dark-green board with chalk-dust ghosting.
+ */
+data class ChalkboardParams(
+    /** Base board colour. */
+    @param:ColorInt val tint: Int = DEFAULT_TINT,
+    /** Ghosting — intensity of the smeared chalk / eraser-sweep haze. */
+    val ghosting: Float = DEFAULT_GHOSTING,
+    /** Dust — density of the fine scattered chalk dust. */
+    val dust: Float = DEFAULT_DUST,
+) {
+    companion object {
+        const val DEFAULT_TINT: Int = 0xFF2B3B33.toInt() // classic blackboard green
+        const val DEFAULT_GHOSTING: Float = 1.0f
+        const val DEFAULT_DUST: Float = 1.0f
+    }
+}
+
 /** Surfaces wired into the picker so far. */
 val AVAILABLE_SURFACES: List<SurfaceKind> = listOf(
     SurfaceKind.PLAIN,
@@ -228,6 +249,7 @@ fun buildSurfaceVisual(
     stoneParams: StoneParams = StoneParams(),
     concreteParams: ConcreteParams = ConcreteParams(),
     metalParams: MetalParams = MetalParams(),
+    chalkboardParams: ChalkboardParams = ChalkboardParams(),
 ): Bitmap {
     // Organic surfaces are drawn across the whole buffer (no tiling, so no visible
     // repeat) and are fully determined by [seed] — one seed per artwork.
@@ -236,6 +258,7 @@ fun buildSurfaceVisual(
     if (kind == SurfaceKind.STONE) return stoneFull(w, h, seed, stoneParams)
     if (kind == SurfaceKind.CONCRETE) return concreteFull(w, h, seed, concreteParams)
     if (kind == SurfaceKind.METAL) return metalFull(w, h, seed, metalParams)
+    if (kind == SurfaceKind.CHALKBOARD) return chalkboardFull(w, h, seed, chalkboardParams)
     val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(out)
     if (kind == SurfaceKind.PLAIN) {
@@ -775,6 +798,137 @@ private fun drawMetalScratches(canvas: Canvas, w: Int, h: Int, seed: Long, densi
         paint.strokeWidth = (diag * 0.0005).toFloat().coerceAtLeast(0.6f)
         canvas.drawPath(path, paint)
     }
+}
+
+/**
+ * Chalkboard across the WHOLE buffer — not a tile — so it never repeats. Fully
+ * determined by [seed]: one board per artwork.
+ *
+ * A dark matte board with gentle tone unevenness, then the signature look of a
+ * used board: soft chalk-dust "ghosting" (broad blurred eraser sweeps) and a fine
+ * dusting of chalk flecks over the top.
+ */
+private fun chalkboardFull(w: Int, h: Int, seed: Long, p: ChalkboardParams): Bitmap {
+    val baseR = ((p.tint ushr 16) and 0xFF) / 255.0
+    val baseG = ((p.tint ushr 8) and 0xFF) / 255.0
+    val baseB = (p.tint and 0xFF) / 255.0
+    val scale = 2
+    val lw = (w + scale - 1) / scale
+    val lh = (h + scale - 1) / scale
+    val cloudA = seededGrid(lw, lh, 300.0 / scale, 260.0 / scale, seed + 60)
+    val cloudB = seededGrid(lw, lh, 90.0 / scale, 80.0 / scale, seed + 61)
+    val px = IntArray(lw * lh)
+    IntStream.range(0, lh).parallel().forEach { y ->
+        var i = y * lw
+        for (x in 0 until lw) {
+            val c = 0.6 * (cloudA.sample(x, y) - 0.5) + 0.4 * (cloudB.sample(x, y) - 0.5)
+            val shade = 0.96 + 0.12 * c
+            px[i++] = argb(baseR * shade, baseG * shade, baseB * shade)
+        }
+    }
+    val small = Bitmap.createBitmap(px, lw, lh, Bitmap.Config.ARGB_8888)
+    val scaled = Bitmap.createScaledBitmap(small, w, h, /* filter = */ true)
+    small.recycle()
+    val out = IntArray(w * h)
+    scaled.getPixels(out, 0, w, 0, 0, w, h)
+    scaled.recycle()
+    // Very fine matte grain (subtle multiplicative texture).
+    IntStream.range(0, h).parallel().forEach { yy ->
+        var j = yy * w
+        for (xx in 0 until w) {
+            out[j] = scalePixel(out[j], 1.0 + hashGrain(xx, yy, seed) * 0.05)
+            j++
+        }
+    }
+    val result = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    result.setPixels(out, 0, w, 0, 0, w, h)
+    val canvas = Canvas(result)
+    drawChalkGhosting(canvas, w, h, seed, p.ghosting)
+    drawChalkDust(canvas, w, h, seed, p.dust)
+    return result
+}
+
+/**
+ * Broad, soft chalk-dust smears over [canvas] — the ghost of erased writing.
+ * Deterministic from [seed]. Wide, blurred, near-horizontal white sweeps at very
+ * low alpha, plus a few brighter concentrated smudges.
+ */
+private fun drawChalkGhosting(canvas: Canvas, w: Int, h: Int, seed: Long, intensity: Float) {
+    if (intensity <= 0f) return
+    val rnd = Random(seed * 2862933555777941757L + 1442695040888963407L)
+    val diag = Math.hypot(w.toDouble(), h.toDouble())
+    val paint = Paint().apply {
+        isAntiAlias = true
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        color = 0xFFFFFFFF.toInt()
+    }
+    val path = Path()
+    // Each sweep is a broad, near-horizontal band built from many fine parallel
+    // chalk striations (the eraser felt's texture) that fade toward the band edges.
+    val bands = (((w.toLong() * h) / 240000L).toInt().coerceIn(4, 22) * intensity).toInt()
+    repeat(bands) {
+        val cx = rnd.nextDouble() * w
+        val cy = rnd.nextDouble() * h
+        val ang = (rnd.nextDouble() - 0.5) * 0.22 // near-horizontal arm sweep
+        val ca = cos(ang); val sa = sin(ang)
+        val len = diag * (0.25 + 0.5 * rnd.nextDouble())
+        val bandH = diag * (0.02 + 0.055 * rnd.nextDouble())
+        val nStreaks = 8 + rnd.nextInt(12)
+        val baseAlpha = 2 + rnd.nextInt(4)
+        val sw = (bandH / nStreaks * 1.8).coerceAtLeast(1.0)
+        paint.strokeWidth = sw.toFloat()
+        paint.maskFilter = BlurMaskFilter((sw * 0.9).toFloat().coerceAtLeast(1f), BlurMaskFilter.Blur.NORMAL)
+        for (k in 0 until nStreaks) {
+            val frac = if (nStreaks == 1) 0.0 else k.toDouble() / (nStreaks - 1) - 0.5 // -0.5..0.5
+            val edge = 1.0 - (2 * frac) * (2 * frac) // 1 at centre → 0 at band edges
+            paint.alpha = (baseAlpha * (0.35 + 0.65 * edge) * (0.6 + 0.7 * rnd.nextDouble()))
+                .toInt().coerceIn(0, 24)
+            val offY = frac * bandH + (rnd.nextDouble() - 0.5) * sw * 0.5
+            val sLen = len * (0.55 + 0.45 * rnd.nextDouble()) // ragged individual lengths
+            val shift = (rnd.nextDouble() - 0.5) * len * 0.25
+            val px0 = cx - ca * sLen / 2 + shift - sa * offY
+            val py0 = cy - sa * sLen / 2 + ca * offY
+            val px1 = cx + ca * sLen / 2 + shift - sa * offY
+            val py1 = cy + sa * sLen / 2 + ca * offY
+            val bx = (px0 + px1) / 2 - sa * (rnd.nextDouble() - 0.5) * bandH * 0.3
+            val by = (py0 + py1) / 2 + ca * (rnd.nextDouble() - 0.5) * bandH * 0.3
+            path.reset()
+            path.moveTo(px0.toFloat(), py0.toFloat())
+            path.quadTo(bx.toFloat(), by.toFloat(), px1.toFloat(), py1.toFloat())
+            canvas.drawPath(path, paint)
+        }
+    }
+    paint.maskFilter = null
+}
+
+/**
+ * A fine dusting of chalk flecks over [canvas]. Deterministic from [seed]. Tiny
+ * low-alpha white dots, denser in loose clusters so it isn't a uniform field.
+ */
+private fun drawChalkDust(canvas: Canvas, w: Int, h: Int, seed: Long, density: Float) {
+    if (density <= 0f) return
+    val rnd = Random(seed * 6364136223846793005L + 1013904223L)
+    val diag = Math.hypot(w.toDouble(), h.toDouble())
+    val paint = Paint().apply { isAntiAlias = true; style = Paint.Style.FILL; color = 0xFFFFFFFF.toInt() }
+    fun fleck(cx: Double, cy: Double) {
+        if (cx < 0 || cx > w || cy < 0 || cy > h) return
+        val r = (diag * (0.0004 + 0.0011 * rnd.nextDouble())).toFloat().coerceAtLeast(0.7f)
+        paint.alpha = 6 + rnd.nextInt(13)
+        canvas.drawCircle(cx.toFloat(), cy.toFloat(), r, paint)
+    }
+    val clusters = (((w.toLong() * h) / 320000L).toInt().coerceIn(5, 40) * density).toInt()
+    repeat(clusters) {
+        val ccx = rnd.nextDouble() * w
+        val ccy = rnd.nextDouble() * h
+        val spread = diag * (0.03 + 0.09 * rnd.nextDouble())
+        repeat(35 + rnd.nextInt(70)) {
+            fleck(ccx + (rnd.nextDouble() - rnd.nextDouble()) * spread,
+                ccy + (rnd.nextDouble() - rnd.nextDouble()) * spread)
+        }
+    }
+    val scatter = (((w.toLong() * h) / 14000L).toInt().coerceIn(40, 700) * density).toInt()
+    repeat(scatter) { fleck(rnd.nextDouble() * w, rnd.nextDouble() * h) }
 }
 
 /** Smoothstep from 0 at [a] to 1 at [b]. */

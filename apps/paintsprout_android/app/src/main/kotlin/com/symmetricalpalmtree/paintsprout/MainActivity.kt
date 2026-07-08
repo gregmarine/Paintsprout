@@ -25,6 +25,7 @@ import com.google.android.material.snackbar.Snackbar
 import com.symmetricalpalmtree.paintsprout.databinding.ActivityMainBinding
 import com.symmetricalpalmtree.paintsprout.paint.AVAILABLE_SURFACES
 import com.symmetricalpalmtree.paintsprout.paint.CanvasParams
+import com.symmetricalpalmtree.paintsprout.paint.ChalkboardParams
 import com.symmetricalpalmtree.paintsprout.paint.ConcreteParams
 import com.symmetricalpalmtree.paintsprout.paint.MetalParams
 import com.symmetricalpalmtree.paintsprout.paint.StoneParams
@@ -59,6 +60,7 @@ class MainActivity : AppCompatActivity() {
     private var stoneParams = StoneParams()
     private var concreteParams = ConcreteParams()
     private var metalParams = MetalParams()
+    private var chalkboardParams = ChalkboardParams()
     private var hasSelection = false
 
     // Magic-wand settings (Flutter defaults).
@@ -95,7 +97,7 @@ class MainActivity : AppCompatActivity() {
         binding.canvas.baseSize = sizes[tool]
         binding.canvas.setInitialSurface(
             currentSurface(), plainColor, canvasParams, watercolorParams, woodParams, stoneParams,
-            concreteParams, metalParams,
+            concreteParams, metalParams, chalkboardParams,
         )
         applyWandSettings()
         binding.canvas.onHistoryChanged = {
@@ -347,6 +349,14 @@ class MainActivity : AppCompatActivity() {
                     binding.canvas.commitSurfaceChange(SurfaceKind.METAL, plainColor, metal = params)
                     updateRail()
                 }
+            SurfaceKind.CHALKBOARD ->
+                // Dial in the board first, then commit surface + params as one op.
+                customizeChalkboard(chalkboardParams) { params ->
+                    chalkboardParams = params
+                    surfaceIndex = index
+                    binding.canvas.commitSurfaceChange(SurfaceKind.CHALKBOARD, plainColor, chalkboard = params)
+                    updateRail()
+                }
             else -> {
                 surfaceIndex = index
                 binding.canvas.commitSurfaceChange(kind, plainColor)
@@ -365,6 +375,7 @@ class MainActivity : AppCompatActivity() {
         stoneParams = binding.canvas.stoneParams
         concreteParams = binding.canvas.concreteParams
         metalParams = binding.canvas.metalParams
+        chalkboardParams = binding.canvas.chalkboardParams
     }
 
     /** HSV colour wheel + brightness slider, with swatch quick-picks. */
@@ -691,6 +702,47 @@ class MainActivity : AppCompatActivity() {
             .setNeutralButton("Reset") { _, _ -> customizeMetal(MetalParams(), onUse) }
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Use") { _, _ -> onUse(MetalParams(tint, grain, sheen, scratches)) }
+            .show()
+    }
+
+    /**
+     * Chalkboard customisation. The board is fixed per artwork (its seed); these
+     * controls shape its look. Live preview is a true-scale window onto the actual board.
+     */
+    private fun customizeChalkboard(initial: ChalkboardParams, onUse: (ChalkboardParams) -> Unit) {
+        var tint = initial.tint or (0xFF shl 24)
+        var ghosting = initial.ghosting
+        var dust = initial.dust
+        val seed = binding.canvas.surfaceSeed // preview the actual board
+
+        val preview = SurfacePreview { w, h ->
+            buildSurfaceVisual(
+                SurfaceKind.CHALKBOARD, w, h,
+                seed = seed,
+                chalkboardParams = ChalkboardParams(tint, ghosting, dust),
+            )
+        }
+        val tintRow = colorRow("Tint", "Board tint", tint) { c -> tint = c; preview.refresh() }
+        val ghostSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 2.5f; value = ghosting.coerceIn(0f, 2.5f)
+            addOnChangeListener { _, v, _ -> ghosting = v; preview.refresh() }
+        }
+        val dustSlider = Slider(this).apply {
+            valueFrom = 0f; valueTo = 2.5f; value = dust.coerceIn(0f, 2.5f)
+            addOnChangeListener { _, v, _ -> dust = v; preview.refresh() }
+        }
+
+        val content = vbox(
+            preview, tintRow,
+            sliderRow("Ghosting", ghostSlider),
+            sliderRow("Dust", dustSlider),
+        )
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Chalkboard")
+            .setView(content)
+            .setNeutralButton("Reset") { _, _ -> customizeChalkboard(ChalkboardParams(), onUse) }
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Use") { _, _ -> onUse(ChalkboardParams(tint, ghosting, dust)) }
             .show()
     }
 

@@ -42,6 +42,7 @@ import com.symmetricalpalmtree.paintsprout.paint.ToothCache
 import com.symmetricalpalmtree.paintsprout.paint.Vec2
 import com.symmetricalpalmtree.paintsprout.paint.WandFloodFill
 import com.symmetricalpalmtree.paintsprout.paint.CanvasParams
+import com.symmetricalpalmtree.paintsprout.paint.ChalkboardParams
 import com.symmetricalpalmtree.paintsprout.paint.ConcreteParams
 import com.symmetricalpalmtree.paintsprout.paint.MetalParams
 import com.symmetricalpalmtree.paintsprout.paint.StoneParams
@@ -132,6 +133,10 @@ class PaintCanvasView @JvmOverloads constructor(
     var metalParams: MetalParams = MetalParams()
         private set
 
+    /** Customisation for the Chalkboard surface (ignored by other surfaces). */
+    var chalkboardParams: ChalkboardParams = ChalkboardParams()
+        private set
+
     /**
      * Random seed for organic (non-tiled) surfaces like Watercolor — the paper's
      * unique "batch". Generated once per artwork so the texture is stable across
@@ -153,6 +158,7 @@ class PaintCanvasView @JvmOverloads constructor(
     private var initialStoneParams: StoneParams = StoneParams()
     private var initialConcreteParams: ConcreteParams = ConcreteParams()
     private var initialMetalParams: MetalParams = MetalParams()
+    private var initialChalkboardParams: ChalkboardParams = ChalkboardParams()
 
     // Magic-wand tuning (Flutter reference defaults).
     var wandTolerance: Float = 0.15f
@@ -352,6 +358,7 @@ class PaintCanvasView @JvmOverloads constructor(
         stone: StoneParams = StoneParams(),
         concrete: ConcreteParams = ConcreteParams(),
         metal: MetalParams = MetalParams(),
+        chalkboard: ChalkboardParams = ChalkboardParams(),
     ) {
         surface = kind
         plainColor = bgColor
@@ -361,6 +368,7 @@ class PaintCanvasView @JvmOverloads constructor(
         stoneParams = stone
         concreteParams = concrete
         metalParams = metal
+        chalkboardParams = chalkboard
         initialSurface = kind
         initialPlainColor = bgColor
         initialCanvasParams = canvas
@@ -369,6 +377,7 @@ class PaintCanvasView @JvmOverloads constructor(
         initialStoneParams = stone
         initialConcreteParams = concrete
         initialMetalParams = metal
+        initialChalkboardParams = chalkboard
         regenerateSurface()
     }
 
@@ -389,10 +398,12 @@ class PaintCanvasView @JvmOverloads constructor(
         stone: StoneParams = StoneParams(),
         concrete: ConcreteParams = ConcreteParams(),
         metal: MetalParams = MetalParams(),
+        chalkboard: ChalkboardParams = ChalkboardParams(),
     ) {
         if (kind == surface && bgColor == plainColor &&
             canvas == canvasParams && watercolor == watercolorParams && wood == woodParams &&
-            stone == stoneParams && concrete == concreteParams && metal == metalParams
+            stone == stoneParams && concrete == concreteParams && metal == metalParams &&
+            chalkboard == chalkboardParams
         ) {
             return
         }
@@ -405,7 +416,8 @@ class PaintCanvasView @JvmOverloads constructor(
         stoneParams = stone
         concreteParams = concrete
         metalParams = metal
-        committed.add(SurfaceOp(kind, bgColor, canvas, watercolor, wood, stone, concrete, metal))
+        chalkboardParams = chalkboard
+        committed.add(SurfaceOp(kind, bgColor, canvas, watercolor, wood, stone, concrete, metal, chalkboard))
         regenerateSurface()
         // Checkpoints hold paint toothed for the OLD surface, so drop them and
         // rebuild from blank — foldOps re-tooths each stroke with the new surface.
@@ -429,13 +441,14 @@ class PaintCanvasView @JvmOverloads constructor(
         var st = initialStoneParams
         var cc = initialConcreteParams
         var mt = initialMetalParams
+        var cb = initialChalkboardParams
         for (op in committed) if (op is SurfaceOp) {
             kind = op.kind; bg = op.plainColor; cp = op.canvas; wp = op.watercolor; wd = op.wood
-            st = op.stone; cc = op.concrete; mt = op.metal
+            st = op.stone; cc = op.concrete; mt = op.metal; cb = op.chalkboard
         }
         if (kind != surface || bg != plainColor || cp != canvasParams ||
             wp != watercolorParams || wd != woodParams || st != stoneParams || cc != concreteParams ||
-            mt != metalParams
+            mt != metalParams || cb != chalkboardParams
         ) {
             surface = kind
             plainColor = bg
@@ -445,6 +458,7 @@ class PaintCanvasView @JvmOverloads constructor(
             stoneParams = st
             concreteParams = cc
             metalParams = mt
+            chalkboardParams = cb
             regenerateSurface()
             recycleCheckpoints()
         }
@@ -463,10 +477,11 @@ class PaintCanvasView @JvmOverloads constructor(
         val st = stoneParams
         val cc = concreteParams
         val mt = metalParams
+        val cb = chalkboardParams
         scope.launch {
             val bmp = withContext(Dispatchers.Default) {
                 ToothCache.init()
-                buildSurfaceVisual(kind, w, h, pc, cp, sd, wp, wd, st, cc, mt)
+                buildSurfaceVisual(kind, w, h, pc, cp, sd, wp, wd, st, cc, mt, cb)
             }
             if (bufW != w || bufH != h) {
                 bmp.recycle()
@@ -1630,6 +1645,7 @@ class PaintCanvasView @JvmOverloads constructor(
         initialStoneParams = stoneParams
         initialConcreteParams = concreteParams
         initialMetalParams = metalParams
+        initialChalkboardParams = chalkboardParams
         // A cleared canvas is a new piece of art: fresh paper for organic surfaces.
         surfaceSeed = java.util.Random().nextLong()
         regenerateSurface()
