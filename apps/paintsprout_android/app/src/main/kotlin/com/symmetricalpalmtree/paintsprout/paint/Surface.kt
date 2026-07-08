@@ -5,6 +5,7 @@ import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Shader
 import androidx.annotation.ColorInt
 import java.util.Random
@@ -12,6 +13,7 @@ import java.util.stream.IntStream
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.pow
+import kotlin.math.sin
 
 /**
  * The base layer you paint on. Procedural, ported from the Flutter `surface.dart`.
@@ -156,6 +158,7 @@ fun buildSurfaceVisual(
     // repeat) and are fully determined by [seed] — one seed per artwork.
     if (kind == SurfaceKind.WATERCOLOR) return watercolorFull(w, h, seed, watercolorParams)
     if (kind == SurfaceKind.WOOD) return woodFull(w, h, seed, woodParams)
+    if (kind == SurfaceKind.STONE) return stoneFull(w, h, seed)
     val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(out)
     if (kind == SurfaceKind.PLAIN) {
@@ -174,7 +177,6 @@ fun buildSurfaceVisual(
 private fun visualTile(kind: SurfaceKind, canvas: CanvasParams): Bitmap = when (kind) {
     SurfaceKind.CANVAS -> canvasTile(canvas)
     SurfaceKind.METAL -> metalTile()
-    SurfaceKind.STONE -> stoneTile()
     SurfaceKind.CHALKBOARD -> chalkboardTile()
     SurfaceKind.CONCRETE -> concreteTile()
     else -> paperTile() // paper + fallback
@@ -354,23 +356,148 @@ private fun metalTile(): Bitmap {
     return Bitmap.createBitmap(px, size, size, Bitmap.Config.ARGB_8888)
 }
 
-private fun stoneTile(): Bitmap {
-    val size = 256
-    val baseR = 0.55; val baseG = 0.54; val baseB = 0.52
-    val big = noiseGrid(5, 5, 31)
-    val mid = noiseGrid(16, 16, 32)
-    val rnd = Random(33)
-    val px = IntArray(size * size)
-    for (y in 0 until size) {
-        for (x in 0 until size) {
-            val b = noise2(big, 5, 5, x.toDouble() / size * 5, y.toDouble() / size * 5)
-            val m = noise2(mid, 16, 16, x.toDouble() / size * 16, y.toDouble() / size * 16)
-            val grain = (rnd.nextDouble() - 0.5) * 0.06
-            val shade = 0.72 + 0.34 * b + 0.12 * (m - 0.5) + grain
-            px[y * size + x] = argb(baseR * shade, baseG * shade, baseB * shade)
+/**
+ * Stone across the WHOLE buffer — not a tile — so it never repeats. Fully
+ * determined by [seed]: one rock face per artwork.
+ *
+ * Slate: a dark blue-grey face with irregular cloudy mottling, a fine wispy network
+ * of light/dark fracture veins, and a green/warm/cool colour drift — natural riven
+ * stone, not ruled bands. Half res + upscale, plus a full-res matte grit pass.
+ */
+private fun stoneFull(w: Int, h: Int, seed: Long): Bitmap {
+    val baseR = 0.42; val baseG = 0.44; val baseB = 0.46 // dark slate grey
+    val scale = 2
+    val lw = (w + scale - 1) / scale
+    val lh = (h + scale - 1) / scale
+    // Irregular cloudy mottling (multi-octave), gently warped so it never reads as
+    // smooth ruled bands — the blotchy slate face.
+    val cloudA = seededGrid(lw, lh, 360.0 / scale, 300.0 / scale, seed + 80)
+    val cloudB = seededGrid(lw, lh, 140.0 / scale, 120.0 / scale, seed + 81)
+    val cloudC = seededGrid(lw, lh, 55.0 / scale, 48.0 / scale, seed + 82)
+    val warp = seededGrid(lw, lh, 300.0 / scale, 280.0 / scale, seed + 86)
+    val temp = seededGrid(lw, lh, 300.0 / scale, 260.0 / scale, seed + 83) // warm/cool drift
+    val hue = seededGrid(lw, lh, 500.0 / scale, 420.0 / scale, seed + 87) // green drift
+    val ampW = 44.0 / scale
+    val px = IntArray(lw * lh)
+    IntStream.range(0, lh).parallel().forEach { y ->
+        var i = y * lw
+        for (x in 0 until lw) {
+            val ws = warp.sample(x, y) - 0.5
+            val cloud = 0.55 * (cloudA.sampleF(x + ampW * 0.4 * ws, y + ampW * ws) - 0.5) +
+                0.30 * (cloudB.sample(x, y) - 0.5) +
+                0.15 * (cloudC.sample(x, y) - 0.5)
+            val t = temp.sample(x, y) - 0.5
+            val hg = hue.sample(x, y) - 0.5
+            val shade = 0.86 + 0.24 * cloud
+            px[i++] = argb(
+                baseR * shade * (1.0 + 0.10 * t),
+                baseG * shade * (1.0 + 0.06 * hg),
+                baseB * shade * (1.0 - 0.08 * t),
+            )
         }
     }
-    return Bitmap.createBitmap(px, size, size, Bitmap.Config.ARGB_8888)
+    // Upscale, then a quiet full-res grit pass — slate is matte, so gentle per-pixel
+    // variation with only the occasional darker fleck (no granite sparkle).
+    val small = Bitmap.createBitmap(px, lw, lh, Bitmap.Config.ARGB_8888)
+    val scaled = Bitmap.createScaledBitmap(small, w, h, /* filter = */ true)
+    small.recycle()
+    val out = IntArray(w * h)
+    scaled.getPixels(out, 0, w, 0, 0, w, h)
+    scaled.recycle()
+    IntStream.range(0, h).parallel().forEach { yy ->
+        var j = yy * w
+        for (xx in 0 until w) {
+            val g = hashGrain(xx, yy, seed)
+            var f = 1.0 + g * 0.09
+            if (g < -0.46) f -= 0.14 // occasional dark fleck
+            out[j] = scalePixel(out[j], f)
+            j++
+        }
+    }
+    val result = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    result.setPixels(out, 0, w, 0, 0, w, h)
+    // A few sparse, open fracture lines drawn as seeded random walks (NOT ridged
+    // noise, which always closes into puzzle loops). Thin, faint, occasionally
+    // branching — the hairline cracks of a natural slate face.
+    drawSlateCracks(Canvas(result), w, h, seed)
+    return result
+}
+
+/**
+ * Draws a handful of fine, meandering slate cracks over [canvas]. Deterministic
+ * from [seed]. Each crack is a random walk with slight directional drift that may
+ * fork; strokes are thin and low-alpha so they read as hairlines, not gouges. A
+ * faint light edge gives the crack a little depth against the matte face.
+ */
+private fun drawSlateCracks(canvas: Canvas, w: Int, h: Int, seed: Long) {
+    val rnd = Random(seed * 6364136223846793005L + 1442695040888963407L)
+    val diag = Math.hypot(w.toDouble(), h.toDouble())
+    val step = diag * 0.010
+    val paint = Paint().apply {
+        isAntiAlias = true
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    val count = ((w.toLong() * h) / 300000L).toInt().coerceIn(7, 20)
+    repeat(count) {
+        drawCrack(
+            canvas, paint, rnd, w, h, diag, step,
+            rnd.nextDouble() * w, rnd.nextDouble() * h,
+            rnd.nextDouble() * 2 * PI,
+            diag * (0.10 + 0.30 * rnd.nextDouble()),
+            depth = 0,
+        )
+    }
+}
+
+private fun drawCrack(
+    canvas: Canvas, paint: Paint, rnd: Random,
+    w: Int, h: Int, diag: Double, step: Double,
+    sx: Double, sy: Double, angle0: Double, length: Double, depth: Int,
+) {
+    var x = sx; var y = sy; var ang = angle0
+    val path = Path()
+    path.moveTo(x.toFloat(), y.toFloat())
+    var traveled = 0.0
+    val branches = ArrayList<DoubleArray>()
+    while (traveled < length) {
+        ang += (rnd.nextDouble() - 0.5) * 0.6 // gentle drift, no sharp turns
+        x += cos(ang) * step
+        y += sin(ang) * step
+        traveled += step
+        path.lineTo(x.toFloat(), y.toFloat())
+        if (depth < 2 && rnd.nextDouble() < 0.035) {
+            branches.add(doubleArrayOf(x, y, ang + if (rnd.nextBoolean()) 0.7 else -0.7))
+        }
+        if (x < -step || x > w + step || y < -step || y > h + step) break
+    }
+    // Faint light edge first (depth), then the darker crack core over it.
+    paint.color = 0xFFFFFFFF.toInt()
+    paint.alpha = 20 + rnd.nextInt(16)
+    paint.strokeWidth = (diag * 0.0018).toFloat().coerceAtLeast(1.4f)
+    canvas.drawPath(path, paint)
+    paint.color = 0xFF000000.toInt()
+    paint.alpha = 60 + rnd.nextInt(40)
+    paint.strokeWidth = (diag * 0.0010).toFloat().coerceAtLeast(1.0f)
+    canvas.drawPath(path, paint)
+    for (b in branches) {
+        drawCrack(canvas, paint, rnd, w, h, diag, step, b[0], b[1], b[2], length * 0.45, depth + 1)
+    }
+}
+
+/** Smoothstep from 0 at [a] to 1 at [b]. */
+private fun smoothstep(a: Double, b: Double, x: Double): Double {
+    val t = ((x - a) / (b - a)).coerceIn(0.0, 1.0)
+    return t * t * (3 - 2 * t)
+}
+
+/** Multiplies an opaque ARGB pixel's RGB by [f], clamped. */
+private fun scalePixel(c: Int, f: Double): Int {
+    val r = (((c ushr 16) and 0xFF) * f).toInt().coerceIn(0, 255)
+    val g = (((c ushr 8) and 0xFF) * f).toInt().coerceIn(0, 255)
+    val b = ((c and 0xFF) * f).toInt().coerceIn(0, 255)
+    return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
 }
 
 /**
@@ -499,6 +626,21 @@ private class Grid(val g: DoubleArray, val gx: Int, val cellX: Double, val cellY
         val x0 = u.toInt(); val y0 = v.toInt() // u,v >= 0, so toInt() == floor
         val fx = u - x0; val fy = v - y0
         val sx = fx * fx * (3 - 2 * fx); val sy = fy * fy * (3 - 2 * fy)
+        val i = y0 * gx + x0
+        val a = g[i]; val b = g[i + 1]
+        val c = g[i + gx]; val d = g[i + gx + 1]
+        val top = a + (b - a) * sx
+        return top + ((c + (d - c) * sx) - top) * sy
+    }
+
+    /** Like [sample] but at fractional, possibly domain-warped coords (indices clamped). */
+    fun sampleF(fx: Double, fy: Double): Double {
+        val gy = g.size / gx
+        val u = fx / cellX; val v = fy / cellY
+        val x0 = kotlin.math.floor(u).toInt().coerceIn(0, gx - 2)
+        val y0 = kotlin.math.floor(v).toInt().coerceIn(0, gy - 2)
+        val fxr = (u - x0).coerceIn(0.0, 1.0); val fyr = (v - y0).coerceIn(0.0, 1.0)
+        val sx = fxr * fxr * (3 - 2 * fxr); val sy = fyr * fyr * (3 - 2 * fyr)
         val i = y0 * gx + x0
         val a = g[i]; val b = g[i + 1]
         val c = g[i + gx]; val d = g[i + gx + 1]
