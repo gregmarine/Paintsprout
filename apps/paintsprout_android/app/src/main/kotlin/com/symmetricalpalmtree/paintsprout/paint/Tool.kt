@@ -11,13 +11,14 @@ package com.symmetricalpalmtree.paintsprout.paint
  * the pure paint model.
  */
 enum class Tool {
-    PENCIL, PEN, LINE, BRUSH, WATERCOLOR, MARKER, SPRAY, ERASER, WAND;
+    PENCIL, PEN, LINE, ARC, BRUSH, WATERCOLOR, MARKER, SPRAY, ERASER, WAND;
 
     val label: String
         get() = when (this) {
             PENCIL -> "Pencil"
             PEN -> "Pen"
             LINE -> "Line"
+            ARC -> "Arc"
             BRUSH -> "Brush"
             WATERCOLOR -> "Watercolor"
             MARKER -> "Marker"
@@ -31,9 +32,10 @@ enum class Tool {
 
     /**
      * Whether the tool's stroke width reacts to stylus pressure and tilt.
-     * Pen, line and eraser strictly honor the base size; the rest grow.
+     * Pen, line, arc and eraser strictly honor the base size; the rest grow.
      */
-    val isDynamic: Boolean get() = this != PEN && this != ERASER && this != LINE
+    val isDynamic: Boolean
+        get() = this != PEN && this != ERASER && this != LINE && this != ARC
 
     /** Sensible starting base size (logical px) per tool. */
     val defaultSize: Float
@@ -41,6 +43,7 @@ enum class Tool {
             PENCIL -> 1f
             PEN -> 3f
             LINE -> 3f
+            ARC -> 3f
             BRUSH -> 18f
             WATERCOLOR -> 26f
             MARKER -> 4f
@@ -250,6 +253,7 @@ data class ToolProfile(
             Tool.PENCIL -> PENCIL
             Tool.PEN -> PEN
             Tool.LINE -> LINE
+            Tool.ARC -> LINE // arc shares the line's clean solid feel
             Tool.BRUSH -> BRUSH
             Tool.WATERCOLOR -> WATERCOLOR
             Tool.MARKER -> MARKER

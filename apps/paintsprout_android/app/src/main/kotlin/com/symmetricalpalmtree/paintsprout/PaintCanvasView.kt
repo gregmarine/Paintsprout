@@ -98,6 +98,7 @@ class PaintCanvasView @JvmOverloads constructor(
             if (old != value) {
                 if (old == Tool.WAND && isFloating) scope.launch { commitFloating() }
                 if (old == Tool.LINE && hasPendingLine) commitPendingLine()
+                if (old == Tool.ARC && hasPendingArc) commitPendingArc()
             }
         }
 
@@ -312,6 +313,42 @@ class PaintCanvasView @JvmOverloads constructor(
 
     /** Fired when the editable line appears (true) or is committed/cleared (false). */
     var onLineChanged: ((Boolean) -> Unit)? = null
+
+    // --- Arc tool -----------------------------------------------------------
+    // Drawn like the line (tap-drag lays a straight chord), then a third handle
+    // [arcM] — a point that rides ON the curve — can be pulled to bend it into a
+    // (possibly lopsided) arc. Three shape handles (two ends + middle) plus body
+    // move and rotate. The curve is a quadratic that passes through A, M (t=0.5)
+    // and B; on commit it's densely sampled into an ordinary [StrokeOp], so it
+    // undoes / re-tooths / saves like any stroke. Points are in view (= buffer) px.
+    private var arcA: PointF? = null
+    private var arcB: PointF? = null
+    private var arcM: PointF? = null
+    private var arcMode = ArcDrag.NONE
+    private var arcPointerId = INVALID_POINTER
+    private val arcDragLast = PointF()
+    private val arcRotA0 = PointF()
+    private val arcRotB0 = PointF()
+    private val arcRotM0 = PointF()
+    private val arcRotCenter = PointF()
+    private var arcRotStartAngle = 0f
+
+    private enum class ArcDrag { NONE, DRAW, ENDPOINT_A, ENDPOINT_B, MIDDLE, BODY, ROTATE }
+
+    /** Whether an editable arc is placed (or being drawn) but not yet baked. */
+    val hasPendingArc: Boolean get() = arcA != null && arcB != null && arcM != null
+
+    /** Fired when the editable arc appears (true) or is committed/cleared (false). */
+    var onArcChanged: ((Boolean) -> Unit)? = null
+
+    /** Whether any editable shape (line or arc) is pending — for the Done button. */
+    val hasPendingShape: Boolean get() = hasPendingLine || hasPendingArc
+
+    /** Bakes whichever editable shape is pending (only ever one at a time). */
+    fun commitPendingShape() {
+        if (hasPendingLine) commitPendingLine()
+        if (hasPendingArc) commitPendingArc()
+    }
 
     // Marching-ants animation.
     private var antsPhase = 0f
@@ -588,6 +625,7 @@ class PaintCanvasView @JvmOverloads constructor(
         canvas.restoreToCount(layer)
 
         drawPendingLine(canvas)
+        drawPendingArc(canvas)
         drawSelectionOverlay(canvas)
     }
 
@@ -621,6 +659,46 @@ class PaintCanvasView @JvmOverloads constructor(
             canvas.drawRect(c.x - 6, c.y - 6, c.x + 6, c.y + 6, fill)
             canvas.drawRect(c.x - 6, c.y - 6, c.x + 6, c.y + 6, black)
         }
+        canvas.drawCircle(rot.x, rot.y, 7f, fill)
+        canvas.drawCircle(rot.x, rot.y, 7f, black)
+    }
+
+    /** Previews the editable arc (as it will bake) plus its grab handles. */
+    private fun drawPendingArc(canvas: Canvas) {
+        val a = arcA ?: return
+        val b = arcB ?: return
+        val m = arcM ?: return
+        StrokeRenderer.paintStroke(canvas, buildArcStroke(a, b, m), surface)
+        if (arcMode != ArcDrag.DRAW) drawArcHandles(canvas, a, b, m)
+    }
+
+    /** Square endpoint handles, a diamond bend handle at [m], and a rotate handle. */
+    private fun drawArcHandles(canvas: Canvas, a: PointF, b: PointF, m: PointF) {
+        val cx = (a.x + b.x) / 2f
+        val cy = (a.y + b.y) / 2f
+        val rot = arcRotateHandle(a, b, m)
+        val white = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 2.6f
+        }
+        val black = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xDD000000.toInt(); style = Paint.Style.STROKE; strokeWidth = 1.4f
+        }
+        // Rotate stalk from the chord centre (white underlay, dark on top).
+        canvas.drawLine(cx, cy, rot.x, rot.y, white)
+        canvas.drawLine(cx, cy, rot.x, rot.y, black)
+
+        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+        for (c in listOf(a, b)) {
+            canvas.drawRect(c.x - 6, c.y - 6, c.x + 6, c.y + 6, fill)
+            canvas.drawRect(c.x - 6, c.y - 6, c.x + 6, c.y + 6, black)
+        }
+        // Bend handle: a diamond, so it reads differently from the square ends.
+        val diamond = Path().apply {
+            moveTo(m.x, m.y - 8f); lineTo(m.x + 8f, m.y)
+            lineTo(m.x, m.y + 8f); lineTo(m.x - 8f, m.y); close()
+        }
+        canvas.drawPath(diamond, fill)
+        canvas.drawPath(diamond, black)
         canvas.drawCircle(rot.x, rot.y, 7f, fill)
         canvas.drawCircle(rot.x, rot.y, 7f, black)
     }
@@ -833,6 +911,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     handleLineDown(event, actionIndex)
                     return true
                 }
+                if (tool == Tool.ARC) {
+                    handleArcDown(event, actionIndex)
+                    return true
+                }
                 if (active != null) return true
                 activePointerId = event.getPointerId(actionIndex)
                 pressureMax = event.device
@@ -859,6 +941,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     handleLineMove(event)
                     return true
                 }
+                if (tool == Tool.ARC) {
+                    handleArcMove(event)
+                    return true
+                }
                 val stroke = active ?: return true
                 val pi = event.findPointerIndex(activePointerId)
                 if (pi < 0) return true
@@ -877,6 +963,10 @@ class PaintCanvasView @JvmOverloads constructor(
                 }
                 if (tool == Tool.LINE) {
                     handleLineUp(event, actionIndex)
+                    return true
+                }
+                if (tool == Tool.ARC) {
+                    handleArcUp(event, actionIndex)
                     return true
                 }
                 val stroke = active
@@ -1192,6 +1282,190 @@ class PaintCanvasView @JvmOverloads constructor(
         lineMode = LineDrag.NONE
         linePointerId = INVALID_POINTER
         if (had) onLineChanged?.invoke(false)
+        invalidate()
+    }
+
+    // --- Arc-tool gestures --------------------------------------------------
+
+    private fun handleArcDown(e: MotionEvent, ai: Int) {
+        val p = PointF(e.getX(ai), e.getY(ai))
+        if (hasPendingArc) {
+            val mode = hitArc(p)
+            if (mode != null) {
+                arcPointerId = e.getPointerId(ai)
+                arcMode = mode
+                arcDragLast.set(p)
+                if (mode == ArcDrag.ROTATE) {
+                    val a = arcA!!
+                    val b = arcB!!
+                    val m = arcM!!
+                    arcRotCenter.set((a.x + b.x) / 2f, (a.y + b.y) / 2f)
+                    arcRotA0.set(a)
+                    arcRotB0.set(b)
+                    arcRotM0.set(m)
+                    arcRotStartAngle = atan2(p.y - arcRotCenter.y, p.x - arcRotCenter.x)
+                }
+                return
+            }
+            // Tapped empty space: bake the current arc, then begin a new one here.
+            commitPendingArc()
+        }
+        val had = hasPendingArc
+        arcA = PointF(p.x, p.y)
+        arcB = PointF(p.x, p.y)
+        arcM = PointF(p.x, p.y)
+        arcMode = ArcDrag.DRAW
+        arcPointerId = e.getPointerId(ai)
+        arcDragLast.set(p)
+        if (!had) onArcChanged?.invoke(true)
+        invalidate()
+    }
+
+    private fun handleArcMove(e: MotionEvent) {
+        if (arcPointerId == INVALID_POINTER) return
+        val pi = e.findPointerIndex(arcPointerId)
+        if (pi < 0) return
+        val p = PointF(e.getX(pi), e.getY(pi))
+        when (arcMode) {
+            ArcDrag.DRAW -> {
+                arcB?.set(p.x, p.y)
+                val a = arcA
+                val b = arcB
+                if (a != null && b != null) arcM?.set((a.x + b.x) / 2f, (a.y + b.y) / 2f)
+                invalidate()
+            }
+            ArcDrag.ENDPOINT_A -> { arcA?.set(p.x, p.y); invalidate() }
+            ArcDrag.ENDPOINT_B -> { arcB?.set(p.x, p.y); invalidate() }
+            ArcDrag.MIDDLE -> { arcM?.set(p.x, p.y); invalidate() }
+            ArcDrag.BODY -> {
+                val dx = p.x - arcDragLast.x
+                val dy = p.y - arcDragLast.y
+                arcA?.offset(dx, dy)
+                arcB?.offset(dx, dy)
+                arcM?.offset(dx, dy)
+                arcDragLast.set(p)
+                invalidate()
+            }
+            ArcDrag.ROTATE -> {
+                val ang = atan2(p.y - arcRotCenter.y, p.x - arcRotCenter.x)
+                val d = ang - arcRotStartAngle
+                arcA?.set(rotatePoint(arcRotA0, arcRotCenter, d))
+                arcB?.set(rotatePoint(arcRotB0, arcRotCenter, d))
+                arcM?.set(rotatePoint(arcRotM0, arcRotCenter, d))
+                invalidate()
+            }
+            ArcDrag.NONE -> {}
+        }
+    }
+
+    private fun handleArcUp(e: MotionEvent, ai: Int) {
+        if (e.getPointerId(ai) != arcPointerId) return
+        arcPointerId = INVALID_POINTER
+        if (arcMode == ArcDrag.DRAW) {
+            val a = arcA
+            val b = arcB
+            if (a == null || b == null || hypot(b.x - a.x, b.y - a.y) < MIN_LINE_LEN) {
+                discardPendingArc()
+                return
+            }
+        }
+        arcMode = ArcDrag.NONE
+        invalidate()
+    }
+
+    /** Which part of the pending arc [p] grabs, or null if it misses everything. */
+    private fun hitArc(p: PointF): ArcDrag? {
+        val a = arcA ?: return null
+        val b = arcB ?: return null
+        val m = arcM ?: return null
+        val rot = arcRotateHandle(a, b, m)
+        if (hypot(p.x - rot.x, p.y - rot.y) <= HANDLE_HIT) return ArcDrag.ROTATE
+        if (hypot(p.x - a.x, p.y - a.y) <= HANDLE_HIT) return ArcDrag.ENDPOINT_A
+        if (hypot(p.x - b.x, p.y - b.y) <= HANDLE_HIT) return ArcDrag.ENDPOINT_B
+        if (hypot(p.x - m.x, p.y - m.y) <= HANDLE_HIT) return ArcDrag.MIDDLE
+        val bodyHit = max(BODY_HIT, sizeFor(Tool.ARC) / 2f + 8f)
+        val pts = arcPoints(a, b, m)
+        for (i in 1 until pts.size) {
+            if (distToSegment(p, pts[i - 1], pts[i]) <= bodyHit) return ArcDrag.BODY
+        }
+        return null
+    }
+
+    /** Rotate handle: off the chord centre, perpendicular, on the side away from the bulge. */
+    private fun arcRotateHandle(a: PointF, b: PointF, m: PointF): PointF {
+        val cx = (a.x + b.x) / 2f
+        val cy = (a.y + b.y) / 2f
+        val dx = b.x - a.x
+        val dy = b.y - a.y
+        val len = hypot(dx, dy)
+        val ux = if (len < 1e-3f) 0f else dx / len
+        val uy = if (len < 1e-3f) -1f else dy / len
+        var px = -uy
+        var py = ux
+        // Keep the rotate handle opposite the arc's bulge so it never sits on [arcM].
+        if ((m.x - cx) * px + (m.y - cy) * py > 0f) {
+            px = -px; py = -py
+        }
+        return PointF(cx + px * LINE_ROT_OFFSET, cy + py * LINE_ROT_OFFSET)
+    }
+
+    /** The quadratic control point placing the curve through [m] at t = 0.5. */
+    private fun arcControl(a: PointF, b: PointF, m: PointF): PointF =
+        PointF(2f * m.x - 0.5f * (a.x + b.x), 2f * m.y - 0.5f * (a.y + b.y))
+
+    /** Sampled points along the arc's quadratic curve (through A, M, B). */
+    private fun arcPoints(a: PointF, b: PointF, m: PointF): List<PointF> {
+        val c = arcControl(a, b, m)
+        val chord = hypot(b.x - a.x, b.y - a.y)
+        val bulge = hypot(m.x - (a.x + b.x) / 2f, m.y - (a.y + b.y) / 2f)
+        val n = ((chord + bulge * 2f) / 6f).roundToInt().coerceIn(16, 96)
+        val out = ArrayList<PointF>(n + 1)
+        for (i in 0..n) {
+            val t = i.toFloat() / n
+            val mt = 1f - t
+            val x = mt * mt * a.x + 2f * mt * t * c.x + t * t * b.x
+            val y = mt * mt * a.y + 2f * mt * t * c.y + t * t * b.y
+            out.add(PointF(x, y))
+        }
+        return out
+    }
+
+    /** A densely-sampled straight-or-curved [Stroke] for the current arc handles. */
+    private fun buildArcStroke(a: PointF, b: PointF, m: PointF): Stroke {
+        val width = resolveWidth(Tool.ARC, sizeFor(Tool.ARC), 1f, 0f)
+        return Stroke(Tool.ARC, strokeColor, seed = Random.nextInt()).apply {
+            for (p in arcPoints(a, b, m)) add(StrokePoint(Vec2(p.x, p.y), width))
+        }
+    }
+
+    /** Bakes the pending arc as a [StrokeOp] (or drops it if it's degenerate). */
+    fun commitPendingArc() {
+        val a = arcA
+        val b = arcB
+        val m = arcM
+        arcMode = ArcDrag.NONE
+        arcPointerId = INVALID_POINTER
+        if (a == null || b == null || m == null || hypot(b.x - a.x, b.y - a.y) < MIN_LINE_LEN) {
+            discardPendingArc()
+            return
+        }
+        val stroke = buildArcStroke(a, b, m)
+        arcA = null
+        arcB = null
+        arcM = null
+        onArcChanged?.invoke(false)
+        invalidate()
+        scope.launch { applyCommittedOp(StrokeOp(stroke)) }
+    }
+
+    private fun discardPendingArc() {
+        val had = hasPendingArc
+        arcA = null
+        arcB = null
+        arcM = null
+        arcMode = ArcDrag.NONE
+        arcPointerId = INVALID_POINTER
+        if (had) onArcChanged?.invoke(false)
         invalidate()
     }
 
@@ -1754,6 +2028,7 @@ class PaintCanvasView @JvmOverloads constructor(
         selectionMask = null
         discardFloating()
         discardPendingLine()
+        discardPendingArc()
         selRect.setEmpty()
         antsAnimator.cancel()
     }
@@ -1935,6 +2210,17 @@ class PaintCanvasView @JvmOverloads constructor(
                 save()
                 scale(SUPER_SAMPLE, SUPER_SAMPLE)
                 StrokeRenderer.paintStroke(this, buildLineStroke(la, lb), surface = this@PaintCanvasView.surface)
+                restore()
+            }
+        }
+        val aa = arcA
+        val ab = arcB
+        val am = arcM
+        if (aa != null && ab != null && am != null) {
+            Canvas(paintCopy).apply {
+                save()
+                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                StrokeRenderer.paintStroke(this, buildArcStroke(aa, ab, am), surface = this@PaintCanvasView.surface)
                 restore()
             }
         }

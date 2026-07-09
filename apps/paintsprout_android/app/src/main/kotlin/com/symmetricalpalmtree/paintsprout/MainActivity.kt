@@ -63,6 +63,7 @@ class MainActivity : AppCompatActivity() {
     private var chalkboardParams = ChalkboardParams()
     private var hasSelection = false
     private var hasPendingLine = false
+    private var hasPendingArc = false
 
     // Magic-wand settings (Flutter defaults).
     private var wandTolerance = 0.15f
@@ -115,6 +116,10 @@ class MainActivity : AppCompatActivity() {
             hasPendingLine = it
             updateRail()
         }
+        binding.canvas.onArcChanged = {
+            hasPendingArc = it
+            updateRail()
+        }
         updateRail()
     }
 
@@ -159,7 +164,7 @@ class MainActivity : AppCompatActivity() {
         rail.addView(eraseBtn)
         rail.addView(deselectBtn)
 
-        lineDoneBtn = iconButton(R.drawable.ic_done, "Finish line") { binding.canvas.commitPendingLine() }
+        lineDoneBtn = iconButton(R.drawable.ic_done, "Finish shape") { binding.canvas.commitPendingShape() }
         rail.addView(lineDoneBtn)
 
         rail.addView(divider())
@@ -193,7 +198,7 @@ class MainActivity : AppCompatActivity() {
         deselectBtn.visibility = selVis
         fillBtn.imageTintList = android.content.res.ColorStateList.valueOf(color)
 
-        lineDoneBtn.visibility = if (hasPendingLine) View.VISIBLE else View.GONE
+        lineDoneBtn.visibility = if (hasPendingLine || hasPendingArc) View.VISIBLE else View.GONE
 
         setEnabled(undoBtn, binding.canvas.canUndo)
         setEnabled(redoBtn, binding.canvas.canRedo)
@@ -959,6 +964,7 @@ class MainActivity : AppCompatActivity() {
         Tool.PENCIL -> R.drawable.ic_tool_pencil
         Tool.PEN -> R.drawable.ic_tool_pen
         Tool.LINE -> R.drawable.ic_tool_line
+        Tool.ARC -> R.drawable.ic_tool_arc
         Tool.BRUSH -> R.drawable.ic_tool_brush
         Tool.WATERCOLOR -> R.drawable.ic_tool_watercolor
         Tool.MARKER -> R.drawable.ic_tool_marker
