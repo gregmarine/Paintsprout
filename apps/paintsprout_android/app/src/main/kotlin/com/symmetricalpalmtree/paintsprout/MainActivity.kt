@@ -62,6 +62,7 @@ class MainActivity : AppCompatActivity() {
     private var metalParams = MetalParams()
     private var chalkboardParams = ChalkboardParams()
     private var hasSelection = false
+    private var hasPendingLine = false
 
     // Magic-wand settings (Flutter defaults).
     private var wandTolerance = 0.15f
@@ -80,6 +81,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var fillBtn: ImageButton
     private lateinit var eraseBtn: ImageButton
     private lateinit var deselectBtn: ImageButton
+    private lateinit var lineDoneBtn: ImageButton
     private lateinit var undoBtn: ImageButton
     private lateinit var redoBtn: ImageButton
 
@@ -107,6 +109,10 @@ class MainActivity : AppCompatActivity() {
         }
         binding.canvas.onSelectionChanged = {
             hasSelection = it
+            updateRail()
+        }
+        binding.canvas.onLineChanged = {
+            hasPendingLine = it
             updateRail()
         }
         updateRail()
@@ -153,6 +159,9 @@ class MainActivity : AppCompatActivity() {
         rail.addView(eraseBtn)
         rail.addView(deselectBtn)
 
+        lineDoneBtn = iconButton(R.drawable.ic_done, "Finish line") { binding.canvas.commitPendingLine() }
+        rail.addView(lineDoneBtn)
+
         rail.addView(divider())
         undoBtn = iconButton(R.drawable.ic_undo, "Undo") { binding.canvas.undo() }
         redoBtn = iconButton(R.drawable.ic_redo, "Redo") { binding.canvas.redo() }
@@ -183,6 +192,8 @@ class MainActivity : AppCompatActivity() {
         eraseBtn.visibility = selVis
         deselectBtn.visibility = selVis
         fillBtn.imageTintList = android.content.res.ColorStateList.valueOf(color)
+
+        lineDoneBtn.visibility = if (hasPendingLine) View.VISIBLE else View.GONE
 
         setEnabled(undoBtn, binding.canvas.canUndo)
         setEnabled(redoBtn, binding.canvas.canRedo)
@@ -947,6 +958,7 @@ class MainActivity : AppCompatActivity() {
     private fun toolIcon(t: Tool): Int = when (t) {
         Tool.PENCIL -> R.drawable.ic_tool_pencil
         Tool.PEN -> R.drawable.ic_tool_pen
+        Tool.LINE -> R.drawable.ic_tool_line
         Tool.BRUSH -> R.drawable.ic_tool_brush
         Tool.WATERCOLOR -> R.drawable.ic_tool_watercolor
         Tool.MARKER -> R.drawable.ic_tool_marker

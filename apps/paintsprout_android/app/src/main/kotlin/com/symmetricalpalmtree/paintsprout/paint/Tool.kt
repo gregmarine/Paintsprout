@@ -11,12 +11,13 @@ package com.symmetricalpalmtree.paintsprout.paint
  * the pure paint model.
  */
 enum class Tool {
-    PENCIL, PEN, BRUSH, WATERCOLOR, MARKER, SPRAY, ERASER, WAND;
+    PENCIL, PEN, LINE, BRUSH, WATERCOLOR, MARKER, SPRAY, ERASER, WAND;
 
     val label: String
         get() = when (this) {
             PENCIL -> "Pencil"
             PEN -> "Pen"
+            LINE -> "Line"
             BRUSH -> "Brush"
             WATERCOLOR -> "Watercolor"
             MARKER -> "Marker"
@@ -30,15 +31,16 @@ enum class Tool {
 
     /**
      * Whether the tool's stroke width reacts to stylus pressure and tilt.
-     * Pen and eraser strictly honor the base size; the rest grow.
+     * Pen, line and eraser strictly honor the base size; the rest grow.
      */
-    val isDynamic: Boolean get() = this != PEN && this != ERASER
+    val isDynamic: Boolean get() = this != PEN && this != ERASER && this != LINE
 
     /** Sensible starting base size (logical px) per tool. */
     val defaultSize: Float
         get() = when (this) {
             PENCIL -> 1f
             PEN -> 3f
+            LINE -> 3f
             BRUSH -> 18f
             WATERCOLOR -> 26f
             MARKER -> 4f
@@ -164,6 +166,23 @@ data class ToolProfile(
             renderStyle = RenderStyle.SOLID,
         )
 
+        // Line: a straight, clean, constant-width solid mark — the pen's feel, drawn
+        // as an editable two-point segment rather than a freehand path.
+        private val LINE = ToolProfile(
+            minPressureFactor = 1.0f,
+            maxPressureFactor = 1.0f,
+            pressureAffectsWidth = false,
+            tiltGain = 0.0f,
+            pressureAffectsDensity = false,
+            minDensity = 1.0f,
+            maxDensity = 1.0f,
+            opacity = 1.0f,
+            blurFactor = 0.0f,
+            toothFloor = 0.85f, // like the pen: mostly fills, faint tooth on rough surfaces
+            toothBias = 1.0f,
+            renderStyle = RenderStyle.SOLID,
+        )
+
         // Paint brush: bristle streaks that follow the path, spreading with pressure.
         private val BRUSH = ToolProfile(
             minPressureFactor = 0.35f,
@@ -230,6 +249,7 @@ data class ToolProfile(
         fun of(tool: Tool): ToolProfile = when (tool) {
             Tool.PENCIL -> PENCIL
             Tool.PEN -> PEN
+            Tool.LINE -> LINE
             Tool.BRUSH -> BRUSH
             Tool.WATERCOLOR -> WATERCOLOR
             Tool.MARKER -> MARKER

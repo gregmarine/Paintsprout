@@ -60,8 +60,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.sin
 import kotlin.math.roundToInt
 import kotlin.random.Random
 
@@ -85,12 +87,18 @@ class PaintCanvasView @JvmOverloads constructor(
     defStyleAttr: Int = 0,
 ) : View(context, attrs, defStyleAttr) {
 
-    /** The active drawing tool. Leaving the wand while a move is floating bakes it. */
+    /**
+     * The active drawing tool. Leaving the wand while a move is floating bakes it;
+     * leaving the line tool while a line is still being edited bakes that line.
+     */
     var tool: Tool = Tool.PEN
         set(value) {
             val old = field
             field = value
-            if (old != value && old == Tool.WAND && isFloating) scope.launch { commitFloating() }
+            if (old != value) {
+                if (old == Tool.WAND && isFloating) scope.launch { commitFloating() }
+                if (old == Tool.LINE && hasPendingLine) commitPendingLine()
+            }
         }
 
     /** Deposit color (ARGB). Ignored by the eraser. */
@@ -279,6 +287,31 @@ class PaintCanvasView @JvmOverloads constructor(
     private var gestureStartAngle = 0f
 
     private enum class Xform { TRANSLATE, SCALE, ROTATE }
+
+    // --- Line tool ----------------------------------------------------------
+    // A line is drawn tap-and-drag, then stays editable: its two endpoints, its
+    // body, and a rotate handle off the centre are all grabbable. It bakes into
+    // the paint layer as an ordinary two-point [StrokeOp] on commit (start a new
+    // line, switch tools, tap Done, or save), so it undoes / re-tooths like any
+    // stroke. Endpoints are in view (= buffer) pixels.
+    private var lineA: PointF? = null
+    private var lineB: PointF? = null
+    private var lineMode = LineDrag.NONE
+    private var linePointerId = INVALID_POINTER
+    private val lineDragLast = PointF()
+    // Rotate gesture: endpoints + centre captured at grab, plus the start angle.
+    private val lineRotA0 = PointF()
+    private val lineRotB0 = PointF()
+    private val lineRotCenter = PointF()
+    private var lineRotStartAngle = 0f
+
+    private enum class LineDrag { NONE, DRAW, ENDPOINT_A, ENDPOINT_B, BODY, ROTATE }
+
+    /** Whether an editable line is placed (or being drawn) but not yet baked. */
+    val hasPendingLine: Boolean get() = lineA != null && lineB != null
+
+    /** Fired when the editable line appears (true) or is committed/cleared (false). */
+    var onLineChanged: ((Boolean) -> Unit)? = null
 
     // Marching-ants animation.
     private var antsPhase = 0f
@@ -554,7 +587,42 @@ class PaintCanvasView @JvmOverloads constructor(
         }
         canvas.restoreToCount(layer)
 
+        drawPendingLine(canvas)
         drawSelectionOverlay(canvas)
+    }
+
+    /** Previews the editable line (as it will bake) plus its grab handles. */
+    private fun drawPendingLine(canvas: Canvas) {
+        val a = lineA ?: return
+        val b = lineB ?: return
+        StrokeRenderer.paintStroke(canvas, buildLineStroke(a, b), surface)
+        // While first dragging out the line, show just the rubber band; once placed,
+        // show the endpoint handles and the rotate stalk.
+        if (lineMode != LineDrag.DRAW) drawLineHandles(canvas, a, b)
+    }
+
+    /** Square endpoint handles + a rotate handle on a stalk off the line's centre. */
+    private fun drawLineHandles(canvas: Canvas, a: PointF, b: PointF) {
+        val cx = (a.x + b.x) / 2f
+        val cy = (a.y + b.y) / 2f
+        val rot = lineRotateHandle(a, b)
+        val white = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 2.6f
+        }
+        val black = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xDD000000.toInt(); style = Paint.Style.STROKE; strokeWidth = 1.4f
+        }
+        // Rotate stalk (white underlay for contrast on dark surfaces, dark on top).
+        canvas.drawLine(cx, cy, rot.x, rot.y, white)
+        canvas.drawLine(cx, cy, rot.x, rot.y, black)
+
+        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+        for (c in listOf(a, b)) {
+            canvas.drawRect(c.x - 6, c.y - 6, c.x + 6, c.y + 6, fill)
+            canvas.drawRect(c.x - 6, c.y - 6, c.x + 6, c.y + 6, black)
+        }
+        canvas.drawCircle(rot.x, rot.y, 7f, fill)
+        canvas.drawCircle(rot.x, rot.y, 7f, black)
     }
 
     /**
@@ -761,6 +829,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     handleWandDown(event, actionIndex)
                     return true
                 }
+                if (tool == Tool.LINE) {
+                    handleLineDown(event, actionIndex)
+                    return true
+                }
                 if (active != null) return true
                 activePointerId = event.getPointerId(actionIndex)
                 pressureMax = event.device
@@ -783,6 +855,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     handleWandMove(event)
                     return true
                 }
+                if (tool == Tool.LINE) {
+                    handleLineMove(event)
+                    return true
+                }
                 val stroke = active ?: return true
                 val pi = event.findPointerIndex(activePointerId)
                 if (pi < 0) return true
@@ -797,6 +873,10 @@ class PaintCanvasView @JvmOverloads constructor(
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (tool == Tool.WAND) {
                     handleWandUp(event, actionIndex)
+                    return true
+                }
+                if (tool == Tool.LINE) {
+                    handleLineUp(event, actionIndex)
                     return true
                 }
                 val stroke = active
@@ -951,6 +1031,168 @@ class PaintCanvasView @JvmOverloads constructor(
             wandMoved = false
             if (!moved && pos != null) scope.launch { runWandSelection(pos) }
         }
+    }
+
+    // --- Line-tool gestures -------------------------------------------------
+
+    private fun handleLineDown(e: MotionEvent, ai: Int) {
+        val p = PointF(e.getX(ai), e.getY(ai))
+        if (hasPendingLine) {
+            val mode = hitLine(p)
+            if (mode != null) {
+                linePointerId = e.getPointerId(ai)
+                lineMode = mode
+                lineDragLast.set(p)
+                if (mode == LineDrag.ROTATE) {
+                    val a = lineA!!
+                    val b = lineB!!
+                    lineRotCenter.set((a.x + b.x) / 2f, (a.y + b.y) / 2f)
+                    lineRotA0.set(a)
+                    lineRotB0.set(b)
+                    lineRotStartAngle = atan2(p.y - lineRotCenter.y, p.x - lineRotCenter.x)
+                }
+                return
+            }
+            // Tapped empty space: bake the current line, then begin a new one here.
+            commitPendingLine()
+        }
+        val had = hasPendingLine
+        lineA = PointF(p.x, p.y)
+        lineB = PointF(p.x, p.y)
+        lineMode = LineDrag.DRAW
+        linePointerId = e.getPointerId(ai)
+        lineDragLast.set(p)
+        if (!had) onLineChanged?.invoke(true)
+        invalidate()
+    }
+
+    private fun handleLineMove(e: MotionEvent) {
+        if (linePointerId == INVALID_POINTER) return
+        val pi = e.findPointerIndex(linePointerId)
+        if (pi < 0) return
+        val p = PointF(e.getX(pi), e.getY(pi))
+        when (lineMode) {
+            LineDrag.DRAW, LineDrag.ENDPOINT_B -> {
+                lineB?.set(p.x, p.y)
+                invalidate()
+            }
+            LineDrag.ENDPOINT_A -> {
+                lineA?.set(p.x, p.y)
+                invalidate()
+            }
+            LineDrag.BODY -> {
+                val dx = p.x - lineDragLast.x
+                val dy = p.y - lineDragLast.y
+                lineA?.offset(dx, dy)
+                lineB?.offset(dx, dy)
+                lineDragLast.set(p)
+                invalidate()
+            }
+            LineDrag.ROTATE -> {
+                val ang = atan2(p.y - lineRotCenter.y, p.x - lineRotCenter.x)
+                val d = ang - lineRotStartAngle
+                lineA?.set(rotatePoint(lineRotA0, lineRotCenter, d))
+                lineB?.set(rotatePoint(lineRotB0, lineRotCenter, d))
+                invalidate()
+            }
+            LineDrag.NONE -> {}
+        }
+    }
+
+    private fun handleLineUp(e: MotionEvent, ai: Int) {
+        if (e.getPointerId(ai) != linePointerId) return
+        linePointerId = INVALID_POINTER
+        // A tap with no real drag makes no line — drop it and stay ready.
+        if (lineMode == LineDrag.DRAW) {
+            val a = lineA
+            val b = lineB
+            if (a == null || b == null || hypot(b.x - a.x, b.y - a.y) < MIN_LINE_LEN) {
+                discardPendingLine()
+                return
+            }
+        }
+        lineMode = LineDrag.NONE
+        invalidate()
+    }
+
+    /** Which part of the pending line [p] grabs, or null if it misses everything. */
+    private fun hitLine(p: PointF): LineDrag? {
+        val a = lineA ?: return null
+        val b = lineB ?: return null
+        val rot = lineRotateHandle(a, b)
+        if (hypot(p.x - rot.x, p.y - rot.y) <= HANDLE_HIT) return LineDrag.ROTATE
+        if (hypot(p.x - a.x, p.y - a.y) <= HANDLE_HIT) return LineDrag.ENDPOINT_A
+        if (hypot(p.x - b.x, p.y - b.y) <= HANDLE_HIT) return LineDrag.ENDPOINT_B
+        val bodyHit = max(BODY_HIT, sizeFor(Tool.LINE) / 2f + 8f)
+        if (distToSegment(p, a, b) <= bodyHit) return LineDrag.BODY
+        return null
+    }
+
+    /** The rotate handle: off the line's centre, perpendicular to it. */
+    private fun lineRotateHandle(a: PointF, b: PointF): PointF {
+        val cx = (a.x + b.x) / 2f
+        val cy = (a.y + b.y) / 2f
+        val dx = b.x - a.x
+        val dy = b.y - a.y
+        val len = hypot(dx, dy)
+        val ux = if (len < 1e-3f) 0f else dx / len
+        val uy = if (len < 1e-3f) -1f else dy / len
+        // Perpendicular (-uy, ux).
+        return PointF(cx - uy * LINE_ROT_OFFSET, cy + ux * LINE_ROT_OFFSET)
+    }
+
+    private fun rotatePoint(src: PointF, center: PointF, radians: Float): PointF {
+        val c = cos(radians)
+        val s = sin(radians)
+        val vx = src.x - center.x
+        val vy = src.y - center.y
+        return PointF(center.x + vx * c - vy * s, center.y + vx * s + vy * c)
+    }
+
+    private fun distToSegment(p: PointF, a: PointF, b: PointF): Float {
+        val dx = b.x - a.x
+        val dy = b.y - a.y
+        val len2 = dx * dx + dy * dy
+        if (len2 < 1e-6f) return hypot(p.x - a.x, p.y - a.y)
+        val t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).coerceIn(0f, 1f)
+        return hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+    }
+
+    /** A two-point straight [Stroke] for the current line endpoints. */
+    private fun buildLineStroke(a: PointF, b: PointF): Stroke {
+        val width = resolveWidth(Tool.LINE, sizeFor(Tool.LINE), 1f, 0f)
+        return Stroke(Tool.LINE, strokeColor, seed = Random.nextInt()).apply {
+            add(StrokePoint(Vec2(a.x, a.y), width))
+            add(StrokePoint(Vec2(b.x, b.y), width))
+        }
+    }
+
+    /** Bakes the pending line as a [StrokeOp] (or drops it if it's degenerate). */
+    fun commitPendingLine() {
+        val a = lineA
+        val b = lineB
+        lineMode = LineDrag.NONE
+        linePointerId = INVALID_POINTER
+        if (a == null || b == null || hypot(b.x - a.x, b.y - a.y) < MIN_LINE_LEN) {
+            discardPendingLine()
+            return
+        }
+        val stroke = buildLineStroke(a, b)
+        lineA = null
+        lineB = null
+        onLineChanged?.invoke(false)
+        invalidate()
+        scope.launch { applyCommittedOp(StrokeOp(stroke)) }
+    }
+
+    private fun discardPendingLine() {
+        val had = hasPendingLine
+        lineA = null
+        lineB = null
+        lineMode = LineDrag.NONE
+        linePointerId = INVALID_POINTER
+        if (had) onLineChanged?.invoke(false)
+        invalidate()
     }
 
     private fun sample(e: MotionEvent, pi: Int): StrokePoint =
@@ -1511,6 +1753,7 @@ class PaintCanvasView @JvmOverloads constructor(
         selectionMask?.recycle()
         selectionMask = null
         discardFloating()
+        discardPendingLine()
         selRect.setEmpty()
         antsAnimator.cancel()
     }
@@ -1682,7 +1925,19 @@ class PaintCanvasView @JvmOverloads constructor(
             return
         }
         val surfaceCopy = surface.copy(Bitmap.Config.ARGB_8888, false)
-        val paintCopy = paint.copy(Bitmap.Config.ARGB_8888, false)
+        val paintCopy = paint.copy(Bitmap.Config.ARGB_8888, true)
+        // Fold in a placed-but-uncommitted line so the export matches the screen,
+        // without adding it to history (it stays editable after saving).
+        val la = lineA
+        val lb = lineB
+        if (la != null && lb != null) {
+            Canvas(paintCopy).apply {
+                save()
+                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                StrokeRenderer.paintStroke(this, buildLineStroke(la, lb), surface = this@PaintCanvasView.surface)
+                restore()
+            }
+        }
         scope.launch {
             val result = withContext(Dispatchers.Default) {
                 runCatching {
@@ -1712,6 +1967,13 @@ class PaintCanvasView @JvmOverloads constructor(
         // (most-recent), so an undo replays at most STRIDE ops from a checkpoint.
         const val CHECKPOINT_STRIDE = 6
         const val MAX_CHECKPOINTS = 6
+
+        // Line tool: min drag to count as a line, handle hit radii (px), and how
+        // far the rotate handle sits off the line's centre.
+        const val MIN_LINE_LEN = 6f
+        const val HANDLE_HIT = 26f
+        const val BODY_HIT = 16f
+        const val LINE_ROT_OFFSET = 34f
 
         // Finger history gestures (undo/redo double-tap).
         const val TOUCH_TAP_SLOP_DP = 18f
