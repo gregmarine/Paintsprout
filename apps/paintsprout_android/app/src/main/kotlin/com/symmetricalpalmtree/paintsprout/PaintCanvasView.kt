@@ -7,6 +7,7 @@ import android.graphics.BitmapShader
 import android.graphics.BlendMode
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
@@ -60,9 +61,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.atan2
+import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.roundToInt
 import kotlin.random.Random
@@ -99,6 +102,7 @@ class PaintCanvasView @JvmOverloads constructor(
                 if (old == Tool.WAND && isFloating) scope.launch { commitFloating() }
                 if (old == Tool.LINE && hasPendingLine) commitPendingLine()
                 if (old == Tool.ARC && hasPendingArc) commitPendingArc()
+                if (old == Tool.POLYLINE && hasPendingPolyline) commitPendingPolyline()
             }
         }
 
@@ -341,13 +345,48 @@ class PaintCanvasView @JvmOverloads constructor(
     /** Fired when the editable arc appears (true) or is committed/cleared (false). */
     var onArcChanged: ((Boolean) -> Unit)? = null
 
-    /** Whether any editable shape (line or arc) is pending — for the Done button. */
-    val hasPendingShape: Boolean get() = hasPendingLine || hasPendingArc
+    // --- Polyline tool ------------------------------------------------------
+    // Built by tapping: each tap plants an anchor and a straight segment joins it
+    // to the previous one. A stylus double-tap finishes; if that final tap lands
+    // on the first anchor the run closes into a loop. Once finished the anchors
+    // stay editable (drag any anchor, drag the body to move, rotate off the top),
+    // exactly like the line/arc. On commit the whole run is densely sampled along
+    // each segment into one ordinary [StrokeOp] (dense samples keep the corners
+    // crisp through [smoothPath]). Points are in view (= buffer) pixels.
+    private val polyPts = ArrayList<PointF>()
+    private var polyClosed = false
+    // false while still tapping out anchors; true once double-tapped into editing.
+    private var polyFinished = false
+    private var polyMode = PolyDrag.NONE
+    private var polyDragIndex = -1
+    private var polyPointerId = INVALID_POINTER
+    private val polyDragLast = PointF()
+    // Rotate gesture: anchors + centre captured at grab, plus the start angle.
+    private val polyRot0 = ArrayList<PointF>()
+    private val polyRotCenter = PointF()
+    private var polyRotStartAngle = 0f
+    // Tap tracking for the finishing double-tap (stylus DOWN-to-DOWN).
+    private var polyLastTapTime = 0L
+    private val polyLastTapPos = PointF()
+    // Rubber-band preview: the hovering pen's position while tapping out anchors.
+    private var polyHoverPt: PointF? = null
+
+    private enum class PolyDrag { NONE, ANCHOR, BODY, ROTATE }
+
+    /** Whether an editable polyline is placed (being tapped out or edited) but unbaked. */
+    val hasPendingPolyline: Boolean get() = polyPts.isNotEmpty()
+
+    /** Fired when the editable polyline appears (true) or is committed/cleared (false). */
+    var onPolylineChanged: ((Boolean) -> Unit)? = null
+
+    /** Whether any editable shape (line, arc, polyline) is pending — for the Done button. */
+    val hasPendingShape: Boolean get() = hasPendingLine || hasPendingArc || hasPendingPolyline
 
     /** Bakes whichever editable shape is pending (only ever one at a time). */
     fun commitPendingShape() {
         if (hasPendingLine) commitPendingLine()
         if (hasPendingArc) commitPendingArc()
+        if (hasPendingPolyline) commitPendingPolyline()
     }
 
     // Marching-ants animation.
@@ -626,6 +665,7 @@ class PaintCanvasView @JvmOverloads constructor(
 
         drawPendingLine(canvas)
         drawPendingArc(canvas)
+        drawPendingPolyline(canvas)
         drawSelectionOverlay(canvas)
     }
 
@@ -701,6 +741,59 @@ class PaintCanvasView @JvmOverloads constructor(
         canvas.drawPath(diamond, black)
         canvas.drawCircle(rot.x, rot.y, 7f, fill)
         canvas.drawCircle(rot.x, rot.y, 7f, black)
+    }
+
+    /** Previews the editable polyline (as it will bake) plus its handles. */
+    private fun drawPendingPolyline(canvas: Canvas) {
+        if (polyPts.isEmpty()) return
+        StrokeRenderer.paintStroke(canvas, buildPolyStroke(), surface)
+        // While still tapping out anchors, rubber-band the next segment to the pen.
+        if (!polyFinished) polyHoverPt?.let { drawPolyRubberBand(canvas, polyPts.last(), it) }
+        drawPolyHandles(canvas)
+    }
+
+    /** Dashed preview of the next segment; rings the first anchor if it'd close. */
+    private fun drawPolyRubberBand(canvas: Canvas, from: PointF, to: PointF) {
+        val dash = DashPathEffect(floatArrayOf(10f, 8f), 0f)
+        val white = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 2.6f; pathEffect = dash
+        }
+        val black = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xAA000000.toInt(); style = Paint.Style.STROKE; strokeWidth = 1.4f; pathEffect = dash
+        }
+        canvas.drawLine(from.x, from.y, to.x, to.y, white)
+        canvas.drawLine(from.x, from.y, to.x, to.y, black)
+        if (polyPts.size >= 3) {
+            val first = polyPts.first()
+            if (hypot(to.x - first.x, to.y - first.y) <= POLY_CLOSE_DIST) {
+                canvas.drawCircle(first.x, first.y, 11f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = 0xFF3B82F6.toInt(); style = Paint.Style.STROKE; strokeWidth = 2.4f
+                })
+            }
+        }
+    }
+
+    /** Square handles at every anchor; a rotate stalk off the top once finished. */
+    private fun drawPolyHandles(canvas: Canvas) {
+        val white = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 2.6f
+        }
+        val black = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xDD000000.toInt(); style = Paint.Style.STROKE; strokeWidth = 1.4f
+        }
+        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+        if (polyFinished) {
+            val c = polyCenter()
+            val rot = polyRotateHandle()
+            canvas.drawLine(c.x, c.y, rot.x, rot.y, white)
+            canvas.drawLine(c.x, c.y, rot.x, rot.y, black)
+            canvas.drawCircle(rot.x, rot.y, 7f, fill)
+            canvas.drawCircle(rot.x, rot.y, 7f, black)
+        }
+        for (a in polyPts) {
+            canvas.drawRect(a.x - 6, a.y - 6, a.x + 6, a.y + 6, fill)
+            canvas.drawRect(a.x - 6, a.y - 6, a.x + 6, a.y + 6, black)
+        }
     }
 
     /**
@@ -915,6 +1008,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     handleArcDown(event, actionIndex)
                     return true
                 }
+                if (tool == Tool.POLYLINE) {
+                    handlePolyDown(event, actionIndex)
+                    return true
+                }
                 if (active != null) return true
                 activePointerId = event.getPointerId(actionIndex)
                 pressureMax = event.device
@@ -945,6 +1042,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     handleArcMove(event)
                     return true
                 }
+                if (tool == Tool.POLYLINE) {
+                    handlePolyMove(event)
+                    return true
+                }
                 val stroke = active ?: return true
                 val pi = event.findPointerIndex(activePointerId)
                 if (pi < 0) return true
@@ -969,6 +1070,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     handleArcUp(event, actionIndex)
                     return true
                 }
+                if (tool == Tool.POLYLINE) {
+                    handlePolyUp(event, actionIndex)
+                    return true
+                }
                 val stroke = active
                 if (stroke != null && event.getPointerId(actionIndex) == activePointerId) {
                     unbaked.add(stroke)
@@ -981,6 +1086,31 @@ class PaintCanvasView @JvmOverloads constructor(
                     invalidate()
                 }
                 return true
+            }
+        }
+        return true
+    }
+
+    /**
+     * Stylus hover: while tapping out a polyline, track the hovering pen so the
+     * next segment can be previewed as a rubber band from the last anchor. Only
+     * meaningful for an unfinished polyline; ignored otherwise.
+     */
+    override fun onHoverEvent(event: MotionEvent): Boolean {
+        if (tool != Tool.POLYLINE || polyFinished || polyPts.isEmpty() ||
+            !isStylus(event.getToolType(event.actionIndex))
+        ) {
+            if (polyHoverPt != null) { polyHoverPt = null; invalidate() }
+            return super.onHoverEvent(event)
+        }
+        when (event.actionMasked) {
+            MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
+                polyHoverPt = PointF(event.x, event.y)
+                invalidate()
+            }
+            MotionEvent.ACTION_HOVER_EXIT -> {
+                polyHoverPt = null
+                invalidate()
             }
         }
         return true
@@ -1467,6 +1597,238 @@ class PaintCanvasView @JvmOverloads constructor(
         arcPointerId = INVALID_POINTER
         if (had) onArcChanged?.invoke(false)
         invalidate()
+    }
+
+    // --- Polyline-tool gestures ---------------------------------------------
+
+    private fun handlePolyDown(e: MotionEvent, ai: Int) {
+        val p = PointF(e.getX(ai), e.getY(ai))
+        val now = e.eventTime
+        if (polyFinished) {
+            // Editing a finished run: grab a handle, else bake it and start anew.
+            val mode = hitPolyline(p)
+            if (mode != null) {
+                polyPointerId = e.getPointerId(ai)
+                polyMode = mode
+                polyDragLast.set(p)
+                if (mode == PolyDrag.ROTATE) beginPolyRotate(p)
+                return
+            }
+            commitPendingPolyline() // clears state; fall through to a fresh run.
+        }
+        if (polyPts.isEmpty()) {
+            plantPolyAnchor(p, e.getPointerId(ai), now, first = true)
+            return
+        }
+        // Second tap of a finishing double-tap? (near the last anchor, in time.)
+        val dt = now - polyLastTapTime
+        if (dt in 1..POLY_DOUBLE_MS &&
+            hypot(p.x - polyLastTapPos.x, p.y - polyLastTapPos.y) <= POLY_TAP_SLOP
+        ) {
+            finishPolyline()
+            return
+        }
+        plantPolyAnchor(p, e.getPointerId(ai), now, first = false)
+    }
+
+    /** Adds an anchor at [p] and grabs it so a same-gesture drag can nudge it. */
+    private fun plantPolyAnchor(p: PointF, pointerId: Int, now: Long, first: Boolean) {
+        if (first) {
+            polyFinished = false
+            polyClosed = false
+            onPolylineChanged?.invoke(true)
+        }
+        polyPts.add(PointF(p.x, p.y))
+        polyPointerId = pointerId
+        polyMode = PolyDrag.ANCHOR
+        polyDragIndex = polyPts.size - 1
+        polyDragLast.set(p)
+        polyLastTapTime = now
+        polyLastTapPos.set(p)
+        polyHoverPt = null
+        invalidate()
+    }
+
+    private fun handlePolyMove(e: MotionEvent) {
+        if (polyPointerId == INVALID_POINTER) return
+        val pi = e.findPointerIndex(polyPointerId)
+        if (pi < 0) return
+        val p = PointF(e.getX(pi), e.getY(pi))
+        when (polyMode) {
+            PolyDrag.ANCHOR -> {
+                polyPts.getOrNull(polyDragIndex)?.set(p.x, p.y)
+                invalidate()
+            }
+            PolyDrag.BODY -> {
+                val dx = p.x - polyDragLast.x
+                val dy = p.y - polyDragLast.y
+                for (a in polyPts) a.offset(dx, dy)
+                polyDragLast.set(p)
+                invalidate()
+            }
+            PolyDrag.ROTATE -> {
+                val ang = atan2(p.y - polyRotCenter.y, p.x - polyRotCenter.x)
+                val d = ang - polyRotStartAngle
+                for (i in polyPts.indices) {
+                    polyPts[i].set(rotatePoint(polyRot0[i], polyRotCenter, d))
+                }
+                invalidate()
+            }
+            PolyDrag.NONE -> {}
+        }
+    }
+
+    private fun handlePolyUp(e: MotionEvent, ai: Int) {
+        if (e.getPointerId(ai) != polyPointerId) return
+        polyPointerId = INVALID_POINTER
+        // While tapping out anchors, remember where the newest one settled so the
+        // finishing double-tap is measured against its final (possibly nudged) pos.
+        if (!polyFinished && polyMode == PolyDrag.ANCHOR) {
+            polyPts.lastOrNull()?.let { polyLastTapPos.set(it.x, it.y) }
+        }
+        polyMode = PolyDrag.NONE
+        polyDragIndex = -1
+        invalidate()
+    }
+
+    /** Captures the anchors + centre for a rotate drag. */
+    private fun beginPolyRotate(p: PointF) {
+        val c = polyCenter()
+        polyRotCenter.set(c)
+        polyRot0.clear()
+        for (a in polyPts) polyRot0.add(PointF(a.x, a.y))
+        polyRotStartAngle = atan2(p.y - c.y, p.x - c.x)
+    }
+
+    /**
+     * Ends anchor placement and enters edit mode. Closes the loop if the final
+     * anchor landed on the first; drops a degenerate (< 2-point) run.
+     */
+    private fun finishPolyline() {
+        polyPointerId = INVALID_POINTER
+        polyMode = PolyDrag.NONE
+        polyHoverPt = null
+        if (polyPts.size >= 3) {
+            val first = polyPts.first()
+            val last = polyPts.last()
+            if (hypot(last.x - first.x, last.y - first.y) <= POLY_CLOSE_DIST) {
+                polyPts.removeAt(polyPts.size - 1) // drop the near-duplicate close tap
+                if (polyPts.size >= 3) polyClosed = true
+            }
+        }
+        if (polyPts.size < 2) {
+            discardPendingPolyline()
+            return
+        }
+        polyFinished = true
+        invalidate()
+    }
+
+    /** Which part of the finished polyline [p] grabs, or null if it misses. */
+    private fun hitPolyline(p: PointF): PolyDrag? {
+        if (polyPts.isEmpty()) return null
+        val rot = polyRotateHandle()
+        if (hypot(p.x - rot.x, p.y - rot.y) <= HANDLE_HIT) return PolyDrag.ROTATE
+        for (i in polyPts.indices) {
+            val a = polyPts[i]
+            if (hypot(p.x - a.x, p.y - a.y) <= HANDLE_HIT) {
+                polyDragIndex = i
+                return PolyDrag.ANCHOR
+            }
+        }
+        val bodyHit = max(BODY_HIT, sizeFor(Tool.POLYLINE) / 2f + 8f)
+        val edges = polyEdges()
+        for (i in 1 until edges.size) {
+            if (distToSegment(p, edges[i - 1], edges[i]) <= bodyHit) return PolyDrag.BODY
+        }
+        return null
+    }
+
+    /** The anchors, with the first appended when the run is closed (for edges). */
+    private fun polyEdges(): List<PointF> =
+        if (polyClosed && polyPts.size >= 2) polyPts + polyPts.first() else polyPts
+
+    private fun polyBounds(): RectF {
+        val f = polyPts.first()
+        val r = RectF(f.x, f.y, f.x, f.y)
+        for (a in polyPts) {
+            r.left = min(r.left, a.x); r.top = min(r.top, a.y)
+            r.right = max(r.right, a.x); r.bottom = max(r.bottom, a.y)
+        }
+        return r
+    }
+
+    private fun polyCenter(): PointF {
+        val b = polyBounds()
+        return PointF((b.left + b.right) / 2f, (b.top + b.bottom) / 2f)
+    }
+
+    /** Rotate handle: centred above the run's bounding box. */
+    private fun polyRotateHandle(): PointF {
+        val b = polyBounds()
+        return PointF((b.left + b.right) / 2f, b.top - LINE_ROT_OFFSET)
+    }
+
+    /**
+     * Densely samples every segment (plus the closing one when looped) so the
+     * baked stroke's corners stay crisp through [smoothPath]'s midpoint rounding.
+     */
+    private fun polySamples(): List<PointF> {
+        val edges = polyEdges()
+        if (edges.size < 2) return edges.map { PointF(it.x, it.y) }
+        val out = ArrayList<PointF>()
+        out.add(PointF(edges[0].x, edges[0].y))
+        for (i in 1 until edges.size) {
+            val a = edges[i - 1]
+            val b = edges[i]
+            val len = hypot(b.x - a.x, b.y - a.y)
+            val n = max(1, ceil(len / POLY_SAMPLE).toInt())
+            for (k in 1..n) {
+                val t = k.toFloat() / n
+                out.add(PointF(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t))
+            }
+        }
+        return out
+    }
+
+    /** A densely-sampled [Stroke] for the current polyline anchors. */
+    private fun buildPolyStroke(): Stroke {
+        val width = resolveWidth(Tool.POLYLINE, sizeFor(Tool.POLYLINE), 1f, 0f)
+        return Stroke(Tool.POLYLINE, strokeColor, seed = Random.nextInt()).apply {
+            for (p in polySamples()) add(StrokePoint(Vec2(p.x, p.y), width))
+        }
+    }
+
+    /** Bakes the pending polyline as a [StrokeOp] (or drops it if degenerate). */
+    fun commitPendingPolyline() {
+        if (polyPts.size < 2) {
+            discardPendingPolyline()
+            return
+        }
+        val stroke = buildPolyStroke()
+        resetPolyState()
+        onPolylineChanged?.invoke(false)
+        invalidate()
+        scope.launch { applyCommittedOp(StrokeOp(stroke)) }
+    }
+
+    private fun discardPendingPolyline() {
+        val had = polyPts.isNotEmpty()
+        resetPolyState()
+        if (had) onPolylineChanged?.invoke(false)
+        invalidate()
+    }
+
+    private fun resetPolyState() {
+        polyPts.clear()
+        polyRot0.clear()
+        polyClosed = false
+        polyFinished = false
+        polyMode = PolyDrag.NONE
+        polyDragIndex = -1
+        polyPointerId = INVALID_POINTER
+        polyHoverPt = null
+        polyLastTapTime = 0L
     }
 
     private fun sample(e: MotionEvent, pi: Int): StrokePoint =
@@ -2029,6 +2391,7 @@ class PaintCanvasView @JvmOverloads constructor(
         discardFloating()
         discardPendingLine()
         discardPendingArc()
+        discardPendingPolyline()
         selRect.setEmpty()
         antsAnimator.cancel()
     }
@@ -2224,6 +2587,14 @@ class PaintCanvasView @JvmOverloads constructor(
                 restore()
             }
         }
+        if (polyPts.size >= 2) {
+            Canvas(paintCopy).apply {
+                save()
+                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                StrokeRenderer.paintStroke(this, buildPolyStroke(), surface = this@PaintCanvasView.surface)
+                restore()
+            }
+        }
         scope.launch {
             val result = withContext(Dispatchers.Default) {
                 runCatching {
@@ -2260,6 +2631,13 @@ class PaintCanvasView @JvmOverloads constructor(
         const val HANDLE_HIT = 26f
         const val BODY_HIT = 16f
         const val LINE_ROT_OFFSET = 34f
+
+        // Polyline: sample spacing (px) for crisp corners, the finishing double-tap
+        // window + slop, and how near the first anchor a final tap must land to close.
+        const val POLY_SAMPLE = 4f
+        const val POLY_DOUBLE_MS = 350L
+        const val POLY_TAP_SLOP = 26f
+        const val POLY_CLOSE_DIST = 24f
 
         // Finger history gestures (undo/redo double-tap).
         const val TOUCH_TAP_SLOP_DP = 18f

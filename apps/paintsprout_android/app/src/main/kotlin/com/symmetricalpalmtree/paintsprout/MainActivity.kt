@@ -64,6 +64,7 @@ class MainActivity : AppCompatActivity() {
     private var hasSelection = false
     private var hasPendingLine = false
     private var hasPendingArc = false
+    private var hasPendingPolyline = false
 
     // Magic-wand settings (Flutter defaults).
     private var wandTolerance = 0.15f
@@ -118,6 +119,10 @@ class MainActivity : AppCompatActivity() {
         }
         binding.canvas.onArcChanged = {
             hasPendingArc = it
+            updateRail()
+        }
+        binding.canvas.onPolylineChanged = {
+            hasPendingPolyline = it
             updateRail()
         }
         updateRail()
@@ -198,7 +203,8 @@ class MainActivity : AppCompatActivity() {
         deselectBtn.visibility = selVis
         fillBtn.imageTintList = android.content.res.ColorStateList.valueOf(color)
 
-        lineDoneBtn.visibility = if (hasPendingLine || hasPendingArc) View.VISIBLE else View.GONE
+        lineDoneBtn.visibility =
+            if (hasPendingLine || hasPendingArc || hasPendingPolyline) View.VISIBLE else View.GONE
 
         setEnabled(undoBtn, binding.canvas.canUndo)
         setEnabled(redoBtn, binding.canvas.canRedo)
@@ -965,6 +971,7 @@ class MainActivity : AppCompatActivity() {
         Tool.PEN -> R.drawable.ic_tool_pen
         Tool.LINE -> R.drawable.ic_tool_line
         Tool.ARC -> R.drawable.ic_tool_arc
+        Tool.POLYLINE -> R.drawable.ic_tool_polyline
         Tool.BRUSH -> R.drawable.ic_tool_brush
         Tool.WATERCOLOR -> R.drawable.ic_tool_watercolor
         Tool.MARKER -> R.drawable.ic_tool_marker
