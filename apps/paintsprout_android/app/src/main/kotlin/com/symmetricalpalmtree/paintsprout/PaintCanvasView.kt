@@ -103,6 +103,7 @@ class PaintCanvasView @JvmOverloads constructor(
                 if (old == Tool.LINE && hasPendingLine) commitPendingLine()
                 if (old == Tool.ARC && hasPendingArc) commitPendingArc()
                 if (old == Tool.POLYLINE && hasPendingPolyline) commitPendingPolyline()
+                if (old == Tool.POLYARC && hasPendingPolyarc) commitPendingPolyarc()
             }
         }
 
@@ -379,14 +380,54 @@ class PaintCanvasView @JvmOverloads constructor(
     /** Fired when the editable polyline appears (true) or is committed/cleared (false). */
     var onPolylineChanged: ((Boolean) -> Unit)? = null
 
-    /** Whether any editable shape (line, arc, polyline) is pending — for the Done button. */
-    val hasPendingShape: Boolean get() = hasPendingLine || hasPendingArc || hasPendingPolyline
+    // --- Polyarc tool -------------------------------------------------------
+    // A polyline whose every segment is a pullable quadratic arc (see [[arc]] and
+    // [[polyline]]). Built like the polyline — tap out anchors — but each segment
+    // carries an on-curve middle handle ([paMids]) that can be dragged (even while
+    // still building) to bend that segment into a lopsided arc. A stylus double-tap
+    // finishes; a final tap on the first anchor closes the loop (the closing
+    // segment gets its own middle handle). Once finished the anchors, the middles,
+    // the body and a rotate handle are all grabbable. On commit the whole run is
+    // densely sampled along each arc into one ordinary [StrokeOp]. View (= buffer) px.
+    //
+    // Invariant: while open, paMids.size == max(0, paAnchors.size - 1); when closed,
+    // paMids.size == paAnchors.size (the last mid is the closing segment). paMids[i]
+    // is the on-curve middle of the segment from paAnchors[i] to paAnchors[i+1]
+    // (wrapping to paAnchors[0] for the closing segment).
+    private val paAnchors = ArrayList<PointF>()
+    private val paMids = ArrayList<PointF>()
+    private var paClosed = false
+    private var paFinished = false
+    private var paMode = PaDrag.NONE
+    private var paDragIndex = -1
+    private var paPointerId = INVALID_POINTER
+    private val paDragLast = PointF()
+    private val paRotAnchors0 = ArrayList<PointF>()
+    private val paRotMids0 = ArrayList<PointF>()
+    private val paRotCenter = PointF()
+    private var paRotStartAngle = 0f
+    private var paLastTapTime = 0L
+    private val paLastTapPos = PointF()
+    private var paHoverPt: PointF? = null
+
+    private enum class PaDrag { NONE, ANCHOR, MID, BODY, ROTATE }
+
+    /** Whether an editable polyarc is placed (being built or edited) but unbaked. */
+    val hasPendingPolyarc: Boolean get() = paAnchors.isNotEmpty()
+
+    /** Fired when the editable polyarc appears (true) or is committed/cleared (false). */
+    var onPolyarcChanged: ((Boolean) -> Unit)? = null
+
+    /** Whether any editable shape (line, arc, polyline, polyarc) is pending — for the Done button. */
+    val hasPendingShape: Boolean
+        get() = hasPendingLine || hasPendingArc || hasPendingPolyline || hasPendingPolyarc
 
     /** Bakes whichever editable shape is pending (only ever one at a time). */
     fun commitPendingShape() {
         if (hasPendingLine) commitPendingLine()
         if (hasPendingArc) commitPendingArc()
         if (hasPendingPolyline) commitPendingPolyline()
+        if (hasPendingPolyarc) commitPendingPolyarc()
     }
 
     // Marching-ants animation.
@@ -666,6 +707,7 @@ class PaintCanvasView @JvmOverloads constructor(
         drawPendingLine(canvas)
         drawPendingArc(canvas)
         drawPendingPolyline(canvas)
+        drawPendingPolyarc(canvas)
         drawSelectionOverlay(canvas)
     }
 
@@ -791,6 +833,67 @@ class PaintCanvasView @JvmOverloads constructor(
             canvas.drawCircle(rot.x, rot.y, 7f, black)
         }
         for (a in polyPts) {
+            canvas.drawRect(a.x - 6, a.y - 6, a.x + 6, a.y + 6, fill)
+            canvas.drawRect(a.x - 6, a.y - 6, a.x + 6, a.y + 6, black)
+        }
+    }
+
+    /** Previews the editable polyarc (as it will bake) plus its handles. */
+    private fun drawPendingPolyarc(canvas: Canvas) {
+        if (paAnchors.isEmpty()) return
+        StrokeRenderer.paintStroke(canvas, buildPolyarcStroke(), surface)
+        if (!paFinished) paHoverPt?.let { drawPolyarcRubberBand(canvas, paAnchors.last(), it) }
+        drawPolyarcHandles(canvas)
+    }
+
+    /** Dashed preview of the next segment; rings the first anchor if it'd close. */
+    private fun drawPolyarcRubberBand(canvas: Canvas, from: PointF, to: PointF) {
+        val dash = DashPathEffect(floatArrayOf(10f, 8f), 0f)
+        val white = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 2.6f; pathEffect = dash
+        }
+        val black = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xAA000000.toInt(); style = Paint.Style.STROKE; strokeWidth = 1.4f; pathEffect = dash
+        }
+        canvas.drawLine(from.x, from.y, to.x, to.y, white)
+        canvas.drawLine(from.x, from.y, to.x, to.y, black)
+        if (paAnchors.size >= 3) {
+            val first = paAnchors.first()
+            if (hypot(to.x - first.x, to.y - first.y) <= POLY_CLOSE_DIST) {
+                canvas.drawCircle(first.x, first.y, 11f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = 0xFF3B82F6.toInt(); style = Paint.Style.STROKE; strokeWidth = 2.4f
+                })
+            }
+        }
+    }
+
+    /** Square handles at anchors, diamond handles at the arc middles, rotate stalk when finished. */
+    private fun drawPolyarcHandles(canvas: Canvas) {
+        val white = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 2.6f
+        }
+        val black = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xDD000000.toInt(); style = Paint.Style.STROKE; strokeWidth = 1.4f
+        }
+        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+        if (paFinished) {
+            val c = polyarcCenter()
+            val rot = polyarcRotateHandle()
+            canvas.drawLine(c.x, c.y, rot.x, rot.y, white)
+            canvas.drawLine(c.x, c.y, rot.x, rot.y, black)
+            canvas.drawCircle(rot.x, rot.y, 7f, fill)
+            canvas.drawCircle(rot.x, rot.y, 7f, black)
+        }
+        // Diamonds first so the square vertex handles sit on top where they meet.
+        for (m in paMids) {
+            val diamond = Path().apply {
+                moveTo(m.x, m.y - 7f); lineTo(m.x + 7f, m.y)
+                lineTo(m.x, m.y + 7f); lineTo(m.x - 7f, m.y); close()
+            }
+            canvas.drawPath(diamond, fill)
+            canvas.drawPath(diamond, black)
+        }
+        for (a in paAnchors) {
             canvas.drawRect(a.x - 6, a.y - 6, a.x + 6, a.y + 6, fill)
             canvas.drawRect(a.x - 6, a.y - 6, a.x + 6, a.y + 6, black)
         }
@@ -1012,6 +1115,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     handlePolyDown(event, actionIndex)
                     return true
                 }
+                if (tool == Tool.POLYARC) {
+                    handlePolyarcDown(event, actionIndex)
+                    return true
+                }
                 if (active != null) return true
                 activePointerId = event.getPointerId(actionIndex)
                 pressureMax = event.device
@@ -1046,6 +1153,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     handlePolyMove(event)
                     return true
                 }
+                if (tool == Tool.POLYARC) {
+                    handlePolyarcMove(event)
+                    return true
+                }
                 val stroke = active ?: return true
                 val pi = event.findPointerIndex(activePointerId)
                 if (pi < 0) return true
@@ -1074,6 +1185,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     handlePolyUp(event, actionIndex)
                     return true
                 }
+                if (tool == Tool.POLYARC) {
+                    handlePolyarcUp(event, actionIndex)
+                    return true
+                }
                 val stroke = active
                 if (stroke != null && event.getPointerId(actionIndex) == activePointerId) {
                     unbaked.add(stroke)
@@ -1092,24 +1207,30 @@ class PaintCanvasView @JvmOverloads constructor(
     }
 
     /**
-     * Stylus hover: while tapping out a polyline, track the hovering pen so the
-     * next segment can be previewed as a rubber band from the last anchor. Only
-     * meaningful for an unfinished polyline; ignored otherwise.
+     * Stylus hover: while tapping out a polyline / polyarc, track the hovering pen
+     * so the next segment can be previewed as a rubber band from the last anchor.
+     * Only meaningful for an unfinished run of the active tool; ignored otherwise.
      */
     override fun onHoverEvent(event: MotionEvent): Boolean {
-        if (tool != Tool.POLYLINE || polyFinished || polyPts.isEmpty() ||
-            !isStylus(event.getToolType(event.actionIndex))
-        ) {
+        val building = when (tool) {
+            Tool.POLYLINE -> !polyFinished && polyPts.isNotEmpty()
+            Tool.POLYARC -> !paFinished && paAnchors.isNotEmpty()
+            else -> false
+        }
+        if (!building || !isStylus(event.getToolType(event.actionIndex))) {
             if (polyHoverPt != null) { polyHoverPt = null; invalidate() }
+            if (paHoverPt != null) { paHoverPt = null; invalidate() }
             return super.onHoverEvent(event)
         }
         when (event.actionMasked) {
             MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
-                polyHoverPt = PointF(event.x, event.y)
+                if (tool == Tool.POLYLINE) polyHoverPt = PointF(event.x, event.y)
+                else paHoverPt = PointF(event.x, event.y)
                 invalidate()
             }
             MotionEvent.ACTION_HOVER_EXIT -> {
                 polyHoverPt = null
+                paHoverPt = null
                 invalidate()
             }
         }
@@ -1831,6 +1952,292 @@ class PaintCanvasView @JvmOverloads constructor(
         polyLastTapTime = 0L
     }
 
+    // --- Polyarc-tool gestures ----------------------------------------------
+
+    private fun handlePolyarcDown(e: MotionEvent, ai: Int) {
+        val p = PointF(e.getX(ai), e.getY(ai))
+        val now = e.eventTime
+        if (paFinished) {
+            // Editing a finished run: grab a handle, else bake it and start anew.
+            val mode = hitPolyarc(p)
+            if (mode != null) {
+                paPointerId = e.getPointerId(ai)
+                paMode = mode
+                paDragLast.set(p)
+                if (mode == PaDrag.ROTATE) beginPolyarcRotate(p)
+                return
+            }
+            commitPendingPolyarc() // clears state; fall through to a fresh run.
+        }
+        if (paAnchors.isEmpty()) {
+            plantPolyarcAnchor(p, e.getPointerId(ai), now, first = true)
+            return
+        }
+        // Second tap of a finishing double-tap? (near the last anchor, in time.)
+        val dt = now - paLastTapTime
+        if (dt in 1..POLY_DOUBLE_MS &&
+            hypot(p.x - paLastTapPos.x, p.y - paLastTapPos.y) <= POLY_TAP_SLOP
+        ) {
+            finishPolyarc()
+            return
+        }
+        // Grab a segment's middle handle to bend it live (before placing the next).
+        val mid = hitPolyarcMid(p)
+        if (mid >= 0) {
+            paPointerId = e.getPointerId(ai)
+            paMode = PaDrag.MID
+            paDragIndex = mid
+            paDragLast.set(p)
+            return
+        }
+        plantPolyarcAnchor(p, e.getPointerId(ai), now, first = false)
+    }
+
+    /** Adds an anchor at [p] plus its straight incoming segment's middle handle. */
+    private fun plantPolyarcAnchor(p: PointF, pointerId: Int, now: Long, first: Boolean) {
+        if (first) {
+            paFinished = false
+            paClosed = false
+            onPolyarcChanged?.invoke(true)
+        }
+        paAnchors.add(PointF(p.x, p.y))
+        if (paAnchors.size >= 2) {
+            val a = paAnchors[paAnchors.size - 2]
+            val b = paAnchors[paAnchors.size - 1]
+            paMids.add(PointF((a.x + b.x) / 2f, (a.y + b.y) / 2f)) // straight to start
+        }
+        paPointerId = pointerId
+        paMode = PaDrag.ANCHOR
+        paDragIndex = paAnchors.size - 1
+        paDragLast.set(p)
+        paLastTapTime = now
+        paLastTapPos.set(p)
+        paHoverPt = null
+        invalidate()
+    }
+
+    private fun handlePolyarcMove(e: MotionEvent) {
+        if (paPointerId == INVALID_POINTER) return
+        val pi = e.findPointerIndex(paPointerId)
+        if (pi < 0) return
+        val p = PointF(e.getX(pi), e.getY(pi))
+        when (paMode) {
+            PaDrag.ANCHOR -> {
+                val idx = paDragIndex
+                val a = paAnchors.getOrNull(idx) ?: return
+                a.set(p.x, p.y)
+                // While still placing the newest anchor, keep its straight incoming
+                // segment's middle pinned to the chord midpoint (bend it afterward).
+                if (!paFinished && idx == paAnchors.size - 1 && idx >= 1 && paMids.size >= idx) {
+                    val prev = paAnchors[idx - 1]
+                    paMids[idx - 1].set((prev.x + a.x) / 2f, (prev.y + a.y) / 2f)
+                }
+                invalidate()
+            }
+            PaDrag.MID -> {
+                paMids.getOrNull(paDragIndex)?.set(p.x, p.y)
+                invalidate()
+            }
+            PaDrag.BODY -> {
+                val dx = p.x - paDragLast.x
+                val dy = p.y - paDragLast.y
+                for (a in paAnchors) a.offset(dx, dy)
+                for (m in paMids) m.offset(dx, dy)
+                paDragLast.set(p)
+                invalidate()
+            }
+            PaDrag.ROTATE -> {
+                val ang = atan2(p.y - paRotCenter.y, p.x - paRotCenter.x)
+                val d = ang - paRotStartAngle
+                for (i in paAnchors.indices) paAnchors[i].set(rotatePoint(paRotAnchors0[i], paRotCenter, d))
+                for (i in paMids.indices) paMids[i].set(rotatePoint(paRotMids0[i], paRotCenter, d))
+                invalidate()
+            }
+            PaDrag.NONE -> {}
+        }
+    }
+
+    private fun handlePolyarcUp(e: MotionEvent, ai: Int) {
+        if (e.getPointerId(ai) != paPointerId) return
+        paPointerId = INVALID_POINTER
+        // While building, remember where the newest anchor settled so the finishing
+        // double-tap is measured against its final position.
+        if (!paFinished && paMode == PaDrag.ANCHOR) {
+            paAnchors.lastOrNull()?.let { paLastTapPos.set(it.x, it.y) }
+        }
+        paMode = PaDrag.NONE
+        paDragIndex = -1
+        invalidate()
+    }
+
+    /** Captures the anchors + middles + centre for a rotate drag. */
+    private fun beginPolyarcRotate(p: PointF) {
+        val c = polyarcCenter()
+        paRotCenter.set(c)
+        paRotAnchors0.clear()
+        for (a in paAnchors) paRotAnchors0.add(PointF(a.x, a.y))
+        paRotMids0.clear()
+        for (m in paMids) paRotMids0.add(PointF(m.x, m.y))
+        paRotStartAngle = atan2(p.y - c.y, p.x - c.x)
+    }
+
+    /**
+     * Ends anchor placement and enters edit mode. Closes the loop if the final
+     * anchor landed on the first (adding a straight closing segment); drops a
+     * degenerate (< 2-anchor) run.
+     */
+    private fun finishPolyarc() {
+        paPointerId = INVALID_POINTER
+        paMode = PaDrag.NONE
+        paHoverPt = null
+        if (paAnchors.size >= 3) {
+            val first = paAnchors.first()
+            val last = paAnchors.last()
+            if (hypot(last.x - first.x, last.y - first.y) <= POLY_CLOSE_DIST) {
+                paAnchors.removeAt(paAnchors.size - 1)                    // drop close tap
+                if (paMids.isNotEmpty()) paMids.removeAt(paMids.size - 1) // and its segment
+                if (paAnchors.size >= 3) {
+                    paClosed = true
+                    val a = paAnchors.last()
+                    val b = paAnchors.first()
+                    paMids.add(PointF((a.x + b.x) / 2f, (a.y + b.y) / 2f)) // straight closing seg
+                }
+            }
+        }
+        if (paAnchors.size < 2) {
+            discardPendingPolyarc()
+            return
+        }
+        paFinished = true
+        invalidate()
+    }
+
+    /** Which part of the finished polyarc [p] grabs, or null if it misses. */
+    private fun hitPolyarc(p: PointF): PaDrag? {
+        if (paAnchors.isEmpty()) return null
+        val rot = polyarcRotateHandle()
+        if (hypot(p.x - rot.x, p.y - rot.y) <= HANDLE_HIT) return PaDrag.ROTATE
+        for (i in paAnchors.indices) {
+            val a = paAnchors[i]
+            if (hypot(p.x - a.x, p.y - a.y) <= HANDLE_HIT) {
+                paDragIndex = i
+                return PaDrag.ANCHOR
+            }
+        }
+        if (hitPolyarcMid(p) >= 0) {
+            paDragIndex = hitPolyarcMid(p)
+            return PaDrag.MID
+        }
+        val bodyHit = max(BODY_HIT, sizeFor(Tool.POLYARC) / 2f + 8f)
+        val n = paAnchors.size
+        val segCount = if (paClosed) n else n - 1
+        for (s in 0 until segCount) {
+            val a = paAnchors[s]
+            val b = paAnchors[(s + 1) % n]
+            val m = paMids.getOrNull(s) ?: continue
+            val pts = arcPoints(a, b, m)
+            for (i in 1 until pts.size) {
+                if (distToSegment(p, pts[i - 1], pts[i]) <= bodyHit) return PaDrag.BODY
+            }
+        }
+        return null
+    }
+
+    /** Index of the middle handle [p] grabs (building or editing), or -1. */
+    private fun hitPolyarcMid(p: PointF): Int {
+        for (i in paMids.indices) {
+            val m = paMids[i]
+            if (hypot(p.x - m.x, p.y - m.y) <= HANDLE_HIT) return i
+        }
+        return -1
+    }
+
+    /** Bounding box over the anchors and the (possibly bent-out) middles. */
+    private fun polyarcBounds(): RectF {
+        val f = paAnchors.first()
+        val r = RectF(f.x, f.y, f.x, f.y)
+        for (a in paAnchors) {
+            r.left = min(r.left, a.x); r.top = min(r.top, a.y)
+            r.right = max(r.right, a.x); r.bottom = max(r.bottom, a.y)
+        }
+        for (m in paMids) {
+            r.left = min(r.left, m.x); r.top = min(r.top, m.y)
+            r.right = max(r.right, m.x); r.bottom = max(r.bottom, m.y)
+        }
+        return r
+    }
+
+    private fun polyarcCenter(): PointF {
+        val b = polyarcBounds()
+        return PointF((b.left + b.right) / 2f, (b.top + b.bottom) / 2f)
+    }
+
+    /** Rotate handle: centred above the run's bounding box. */
+    private fun polyarcRotateHandle(): PointF {
+        val b = polyarcBounds()
+        return PointF((b.left + b.right) / 2f, b.top - LINE_ROT_OFFSET)
+    }
+
+    /** Dense samples along every arc segment (plus the closing one), for baking/preview. */
+    private fun polyarcSamples(): List<PointF> {
+        val n = paAnchors.size
+        if (n == 0) return emptyList()
+        if (n == 1) return listOf(PointF(paAnchors[0].x, paAnchors[0].y))
+        val out = ArrayList<PointF>()
+        out.add(PointF(paAnchors[0].x, paAnchors[0].y))
+        val segCount = if (paClosed) n else n - 1
+        for (s in 0 until segCount) {
+            val a = paAnchors[s]
+            val b = paAnchors[(s + 1) % n]
+            val m = paMids.getOrNull(s) ?: PointF((a.x + b.x) / 2f, (a.y + b.y) / 2f)
+            val pts = arcPoints(a, b, m)
+            for (i in 1 until pts.size) out.add(pts[i]) // skip the shared start point
+        }
+        return out
+    }
+
+    /** A densely-sampled [Stroke] tracing the current polyarc. */
+    private fun buildPolyarcStroke(): Stroke {
+        val width = resolveWidth(Tool.POLYARC, sizeFor(Tool.POLYARC), 1f, 0f)
+        return Stroke(Tool.POLYARC, strokeColor, seed = Random.nextInt()).apply {
+            for (p in polyarcSamples()) add(StrokePoint(Vec2(p.x, p.y), width))
+        }
+    }
+
+    /** Bakes the pending polyarc as a [StrokeOp] (or drops it if degenerate). */
+    fun commitPendingPolyarc() {
+        if (paAnchors.size < 2) {
+            discardPendingPolyarc()
+            return
+        }
+        val stroke = buildPolyarcStroke()
+        resetPolyarcState()
+        onPolyarcChanged?.invoke(false)
+        invalidate()
+        scope.launch { applyCommittedOp(StrokeOp(stroke)) }
+    }
+
+    private fun discardPendingPolyarc() {
+        val had = paAnchors.isNotEmpty()
+        resetPolyarcState()
+        if (had) onPolyarcChanged?.invoke(false)
+        invalidate()
+    }
+
+    private fun resetPolyarcState() {
+        paAnchors.clear()
+        paMids.clear()
+        paRotAnchors0.clear()
+        paRotMids0.clear()
+        paClosed = false
+        paFinished = false
+        paMode = PaDrag.NONE
+        paDragIndex = -1
+        paPointerId = INVALID_POINTER
+        paHoverPt = null
+        paLastTapTime = 0L
+    }
+
     private fun sample(e: MotionEvent, pi: Int): StrokePoint =
         buildPoint(
             e.getX(pi), e.getY(pi),
@@ -2392,6 +2799,7 @@ class PaintCanvasView @JvmOverloads constructor(
         discardPendingLine()
         discardPendingArc()
         discardPendingPolyline()
+        discardPendingPolyarc()
         selRect.setEmpty()
         antsAnimator.cancel()
     }
@@ -2592,6 +3000,14 @@ class PaintCanvasView @JvmOverloads constructor(
                 save()
                 scale(SUPER_SAMPLE, SUPER_SAMPLE)
                 StrokeRenderer.paintStroke(this, buildPolyStroke(), surface = this@PaintCanvasView.surface)
+                restore()
+            }
+        }
+        if (paAnchors.size >= 2) {
+            Canvas(paintCopy).apply {
+                save()
+                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                StrokeRenderer.paintStroke(this, buildPolyarcStroke(), surface = this@PaintCanvasView.surface)
                 restore()
             }
         }
