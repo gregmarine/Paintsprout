@@ -26,6 +26,7 @@ import com.google.android.material.slider.Slider
 import com.google.android.material.snackbar.Snackbar
 import com.symmetricalpalmtree.paintsprout.databinding.ActivityMainBinding
 import com.symmetricalpalmtree.paintsprout.paint.AVAILABLE_SURFACES
+import com.symmetricalpalmtree.paintsprout.paint.Calibration
 import com.symmetricalpalmtree.paintsprout.paint.CanvasParams
 import com.symmetricalpalmtree.paintsprout.paint.ChalkboardParams
 import com.symmetricalpalmtree.paintsprout.paint.ConcreteParams
@@ -74,14 +75,19 @@ class MainActivity : AppCompatActivity() {
     private var wandEdgeSensitivity = 0.5f
     private var wandGap = 3
 
-    // Each tool remembers its own base size.
-    private val sizes = Tool.values().associateWith { it.defaultSize }.toMutableMap()
+    // Each tool remembers its own base size, in millimetres. Converted to pixels
+    // at the current PPI when pushed to the canvas, so a size is a real physical
+    // width on any calibrated screen.
+    private val sizes = Tool.values().associateWith { it.defaultSizeMm }.toMutableMap()
 
     private val calibrationLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK) {
                 val ppi = result.data?.getFloatExtra(CalibrationActivity.EXTRA_PPI, 0f) ?: 0f
                 if (ppi > 0f) {
+                    // Sizes are stored in mm; re-push at the new PPI so brush widths
+                    // stay their real physical size.
+                    applySizeToCanvas()
                     Snackbar.make(
                         binding.root, "Screen calibrated: ${ppi.roundToInt()} PPI",
                         Snackbar.LENGTH_SHORT,
@@ -114,7 +120,7 @@ class MainActivity : AppCompatActivity() {
 
         binding.canvas.tool = tool
         binding.canvas.strokeColor = color
-        binding.canvas.baseSize = sizes[tool]
+        applySizeToCanvas()
         binding.canvas.setInitialSurface(
             currentSurface(), plainColor, canvasParams, watercolorParams, woodParams, stoneParams,
             concreteParams, metalParams, chalkboardParams,
@@ -212,7 +218,7 @@ class MainActivity : AppCompatActivity() {
         colorBtn.setImageDrawable(swatchDrawable(color))
 
         sizeBtn.visibility = if (tool == Tool.WAND) View.GONE else View.VISIBLE
-        sizeBtn.text = (sizes[tool] ?: tool.defaultSize).roundToInt().toString()
+        sizeBtn.text = formatMm(sizes[tool] ?: tool.defaultSizeMm)
         toleranceBtn.visibility = if (tool == Tool.WAND) View.VISIBLE else View.GONE
         toleranceBtn.text = "${(wandTolerance * 100).roundToInt()}%"
 
@@ -235,9 +241,23 @@ class MainActivity : AppCompatActivity() {
     private fun onToolChanged(t: Tool) {
         tool = t
         binding.canvas.tool = t
-        binding.canvas.baseSize = sizes[t]
+        applySizeToCanvas()
         updateRail()
     }
+
+    /** Pushes the current tool's stored mm size to the canvas as pixels at this PPI. */
+    private fun applySizeToCanvas() {
+        val mm = sizes[tool] ?: tool.defaultSizeMm
+        binding.canvas.baseSize = Calibration.mmToPx(mm, Calibration.effectivePpi(this))
+    }
+
+    /** Compact mm label for the rail button: "0.5", "4", "12.5". */
+    private fun formatMm(mm: Float): String =
+        if (mm >= 10f || mm == mm.roundToInt().toFloat()) {
+            mm.roundToInt().toString()
+        } else {
+            String.format("%.1f", mm)
+        }
 
     private fun onColorChanged(c: Int) {
         color = c
@@ -253,28 +273,35 @@ class MainActivity : AppCompatActivity() {
     // --- Pickers ------------------------------------------------------------
 
     private fun pickSize() {
-        var working = sizes[tool] ?: tool.defaultSize
+        var working = (sizes[tool] ?: tool.defaultSizeMm).coerceIn(SIZE_MIN_MM, SIZE_MAX_MM)
+        val ppi = Calibration.effectivePpi(this)
         val label = TextView(this).apply {
-            text = working.roundToInt().toString()
             textSize = 28f
             gravity = Gravity.CENTER
         }
+        val pxHint = hint("")
+        fun refresh() {
+            label.text = String.format("%.1f mm", working)
+            pxHint.text = "≈ ${Calibration.mmToPx(working, ppi).roundToInt()} px on screen" +
+                if (Calibration.isCalibrated(this)) "" else "  ·  screen not calibrated"
+        }
+        refresh()
         val slider = Slider(this).apply {
-            valueFrom = 1f
-            valueTo = 80f
-            value = working.coerceIn(1f, 80f)
+            valueFrom = SIZE_MIN_MM
+            valueTo = SIZE_MAX_MM
+            value = working
             addOnChangeListener { _, v, _ ->
                 working = v
-                label.text = v.roundToInt().toString()
+                refresh()
             }
         }
-        val content = vbox(label, slider)
+        val content = vbox(label, slider, pxHint)
         MaterialAlertDialogBuilder(this)
-            .setTitle("${tool.label} size")
+            .setTitle("${tool.label} size (mm)")
             .setView(content)
             .setPositiveButton("Done") { _, _ ->
                 sizes[tool] = working
-                binding.canvas.baseSize = working
+                applySizeToCanvas()
                 updateRail()
             }
             .show()
@@ -1020,6 +1047,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private companion object {
+        // Brush/tool size range in millimetres (physical mark width).
+        const val SIZE_MIN_MM = 0.1f
+        const val SIZE_MAX_MM = 40f
+
         // Material palette, matching the Flutter reference's swatch list.
         val SWATCHES = intArrayOf(
             0xFF000000.toInt(), 0xFFFFFFFF.toInt(), 0xFF9E9E9E.toInt(),

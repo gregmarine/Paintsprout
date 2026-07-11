@@ -40,7 +40,8 @@ enum class Tool {
         get() = this != PEN && this != ERASER && this != LINE && this != ARC &&
             this != POLYLINE && this != POLYARC
 
-    /** Sensible starting base size (logical px) per tool. */
+    /** Sensible starting base size (logical px) per tool. Fallback only; the UI
+     *  drives size in millimetres (see [defaultSizeMm]). */
     val defaultSize: Float
         get() = when (this) {
             PENCIL -> 1f
@@ -54,6 +55,27 @@ enum class Tool {
             MARKER -> 4f
             SPRAY -> 28f
             ERASER -> 24f
+            WAND -> 1f
+        }
+
+    /**
+     * Sensible starting size in millimetres — the physical width of the mark on a
+     * calibrated screen. The UI stores sizes in mm and converts to pixels at the
+     * current PPI, so a given size prints the same real size on any device.
+     */
+    val defaultSizeMm: Float
+        get() = when (this) {
+            PENCIL -> 0.3f
+            PEN -> 0.5f
+            LINE -> 0.5f
+            ARC -> 0.5f
+            POLYLINE -> 0.5f
+            POLYARC -> 0.5f
+            BRUSH -> 4f
+            WATERCOLOR -> 6f
+            MARKER -> 2f
+            SPRAY -> 8f
+            ERASER -> 6f
             WAND -> 1f
         }
 }
