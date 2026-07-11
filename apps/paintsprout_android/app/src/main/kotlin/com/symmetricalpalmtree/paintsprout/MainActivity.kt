@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.content.Intent
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.util.TypedValue
@@ -14,6 +15,7 @@ import android.widget.GridLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.res.ResourcesCompat
 import androidx.core.view.WindowCompat
@@ -74,6 +76,19 @@ class MainActivity : AppCompatActivity() {
 
     // Each tool remembers its own base size.
     private val sizes = Tool.values().associateWith { it.defaultSize }.toMutableMap()
+
+    private val calibrationLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == RESULT_OK) {
+                val ppi = result.data?.getFloatExtra(CalibrationActivity.EXTRA_PPI, 0f) ?: 0f
+                if (ppi > 0f) {
+                    Snackbar.make(
+                        binding.root, "Screen calibrated: ${ppi.roundToInt()} PPI",
+                        Snackbar.LENGTH_SHORT,
+                    ).show()
+                }
+            }
+        }
 
     // Rail views kept for state updates.
     private val toolButtons = mutableMapOf<Tool, ImageButton>()
@@ -185,6 +200,7 @@ class MainActivity : AppCompatActivity() {
 
         rail.addView(divider())
         rail.addView(iconButton(R.drawable.ic_save, "Save PNG") { save() })
+        rail.addView(iconButton(R.drawable.ic_calibrate, "Calibrate screen") { openCalibration() })
         rail.addView(iconButton(R.drawable.ic_clear, "Clear") { confirmClear() })
         rail.addView(iconButton(R.drawable.ic_hide, "Hide toolbar") { setRailVisible(false) })
     }
@@ -856,6 +872,10 @@ class MainActivity : AppCompatActivity() {
             )
             Snackbar.make(binding.root, msg, Snackbar.LENGTH_SHORT).show()
         }
+    }
+
+    private fun openCalibration() {
+        calibrationLauncher.launch(Intent(this, CalibrationActivity::class.java))
     }
 
     private fun applyWandSettings() {
