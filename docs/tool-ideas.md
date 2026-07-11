@@ -37,6 +37,7 @@ physically rotate the tablet instead.
 - ✅ **Color:** HSV wheel + swatches
 - ✅ **Editable shape tools:** line, arc, polyline, polyarc (handle-edit before bake)
 - ✅ **Export:** PNG to device gallery
+- ✅ **True-size (1:1) output:** screen calibration to real PPI (physical-reference match), brush/tool sizes in millimetres, and DPI-stamped PNG that prints at the exact on-screen physical size — verified on paper
 - ✅ **Input:** pressure + tilt, palm rejection, stylus-only
 
 ---
@@ -161,6 +162,7 @@ Biggest structural gap. Two layers today (surface, paint); paint layer is flat r
 | ⬜ | Multiple documents / gallery browser | |
 | ⬜ | Import an image | As a layer or reference |
 | ⬜ | Reference panel | Floating window with a source photo |
+| ✅ | Print-accurate export (1:1) | Tool sizes in mm + DPI-stamped PNG (pHYs) → prints at the exact on-screen physical size. Needs a calibrated screen |
 | ⬜ | Canvas presets | Real dimensions + DPI |
 | ⬜ | Crop / resize / trim / straighten | |
 | ⬜ | Export formats | JPG/WebP, layered ORA/PSD, SVG for vector shapes |
@@ -232,6 +234,7 @@ Where Paintsprout could be genuinely unlike anything else — the hard parts are
 ## Input & device
 | Status | Item | Notes |
 |--------|------|-------|
+| ✅ | Screen calibration | Match a physical reference (ID card / business / index card / ruler) with the stylus to store true PPI per device; underpins 1:1 print |
 | ⬜ | Stylus barrel-button mapping | Movink has buttons we're not using |
 | ⬜ | Eraser end of stylus | Flips to eraser tool automatically |
 | ⬜ | Speed → width tapering | For ink strokes |
