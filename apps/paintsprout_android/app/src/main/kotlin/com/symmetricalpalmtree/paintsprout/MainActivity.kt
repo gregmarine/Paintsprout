@@ -28,6 +28,7 @@ import com.symmetricalpalmtree.paintsprout.databinding.ActivityMainBinding
 import com.symmetricalpalmtree.paintsprout.paint.AVAILABLE_SURFACES
 import com.symmetricalpalmtree.paintsprout.paint.Calibration
 import com.symmetricalpalmtree.paintsprout.paint.CanvasParams
+import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.ChalkboardParams
 import com.symmetricalpalmtree.paintsprout.paint.ConcreteParams
 import com.symmetricalpalmtree.paintsprout.paint.MetalParams
@@ -57,6 +58,7 @@ class MainActivity : AppCompatActivity() {
     private var color = Color.BLACK
     private var surfaceIndex = AVAILABLE_SURFACES.indexOf(SurfaceKind.PAPER).coerceAtLeast(0)
     private var plainColor = Color.WHITE
+    private var canvasSize: CanvasSize = CanvasSize.FullScreen
     private var canvasParams = CanvasParams()
     private var watercolorParams = WatercolorParams()
     private var woodParams = WoodParams()
@@ -206,6 +208,7 @@ class MainActivity : AppCompatActivity() {
 
         rail.addView(divider())
         rail.addView(iconButton(R.drawable.ic_save, "Save PNG") { save() })
+        rail.addView(iconButton(R.drawable.ic_canvas_size, "Canvas size") { pickCanvasSize() })
         rail.addView(iconButton(R.drawable.ic_calibrate, "Calibrate screen") { openCalibration() })
         rail.addView(iconButton(R.drawable.ic_clear, "Clear") { confirmClear() })
         rail.addView(iconButton(R.drawable.ic_hide, "Hide toolbar") { setRailVisible(false) })
@@ -904,6 +907,87 @@ class MainActivity : AppCompatActivity() {
     private fun openCalibration() {
         calibrationLauncher.launch(Intent(this, CalibrationActivity::class.java))
     }
+
+    // --- Canvas size --------------------------------------------------------
+
+    /** Full screen + the print presets that fit the calibrated screen + Custom. */
+    private fun pickCanvasSize() {
+        val ppi = Calibration.effectivePpi(this)
+        val vw = binding.canvas.width
+        val vh = binding.canvas.height
+        fun fits(p: CanvasSize.Print) =
+            Calibration.inToPx(p.wIn, ppi) <= vw && Calibration.inToPx(p.hIn, ppi) <= vh
+
+        val options = buildList<CanvasSize> {
+            add(CanvasSize.FullScreen)
+            addAll(CanvasSize.PRESETS.filter { fits(it) })
+        }
+        val labels = (options.map { it.label } + "Custom…").toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Canvas size")
+            .setSingleChoiceItems(labels, options.indexOf(canvasSize)) { dialog, which ->
+                dialog.dismiss()
+                if (which == options.size) pickCustomCanvasSize(ppi, vw, vh)
+                else chooseCanvasSize(options[which])
+            }
+            .show()
+    }
+
+    /** Applies [size], confirming first if it would clear existing work. */
+    private fun chooseCanvasSize(size: CanvasSize) {
+        if (size == canvasSize) return
+        val apply = {
+            canvasSize = size
+            binding.canvas.applyCanvasSize(size)
+            updateRail()
+        }
+        if (binding.canvas.canUndo) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("New canvas size?")
+                .setMessage("Changing the size starts a fresh sheet — your current drawing will be cleared.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("New sheet") { _, _ -> apply() }
+                .show()
+        } else {
+            apply()
+        }
+    }
+
+    private fun pickCustomCanvasSize(ppi: Float, vw: Int, vh: Int) {
+        val maxW = Calibration.pxToIn(vw.toFloat(), ppi)
+        val maxH = Calibration.pxToIn(vh.toFloat(), ppi)
+        var w = ((canvasSize as? CanvasSize.Print)?.wIn ?: 6f).coerceIn(1f, maxW)
+        var h = ((canvasSize as? CanvasSize.Print)?.hIn ?: 4f).coerceIn(1f, maxH)
+        val label = TextView(this).apply { textSize = 22f; gravity = Gravity.CENTER }
+        fun refresh() { label.text = String.format("%.1f × %.1f in", w, h) }
+        refresh()
+        val wSlider = Slider(this).apply {
+            valueFrom = 1f; valueTo = maxW; value = w
+            addOnChangeListener { _, v, _ -> w = v; refresh() }
+        }
+        val hSlider = Slider(this).apply {
+            valueFrom = 1f; valueTo = maxH; value = h
+            addOnChangeListener { _, v, _ -> h = v; refresh() }
+        }
+        val content = vbox(
+            label,
+            sliderRow("Width", wSlider),
+            sliderRow("Height", hSlider),
+            hint("Capped to what fits the screen (${String.format("%.1f × %.1f in", maxW, maxH)})."),
+        )
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Custom canvas")
+            .setView(content)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Use") { _, _ ->
+                val rw = round1(w)
+                val rh = round1(h)
+                chooseCanvasSize(CanvasSize.Print(rw, rh, String.format("%.1f × %.1f in", rw, rh)))
+            }
+            .show()
+    }
+
+    private fun round1(x: Float): Float = (x * 10f).roundToInt() / 10f
 
     private fun applyWandSettings() {
         binding.canvas.wandTolerance = wandTolerance

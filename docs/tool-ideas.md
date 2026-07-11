@@ -37,7 +37,7 @@ physically rotate the tablet instead.
 - ✅ **Color:** HSV wheel + swatches
 - ✅ **Editable shape tools:** line, arc, polyline, polyarc (handle-edit before bake)
 - ✅ **Export:** PNG to device gallery
-- ✅ **True-size (1:1) output:** screen calibration to real PPI (physical-reference match), brush/tool sizes in millimetres, and DPI-stamped PNG that prints at the exact on-screen physical size — verified on paper
+- ✅ **True-size (1:1) output:** screen calibration to real PPI (physical-reference match), brush/tool sizes in millimetres, real-size canvas presets (drawn 1:1, centred in a mat), and DPI-stamped PNG that prints at the exact on-screen physical size — verified on paper
 - ✅ **Input:** pressure + tilt, palm rejection, stylus-only
 
 ---
@@ -163,7 +163,7 @@ Biggest structural gap. Two layers today (surface, paint); paint layer is flat r
 | ⬜ | Import an image | As a layer or reference |
 | ⬜ | Reference panel | Floating window with a source photo |
 | ✅ | Print-accurate export (1:1) | Tool sizes in mm + DPI-stamped PNG (pHYs) → prints at the exact on-screen physical size. Needs a calibrated screen |
-| ⬜ | Canvas presets | Real dimensions + DPI |
+| ✅ | Canvas presets | Full screen + real-size print presets (4×4, 4×6, 5×5, 5×7, 8×10) filtered to what fits the calibrated screen, plus custom. Drawn 1:1 (no zoom), centred in a mat, drawing constrained to the sheet |
 | ⬜ | Crop / resize / trim / straighten | |
 | ⬜ | Export formats | JPG/WebP, layered ORA/PSD, SVG for vector shapes |
 | ⬜ | Time-lapse recording | Procreate headline feature; people share the videos |

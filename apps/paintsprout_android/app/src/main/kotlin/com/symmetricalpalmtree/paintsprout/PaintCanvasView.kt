@@ -25,6 +25,7 @@ import android.view.View
 import androidx.annotation.ColorInt
 import androidx.core.graphics.createBitmap
 import com.symmetricalpalmtree.paintsprout.paint.Calibration
+import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.GalleryExport
@@ -189,6 +190,26 @@ class PaintCanvasView @JvmOverloads constructor(
     private var bufH = 0
     private val srcRect = Rect()
     private val dstRect = Rect()
+
+    // The drawing surface, sized to [canvasSize] and centred in the view. When it's
+    // smaller than the panel, it sits inside a mat (bevel). logicalW/H are its size
+    // in view px; canvasLeft/Top centre it. For FullScreen these equal the view.
+    private var logicalW = 0
+    private var logicalH = 0
+    private var canvasLeft = 0
+    private var canvasTop = 0
+
+    /** Physical size of the drawing surface. [CanvasSize.FullScreen] fills the panel. */
+    var canvasSize: CanvasSize = CanvasSize.FullScreen
+        private set
+
+    private val matPaint = Paint().apply { color = 0xFF23282B.toInt() }
+    private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x14000000 }
+    private val framePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1f
+        color = 0x40000000
+    }
 
     // --- Live stroke --------------------------------------------------------
     private var active: Stroke? = null
@@ -472,11 +493,26 @@ class PaintCanvasView @JvmOverloads constructor(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        reconfigureBuffers(w, h)
+    }
+
+    /**
+     * (Re)creates the canvas buffers for a view of [w]×[h]. The buffer is sized to
+     * the selected [canvasSize] (centred, at true physical size), not the whole view.
+     * Resets the in-progress paint like a fresh sheet; the committed op history is
+     * left intact ([applyCanvasSize] clears it separately when the size changes).
+     */
+    private fun reconfigureBuffers(w: Int, h: Int) {
         if (w <= 0 || h <= 0) return
-        bufW = (w * SUPER_SAMPLE).roundToInt()
-        bufH = (h * SUPER_SAMPLE).roundToInt()
+        val (lw, lh) = canvasLogicalPx(w, h)
+        logicalW = lw
+        logicalH = lh
+        canvasLeft = (w - lw) / 2
+        canvasTop = (h - lh) / 2
+        bufW = (lw * SUPER_SAMPLE).roundToInt()
+        bufH = (lh * SUPER_SAMPLE).roundToInt()
         srcRect.set(0, 0, bufW, bufH)
-        dstRect.set(0, 0, w, h)
+        dstRect.set(0, 0, lw, lh)
 
         val placeholder = createBitmap(bufW, bufH).apply { Canvas(this).drawColor(plainColor) }
         val newPaint = createBitmap(bufW, bufH)
@@ -494,6 +530,37 @@ class PaintCanvasView @JvmOverloads constructor(
         clearSelectionState()
         invalidate()
         regenerateSurface()
+    }
+
+    /** Whether a canvas-local point falls on the sheet (not the surrounding mat). */
+    private fun insideCanvas(x: Float, y: Float): Boolean =
+        x >= 0f && y >= 0f && x <= logicalW.toFloat() && y <= logicalH.toFloat()
+
+    /** Canvas size in view px for the current [canvasSize], clamped to the view. */
+    private fun canvasLogicalPx(w: Int, h: Int): Pair<Int, Int> = when (val s = canvasSize) {
+        is CanvasSize.FullScreen -> w to h
+        is CanvasSize.Print -> {
+            val ppi = Calibration.effectivePpi(context)
+            val pw = Calibration.inToPx(s.wIn, ppi).roundToInt().coerceIn(1, w)
+            val ph = Calibration.inToPx(s.hIn, ppi).roundToInt().coerceIn(1, h)
+            pw to ph
+        }
+    }
+
+    /**
+     * Switches to [size] and starts a fresh document at the new dimensions. A
+     * different-sized sheet can't share the old buffers, so the paint and the undo
+     * history are cleared (fresh paper, new surface seed).
+     */
+    fun applyCanvasSize(size: CanvasSize) {
+        canvasSize = size
+        if (width <= 0 || height <= 0) return // onSizeChanged will apply it once laid out
+        for (op in committed) op.recycle()
+        committed.clear()
+        clearRedo()
+        surfaceSeed = java.util.Random().nextLong()
+        reconfigureBuffers(width, height)
+        onHistoryChanged?.invoke()
     }
 
     /**
@@ -648,6 +715,40 @@ class PaintCanvasView @JvmOverloads constructor(
     // --- Drawing ------------------------------------------------------------
 
     override fun onDraw(canvas: Canvas) {
+        if (surfaceBmp == null) return
+        val matted = canvasLeft > 0 || canvasTop > 0
+        if (matted) drawMat(canvas)
+        val sc = canvas.save()
+        canvas.translate(canvasLeft.toFloat(), canvasTop.toFloat())
+        canvas.clipRect(0f, 0f, logicalW.toFloat(), logicalH.toFloat())
+        drawDocument(canvas)
+        canvas.restoreToCount(sc)
+        if (matted) drawCanvasFrame(canvas)
+    }
+
+    /** Fills the surround with the mat colour and drops a soft shadow under the sheet. */
+    private fun drawMat(canvas: Canvas) {
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), matPaint)
+        val l = canvasLeft.toFloat()
+        val t = canvasTop.toFloat()
+        val r = (canvasLeft + logicalW).toFloat()
+        val b = (canvasTop + logicalH).toFloat()
+        // Cheap soft shadow: overlapping translucent frames, darkest against the sheet.
+        for (i in 6 downTo 1) {
+            val g = i * 2f
+            canvas.drawRect(l - g, t - g, r + g, b + g, shadowPaint)
+        }
+    }
+
+    /** A hairline border so a near-white sheet still reads against the mat. */
+    private fun drawCanvasFrame(canvas: Canvas) {
+        canvas.drawRect(
+            canvasLeft + 0.5f, canvasTop + 0.5f,
+            canvasLeft + logicalW - 0.5f, canvasTop + logicalH - 0.5f, framePaint,
+        )
+    }
+
+    private fun drawDocument(canvas: Canvas) {
         val surfaceLayer = surfaceBmp ?: return
         canvas.drawBitmap(surfaceLayer, srcRect, dstRect, null)
 
@@ -686,7 +787,7 @@ class PaintCanvasView @JvmOverloads constructor(
 
         // Isolated layer so an eraser stroke (CLEAR) punches through to the surface
         // rather than the window behind the view.
-        val layer = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
+        val layer = canvas.saveLayer(0f, 0f, logicalW.toFloat(), logicalH.toFloat(), null)
         if (liveClip == null || !hasEdits) {
             drawEdited()
         } else {
@@ -694,11 +795,11 @@ class PaintCanvasView @JvmOverloads constructor(
             // inside — `committed*(1-m) + edited*m` — so live strokes (and the
             // eraser) can't spill past the boundary.
             val mSrc = Rect(0, 0, liveClip.width, liveClip.height)
-            val punch = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
+            val punch = canvas.saveLayer(0f, 0f, logicalW.toFloat(), logicalH.toFloat(), null)
             canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
             canvas.drawBitmap(liveClip, mSrc, dstRect, dstOutPaint)
             canvas.restoreToCount(punch)
-            val inside = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
+            val inside = canvas.saveLayer(0f, 0f, logicalW.toFloat(), logicalH.toFloat(), null)
             drawEdited()
             canvas.drawBitmap(liveClip, mSrc, dstRect, dstInPaint)
             canvas.restoreToCount(inside)
@@ -928,11 +1029,11 @@ class PaintCanvasView @JvmOverloads constructor(
         val opacity = com.symmetricalpalmtree.paintsprout.paint.ToolProfile.of(Tool.SPRAY).opacity
         val tooth = ToothCache.toothFor(surface, Tool.SPRAY)
         val lp = Paint().apply { alpha = (opacity * 255f).roundToInt().coerceIn(0, 255) }
-        val layer = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), lp)
+        val layer = canvas.saveLayer(0f, 0f, logicalW.toFloat(), logicalH.toFloat(), lp)
         canvas.drawBitmap(accum, 0f, 0f, null)
         if (tooth != null) {
             com.symmetricalpalmtree.paintsprout.paint.applyTooth(
-                canvas, RectF(0f, 0f, width.toFloat(), height.toFloat()), tooth, surface.toothScale,
+                canvas, RectF(0f, 0f, logicalW.toFloat(), logicalH.toFloat()), tooth, surface.toothScale,
             )
         }
         canvas.restoreToCount(layer)
@@ -1023,17 +1124,17 @@ class PaintCanvasView @JvmOverloads constructor(
         if (shader != null) {
             val bmpShader = BitmapShader(mask, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
                 setLocalMatrix(Matrix().apply {
-                    setScale(width.toFloat() / mask.width, height.toFloat() / mask.height)
+                    setScale(logicalW.toFloat() / mask.width, logicalH.toFloat() / mask.height)
                 })
             }
             shader.setInputShader("uMask", bmpShader)
             shader.setFloatUniform("uTime", antsPhase)
-            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), Paint().apply { this.shader = shader })
+            canvas.drawRect(0f, 0f, logicalW.toFloat(), logicalH.toFloat(), Paint().apply { this.shader = shader })
             return
         }
         // Fallback: dim outside + faint tint.
         val mSrc = Rect(0, 0, mask.width, mask.height)
-        val dim = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
+        val dim = canvas.saveLayer(0f, 0f, logicalW.toFloat(), logicalH.toFloat(), null)
         canvas.drawColor(0x47000000)
         canvas.drawBitmap(mask, mSrc, dstRect, dstOutPaint)
         canvas.restoreToCount(dim)
@@ -1097,9 +1198,14 @@ class PaintCanvasView @JvmOverloads constructor(
         if (!isStylus(event.getToolType(actionIndex))) {
             return handleTouchGesture(event) // finger: history gestures, not drawing.
         }
+        // Work in canvas-local coordinates: (0,0) is the sheet's top-left, so every
+        // handler below is oblivious to the mat/centring offset.
+        event.offsetLocation(-canvasLeft.toFloat(), -canvasTop.toFloat())
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                // Ignore presses that land in the mat around the sheet.
+                if (!insideCanvas(event.getX(actionIndex), event.getY(actionIndex))) return true
                 if (tool == Tool.WAND) {
                     handleWandDown(event, actionIndex)
                     return true
@@ -1223,6 +1329,7 @@ class PaintCanvasView @JvmOverloads constructor(
             if (paHoverPt != null) { paHoverPt = null; invalidate() }
             return super.onHoverEvent(event)
         }
+        event.offsetLocation(-canvasLeft.toFloat(), -canvasTop.toFloat()) // canvas-local
         when (event.actionMasked) {
             MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
                 if (tool == Tool.POLYLINE) polyHoverPt = PointF(event.x, event.y)
@@ -2264,8 +2371,8 @@ class PaintCanvasView @JvmOverloads constructor(
         activeAccum?.recycle()
         activeAccum = null
         accumDrawn = 0
-        if (active?.tool == Tool.SPRAY && width > 0 && height > 0) {
-            activeAccum = createBitmap(width, height)
+        if (active?.tool == Tool.SPRAY && logicalW > 0 && logicalH > 0) {
+            activeAccum = createBitmap(logicalW, logicalH)
         }
     }
 
