@@ -24,6 +24,7 @@ import android.view.MotionEvent
 import android.view.View
 import androidx.annotation.ColorInt
 import androidx.core.graphics.createBitmap
+import com.symmetricalpalmtree.paintsprout.paint.Calibration
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.GalleryExport
@@ -3020,7 +3021,10 @@ class PaintCanvasView @JvmOverloads constructor(
                         drawBitmap(paintCopy, 0f, 0f, null)
                     }
                     val name = "paintsprout_${System.currentTimeMillis()}"
-                    val where = GalleryExport.savePng(context, flat, name)
+                    // Stamp the file with the physical resolution so it prints 1:1
+                    // with the screen: the buffer is SUPER_SAMPLE× the view pixels.
+                    val dpi = Calibration.effectivePpi(context) * SUPER_SAMPLE
+                    val where = GalleryExport.savePng(context, flat, name, dpi)
                     flat.recycle()
                     where
                 }

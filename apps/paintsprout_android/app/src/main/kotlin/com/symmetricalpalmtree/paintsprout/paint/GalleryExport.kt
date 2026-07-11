@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Environment
 import android.provider.MediaStore
+import java.io.ByteArrayOutputStream
 
 /**
  * Saves a bitmap as a PNG into the device gallery (Pictures/Paintsprout), the
@@ -16,8 +17,12 @@ object GalleryExport {
 
     private const val ALBUM = "Paintsprout"
 
-    /** Writes [bitmap] as a PNG and returns a short human-readable location. */
-    fun savePng(context: Context, bitmap: Bitmap, displayName: String): String {
+    /**
+     * Writes [bitmap] as a PNG and returns a short human-readable location. When
+     * [dpi] is positive, the file is stamped with that physical resolution (via a
+     * `pHYs` chunk) so it opens and prints at a real-world size.
+     */
+    fun savePng(context: Context, bitmap: Bitmap, displayName: String, dpi: Float = 0f): String {
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, "$displayName.png")
             put(MediaStore.Images.Media.MIME_TYPE, "image/png")
@@ -30,7 +35,13 @@ object GalleryExport {
 
         resolver.openOutputStream(uri).use { out ->
             checkNotNull(out) { "could not open output stream" }
-            if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+            if (dpi > 0f) {
+                // Encode to memory so a physical-resolution chunk can be spliced in.
+                val encoded = ByteArrayOutputStream().also {
+                    if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) error("PNG encode failed")
+                }
+                out.write(PngDensity.embedDpi(encoded.toByteArray(), dpi))
+            } else if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
                 error("PNG encode failed")
             }
         }
