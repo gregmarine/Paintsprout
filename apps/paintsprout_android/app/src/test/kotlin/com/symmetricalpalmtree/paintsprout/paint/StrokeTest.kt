@@ -40,63 +40,96 @@ class StrokeTest {
         assertEquals(INHERIT_COLOR, p.color)
     }
 
-    /** Dry tools must render on exactly the path they always did. */
-    @Test
-    fun anOrdinaryStrokeNeitherVariesNorIsDirty() {
-        val stroke = Stroke(Tool.PENCIL, color = 0xFF000000.toInt())
-        stroke.add(StrokePoint(Vec2(0f, 0f), 2f))
-        stroke.add(StrokePoint(Vec2(5f, 0f), 2f))
 
-        assertFalse(stroke.varies)
-        assertFalse(stroke.dirty)
+
+
+
+
+    // --- Spans (how a fading / contaminated stroke gets drawn) --------------
+
+    private val black = 0xFF000000.toInt()
+    private fun linear(load: Float) = load
+
+    /** The perf guard: an ordinary stroke must still be one path per bristle. */
+    @Test
+    fun anOrdinaryStrokeIsASingleSpan() {
+        val stroke = Stroke(Tool.BRUSH, color = black)
+        repeat(200) { i -> stroke.add(StrokePoint(Vec2(i * 3f, 0f), 4f)) }
+
+        assertEquals(1, strokeRuns(stroke, black, ::linear).size)
     }
 
+    /** A loaded-but-not-yet-fading brush is likewise one span. */
     @Test
-    fun aDrainingStrokeVaries() {
-        val stroke = Stroke(Tool.BRUSH, color = 0xFF000000.toInt())
-        stroke.add(StrokePoint(Vec2(0f, 0f), 2f, load = 1f))
-        stroke.add(StrokePoint(Vec2(5f, 0f), 2f, load = 0.4f))
-
-        assertTrue(stroke.varies)
-        assertFalse("load alone isn't contamination", stroke.dirty)
-    }
-
-    /**
-     * A loaded brush stamps its colour on every point, but a constant colour is
-     * not contamination. Calling that "dirty" forces the renderer down the
-     * per-segment path — ~150x the draw calls per bristle — and drags the live
-     * preview from 24ms a frame to 250ms.
-     */
-    @Test
-    fun aLoadedBrushHoldingOneColourIsNotDirty() {
+    fun aFullBrushHoldingOneColourIsASingleSpan() {
         val green = 0xFF6A8A42.toInt()
         val stroke = Stroke(Tool.BRUSH, color = green)
-        repeat(10) { i ->
-            stroke.add(StrokePoint(Vec2(i * 5f, 0f), 4f, color = green, load = 1f - i * 0.05f))
+        repeat(200) { i -> stroke.add(StrokePoint(Vec2(i * 3f, 0f), 4f, color = green, load = 1f)) }
+
+        val runs = strokeRuns(stroke, green, ::linear)
+        assertEquals(1, runs.size)
+        assertEquals(green, runs[0].color)
+        assertEquals(1f, runs[0].alpha, 1e-4f)
+    }
+
+    /** Spans are bounded no matter how many points a draining stroke has. */
+    @Test
+    fun aDrainingStrokeSplitsIntoBoundedSpans() {
+        val stroke = Stroke(Tool.BRUSH, color = black)
+        repeat(500) { i -> stroke.add(StrokePoint(Vec2(i * 3f, 0f), 4f, load = 1f - i / 500f)) }
+
+        val runs = strokeRuns(stroke, black, ::linear)
+        assertTrue("should split as it fades", runs.size > 1)
+        assertTrue("but stay bounded by ALPHA_STEP, was ${runs.size}", runs.size <= (1f / ALPHA_STEP).toInt() + 2)
+    }
+
+    /** Spans must tile the stroke and touch, or the mark would show gaps. */
+    @Test
+    fun spansCoverTheWholeStrokeAndJoinUp() {
+        val stroke = Stroke(Tool.BRUSH, color = black)
+        repeat(120) { i -> stroke.add(StrokePoint(Vec2(i * 3f, 0f), 4f, load = 1f - i / 120f)) }
+
+        val runs = strokeRuns(stroke, black, ::linear)
+        assertEquals("starts at the first point", 0, runs.first().from)
+        assertEquals("ends at the last point", stroke.points.size - 1, runs.last().to)
+        for (i in 1 until runs.size) {
+            assertEquals("span $i must start where span ${i - 1} ended", runs[i - 1].to, runs[i].from)
         }
-
-        assertFalse("a constant colour is not a colour change", stroke.dirty)
-        assertTrue("but it is draining", stroke.varies)
+        for (r in runs) assertTrue("every span spans at least a segment", r.to > r.from)
     }
 
-    /** A point with no colour of its own means the stroke's — still no change. */
+    /** A colour change splits a span even when the strength hasn't moved. */
     @Test
-    fun inheritedColourIsNotAColourChange() {
-        val stroke = Stroke(Tool.BRUSH, color = 0xFF112233.toInt())
-        stroke.add(StrokePoint(Vec2(0f, 0f), 4f, color = 0xFF112233.toInt()))
-        stroke.add(StrokePoint(Vec2(5f, 0f), 4f)) // INHERIT — resolves to the same colour
+    fun pickingUpPigmentSplitsASpan() {
+        val stroke = Stroke(Tool.BRUSH, color = black)
+        val blue = 0xFF0000FF.toInt()
+        val green = 0xFF00FF00.toInt()
+        repeat(5) { stroke.add(StrokePoint(Vec2(it * 3f, 0f), 4f, color = blue)) }
+        repeat(5) { stroke.add(StrokePoint(Vec2((5 + it) * 3f, 0f), 4f, color = green)) }
 
-        assertFalse(stroke.dirty)
+        val runs = strokeRuns(stroke, black, ::linear)
+        assertEquals(2, runs.size)
+        assertEquals(blue, runs[0].color)
+        assertEquals(green, runs[1].color)
+    }
+
+    /** A point with no colour of its own takes the stroke's, already opaque. */
+    @Test
+    fun spansInheritTheStrokesColourOpaque() {
+        val stroke = Stroke(Tool.BRUSH, color = black)
+        repeat(4) { stroke.add(StrokePoint(Vec2(it * 3f, 0f), 4f)) }
+
+        val runs = strokeRuns(stroke, black, ::linear)
+        assertEquals(black, runs[0].color)
+        assertEquals(0xFF, (runs[0].color ushr 24) and 0xFF)
     }
 
     @Test
-    fun aStrokeThatChangedColourIsDirty() {
-        val stroke = Stroke(Tool.BRUSH, color = 0xFF000000.toInt())
-        stroke.add(StrokePoint(Vec2(0f, 0f), 2f, color = 0xFF0000FF.toInt()))
-        stroke.add(StrokePoint(Vec2(5f, 0f), 2f, color = 0xFF00FF00.toInt()))
-
-        assertTrue(stroke.dirty)
-        assertFalse("colour alone isn't draining", stroke.varies)
+    fun aStrokeTooShortToSpanYieldsNothing() {
+        val stroke = Stroke(Tool.BRUSH, color = black)
+        assertTrue(strokeRuns(stroke, black, ::linear).isEmpty())
+        stroke.add(StrokePoint(Vec2(0f, 0f), 4f))
+        assertTrue("a single dab is drawn directly, not as a span", strokeRuns(stroke, black, ::linear).isEmpty())
     }
 
     /** A pencil dragged through wet paint must not load up with it. */

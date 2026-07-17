@@ -49,31 +49,75 @@ class Stroke(
 ) {
     val points: MutableList<StrokePoint> = mutableListOf()
 
-    private var _varies = false
-    private var _dirty = false
-    private var firstColor = INHERIT_COLOR
-
     fun add(p: StrokePoint) {
         points.add(p)
-        // Tracked as points arrive rather than scanned on demand: the live
-        // preview re-renders the whole stroke every frame and asks these
-        // questions per bristle, so a scan here is a scan per frame per bristle.
-        if (p.load < 1f) _varies = true
-
-        // Carrying a colour is not the same as changing colour. A loaded brush
-        // stamps its colour on every point, but until it drags through wet paint
-        // that colour is constant — and a constant-colour stroke can be drawn as
-        // one path per bristle instead of one per segment. Getting this wrong
-        // costs ~150x the draw calls.
-        val c = if (p.color == INHERIT_COLOR) color else p.color
-        if (points.size == 1) firstColor = c else if (c != firstColor) _dirty = true
     }
 
     val isEmpty: Boolean get() = points.isEmpty()
-
-    /** True if the brush ran down at any point — the renderer then fades the mark. */
-    val varies: Boolean get() = _varies
-
-    /** True if the colour actually changes along the stroke (it picked pigment up). */
-    val dirty: Boolean get() = _dirty
 }
+
+/**
+ * A contiguous span of a stroke the brush painted with effectively one colour at
+ * one strength — `[from, to]` inclusive, sharing its end points with its
+ * neighbours so the spans join up.
+ */
+class StrokeRun(val from: Int, val to: Int, @param:ColorInt val color: Int, val alpha: Float)
+
+/**
+ * Splits a stroke into spans of near-constant colour and strength.
+ *
+ * This is how a fading or contaminated stroke gets drawn: one path per span,
+ * composited normally, instead of a mask over the whole thing or a draw call per
+ * segment.
+ *
+ * A mask is the tempting shortcut and it is wrong — masking multiplies coverage,
+ * so where a stroke crosses itself (an enso, where a spent tail sweeps back over
+ * the wet opening) the tail's near-zero mask scrubs out the fresh paint beneath.
+ * Spans composite with SRC_OVER, which unions: the strong deposit wins, which is
+ * what two coats of paint on one spot actually do.
+ *
+ * Spans are contiguous because load only ever drains, so the count is bounded by
+ * [ALPHA_STEP] — and a stroke that barely fades is a span or two, no dearer than
+ * drawing it flat. Splitting per segment instead costs ~150x the draw calls.
+ *
+ * @param baseColor the colour to use where a point carries none. Already opaque;
+ *   spans inherit that, which the bristle path relies on.
+ * @param alphaOf maps a point's [StrokePoint.load] to the strength it deposits.
+ */
+fun strokeRuns(
+    stroke: Stroke,
+    @ColorInt baseColor: Int,
+    alphaOf: (Float) -> Float,
+): List<StrokeRun> {
+    val pts = stroke.points
+    if (pts.size < 2) return emptyList()
+
+    fun colorAt(i: Int): Int {
+        val c = pts[i].color
+        return if (c == INHERIT_COLOR) baseColor else c or OPAQUE
+    }
+
+    val runs = ArrayList<StrokeRun>()
+    var from = 0
+    var runColor = colorAt(0)
+    var runAlpha = alphaOf(pts[0].load)
+
+    for (i in 1 until pts.size) {
+        val c = colorAt(i)
+        val a = alphaOf(pts[i].load)
+        if (c != runColor || Math.abs(a - runAlpha) >= ALPHA_STEP) {
+            // The span ends *at* i, so the next one starts there too and they meet.
+            runs.add(StrokeRun(from, i, runColor, runAlpha))
+            from = i
+            runColor = c
+            runAlpha = a
+        }
+    }
+    if (from < pts.size - 1) runs.add(StrokeRun(from, pts.size - 1, runColor, runAlpha))
+    return runs
+}
+
+/** How far strength may drift inside one span. Bounds the span count to ~1/this. */
+const val ALPHA_STEP = 1f / 10f
+
+private const val OPAQUE = 0xFF shl 24
