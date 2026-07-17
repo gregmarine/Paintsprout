@@ -137,10 +137,18 @@ data class BrushLoad(val recipe: Recipe, val capacity: Float = DEFAULT_CAPACITY)
 
     companion object {
         /**
-         * Tuned by eye on-device — how far a full brush goes before it needs a
-         * reload, in deposited paint units.
+         * A full brush, in abstract paint units. Only ratios against this
+         * matter (see [fill]); the physical scale lives in [COVERAGE_MM2].
          */
         const val DEFAULT_CAPACITY = 1f
+
+        /**
+         * How much surface a full brush covers before running dry, in real
+         * millimetres squared — so a brush lasts the same physical distance on
+         * any calibrated screen, rather than draining faster on a denser one.
+         * Tuned by eye on-device.
+         */
+        const val COVERAGE_MM2 = 900f
 
         /** Below this the brush is spent; avoids dividing a vanishing recipe. */
         const val DRY_THRESHOLD = 1e-4f

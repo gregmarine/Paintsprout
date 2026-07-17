@@ -265,7 +265,11 @@ class MainActivity : AppCompatActivity() {
     /** Pushes the current tool's stored mm size to the canvas as pixels at this PPI. */
     private fun applySizeToCanvas() {
         val mm = sizes[tool] ?: tool.defaultSizeMm
-        binding.canvas.baseSize = Calibration.mmToPx(mm, Calibration.effectivePpi(this))
+        val ppi = Calibration.effectivePpi(this)
+        binding.canvas.baseSize = Calibration.mmToPx(mm, ppi)
+        // The brush spends paint per real mm² covered, so it needs the same
+        // physical scale the sizes use.
+        binding.canvas.pxPerMm = Calibration.mmToPx(1f, ppi)
     }
 
     /** Compact mm label for the rail button: "0.5", "4", "12.5". */
@@ -296,7 +300,14 @@ class MainActivity : AppCompatActivity() {
      */
     private fun setupTray() {
         binding.tray.tray = tray
-        binding.tray.onLoadBrush = { load -> onColorChanged(load.color) }
+        binding.tray.onLoadBrush = { load ->
+            // Straight to the canvas, keeping the mixture: going via
+            // onColorChanged would recharge the brush with one flat pigment and
+            // discard the recipe just mixed.
+            binding.canvas.loadBrush(load)
+            color = load.color
+            updateRail()
+        }
         binding.tray.onAddPot = {
             pickColor("Add a pigment", color) { c ->
                 tray.addPot(Pot(namePot(c), c, custom = true))

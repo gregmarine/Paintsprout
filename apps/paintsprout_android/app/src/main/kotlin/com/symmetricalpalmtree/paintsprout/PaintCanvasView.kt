@@ -24,6 +24,7 @@ import android.view.MotionEvent
 import android.view.View
 import androidx.annotation.ColorInt
 import androidx.core.graphics.createBitmap
+import com.symmetricalpalmtree.paintsprout.paint.BrushLoad
 import com.symmetricalpalmtree.paintsprout.paint.Calibration
 import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
@@ -109,9 +110,57 @@ class PaintCanvasView @JvmOverloads constructor(
             }
         }
 
-    /** Deposit color (ARGB). Ignored by the eraser. */
+    /**
+     * Deposit color (ARGB). Ignored by the eraser.
+     *
+     * Setting it recharges the brush with that colour, so picking a colour off
+     * the wheel behaves the way it always has — you don't have to visit the tray
+     * to paint. Mixing on the tray goes through [loadBrush] instead.
+     */
     @ColorInt
-    var strokeColor: Int = Color.BLACK
+    private var _strokeColor: Int = Color.BLACK
+
+    var strokeColor: Int
+        @ColorInt get() = _strokeColor
+        set(@ColorInt value) {
+            _strokeColor = value
+            brushLoad = BrushLoad.of(value)
+            onBrushLoadChanged?.invoke(brushLoad)
+        }
+
+    /**
+     * What the brush is currently carrying: a mixture and how much of it is
+     * left. Wet media (see [Tool.usesLoad]) deposit from it and run dry; every
+     * other tool ignores it.
+     */
+    var brushLoad: BrushLoad = BrushLoad.of(Color.BLACK)
+        private set
+
+    /** Fired when the load changes — drained by painting, or recharged. */
+    var onBrushLoadChanged: ((BrushLoad) -> Unit)? = null
+
+    /**
+     * Charges the brush from the tray's well, keeping the mixture intact.
+     *
+     * Deliberately not routed through [strokeColor]: that setter recharges with
+     * a single flat pigment, which would throw away the recipe you just mixed
+     * and leave a brush that can't be contaminated meaningfully.
+     */
+    fun loadBrush(load: BrushLoad) {
+        brushLoad = load
+        _strokeColor = load.color
+        onBrushLoadChanged?.invoke(load)
+    }
+
+    /**
+     * Pixels per real millimetre at the calibrated PPI. Paint is spent per unit
+     * of surface actually covered, so this keeps a brushful lasting the same
+     * physical distance instead of draining faster on a denser screen.
+     */
+    var pxPerMm: Float = 1f
+
+    /** Where the tip last laid paint, for measuring how much the next step spends. */
+    private var lastDepositPos: Vec2? = null
 
     /** Base size override; null uses the tool's default. */
     var baseSize: Float? = null
@@ -1235,6 +1284,9 @@ class PaintCanvasView @JvmOverloads constructor(
                 val color = if (tool == Tool.ERASER) Color.WHITE else strokeColor
                 // Capture the frisket this stroke is drawn under, if any.
                 activeClip = selectionMask?.copy(Bitmap.Config.ARGB_8888, false)
+                // Paint is spent over distance travelled; a new stroke starts
+                // from its own first point, not wherever the last one ended.
+                lastDepositPos = null
                 active = Stroke(tool, color, seed = Random.nextInt()).apply {
                     add(sample(event, actionIndex))
                 }
@@ -2359,11 +2411,33 @@ class PaintCanvasView @JvmOverloads constructor(
             e.getHistoricalAxisValue(MotionEvent.AXIS_TILT, pi, h),
         )
 
+    /**
+     * Builds the next sample — and, for wet media, spends the paint it took to
+     * get here. Every live point funnels through this, so it's the one place the
+     * brush drains.
+     */
     private fun buildPoint(x: Float, y: Float, rawPressure: Float, tilt: Float): StrokePoint {
         val pressure = if (pressureMax > 0f) (rawPressure / pressureMax).coerceIn(0f, 1f) else 1f
         val width = resolveWidth(tool, sizeFor(tool), pressure, tilt)
         val density = resolveDensity(tool, pressure)
-        return StrokePoint(Vec2(x, y), width, density)
+        val pos = Vec2(x, y)
+
+        if (!tool.usesLoad) return StrokePoint(pos, width, density)
+
+        val last = lastDepositPos
+        lastDepositPos = pos
+        if (last != null) {
+            // Paint is spent per unit of surface covered: how far the tip
+            // travelled, times how wide a track it left.
+            val mm = pxPerMm.coerceAtLeast(0.0001f)
+            val areaMm2 = ((pos - last).distance / mm) * (width / mm)
+            if (areaMm2 > 0f) {
+                brushLoad = brushLoad.deposit(areaMm2 / BrushLoad.COVERAGE_MM2)
+                onBrushLoadChanged?.invoke(brushLoad)
+            }
+        }
+
+        return StrokePoint(pos, width, density, color = brushLoad.color, load = brushLoad.fill)
     }
 
     /** Sets up per-stroke live-preview scratch (spray accumulation / wet backdrop). */

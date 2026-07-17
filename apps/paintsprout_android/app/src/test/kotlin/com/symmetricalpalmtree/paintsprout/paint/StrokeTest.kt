@@ -32,6 +32,56 @@ class StrokeTest {
         assertEquals(1.0f, p.density, 0f)
     }
 
+    /** Every existing caller builds points without a load; they must not fade. */
+    @Test
+    fun strokePointDefaultsToAFullBrushAndTheStrokesOwnColour() {
+        val p = StrokePoint(Vec2(0f, 0f), 5f)
+        assertEquals(1.0f, p.load, 0f)
+        assertEquals(INHERIT_COLOR, p.color)
+    }
+
+    /** Dry tools must render on exactly the path they always did. */
+    @Test
+    fun anOrdinaryStrokeNeitherVariesNorIsDirty() {
+        val stroke = Stroke(Tool.PENCIL, color = 0xFF000000.toInt())
+        stroke.add(StrokePoint(Vec2(0f, 0f), 2f))
+        stroke.add(StrokePoint(Vec2(5f, 0f), 2f))
+
+        assertFalse(stroke.varies)
+        assertFalse(stroke.dirty)
+    }
+
+    @Test
+    fun aDrainingStrokeVaries() {
+        val stroke = Stroke(Tool.BRUSH, color = 0xFF000000.toInt())
+        stroke.add(StrokePoint(Vec2(0f, 0f), 2f, load = 1f))
+        stroke.add(StrokePoint(Vec2(5f, 0f), 2f, load = 0.4f))
+
+        assertTrue(stroke.varies)
+        assertFalse("load alone isn't contamination", stroke.dirty)
+    }
+
+    @Test
+    fun aStrokeThatChangedColourIsDirty() {
+        val stroke = Stroke(Tool.BRUSH, color = 0xFF000000.toInt())
+        stroke.add(StrokePoint(Vec2(0f, 0f), 2f, color = 0xFF0000FF.toInt()))
+        stroke.add(StrokePoint(Vec2(5f, 0f), 2f, color = 0xFF00FF00.toInt()))
+
+        assertTrue(stroke.dirty)
+        assertFalse("colour alone isn't draining", stroke.varies)
+    }
+
+    /** A pencil dragged through wet paint must not load up with it. */
+    @Test
+    fun onlyWetMediaCarryALoad() {
+        assertTrue(Tool.BRUSH.usesLoad)
+        assertTrue(Tool.WATERCOLOR.usesLoad)
+
+        for (dry in listOf(Tool.PENCIL, Tool.PEN, Tool.MARKER, Tool.SPRAY, Tool.ERASER, Tool.WAND, Tool.LINE)) {
+            assertFalse("$dry must not carry paint", dry.usesLoad)
+        }
+    }
+
     @Test
     fun vec2VectorOperators() {
         val a = Vec2(3f, 4f)

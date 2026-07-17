@@ -78,7 +78,9 @@ object StrokeRenderer {
             val p = pts.first()
             canvas.drawCircle(
                 p.position.x, p.position.y, p.width / 2f,
-                Paint(Paint.ANTI_ALIAS_FLAG).apply { color = withAlpha(rgb, p.density) },
+                Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = withAlpha(colorAt(p, rgb), p.density * loadAlpha(p.load))
+                },
             )
         } else {
             val normals = strokeNormals(pts)
@@ -89,7 +91,10 @@ object StrokeRenderer {
                 val hw = max(0.25f, p.width / 2f)
                 val left = p.position + normals[i] * hw
                 val right = p.position - normals[i] * hw
-                val col = withAlpha(rgb, p.density)
+                // One mesh, so per-vertex alpha can't overlap-accumulate — the
+                // grain path folds load straight into the vertex colour and
+                // needs no separate mask.
+                val col = withAlpha(colorAt(p, rgb), p.density * loadAlpha(p.load))
                 verts[i * 4] = left.x; verts[i * 4 + 1] = left.y
                 verts[i * 4 + 2] = right.x; verts[i * 4 + 3] = right.y
                 colors[i * 2] = col; colors[i * 2 + 1] = col
@@ -111,7 +116,8 @@ object StrokeRenderer {
         toothScale: Float, maxWidth: Float, bleed: Float,
         minX: Float, minY: Float, maxX: Float, maxY: Float,
     ) {
-        val pad = maxWidth / 2f + bleed * 3f + 2f
+        val halo = bleed * 3f + 2f
+        val pad = maxWidth / 2f + halo
         val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
         val layer = canvas.saveLayer(bounds, Paint().apply { alpha = alpha255(ToolProfile.of(stroke.tool).opacity) })
         val blur = if (bleed > 0.3f) BlurMaskFilter(bleed, BlurMaskFilter.Blur.NORMAL) else null
@@ -119,14 +125,16 @@ object StrokeRenderer {
         if (pts.size == 1) {
             val p = pts.first()
             val r = max(1f, p.width / 2f)
+            val c = colorAt(p, rgb)
+            val fade = loadAlpha(p.load)
             canvas.drawCircle(p.position.x, p.position.y, r, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = withAlpha(rgb, 0.6f); maskFilter = blur
+                color = withAlpha(c, 0.6f * fade); maskFilter = blur
             })
             canvas.drawCircle(p.position.x, p.position.y, r, Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE; strokeWidth = max(1.5f, r * 0.4f)
-                color = withAlpha(rgb, 0.95f); maskFilter = blur
+                color = withAlpha(c, 0.95f * fade); maskFilter = blur
             })
-        } else {
+        } else if (!stroke.dirty) {
             val ribbon = ribbonPath(ribbonOutline(pts, strokeNormals(pts)))
             canvas.drawPath(ribbon, Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = withAlpha(rgb, 0.6f); maskFilter = blur
@@ -135,7 +143,27 @@ object StrokeRenderer {
                 style = Paint.Style.STROKE; strokeWidth = max(1.5f, maxWidth * 0.16f)
                 strokeJoin = Paint.Join.ROUND; color = withAlpha(rgb, 0.95f); maskFilter = blur
             })
+        } else {
+            // The brush changed colour along the way, so the ribbon can't be one
+            // flat path. Each span gets its own — the two wash alphas stay
+            // constant, and the spans butt together rather than overlapping, so
+            // this doesn't build up the way per-segment translucent strokes do.
+            val normals = strokeNormals(pts)
+            for (i in 1 until pts.size) {
+                val span = listOf(pts[i - 1], pts[i])
+                val spanNormals = listOf(normals[i - 1], normals[i])
+                val ribbon = ribbonPath(ribbonOutline(span, spanNormals))
+                val c = colorAt(pts[i], rgb)
+                canvas.drawPath(ribbon, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = withAlpha(c, 0.6f); maskFilter = blur
+                })
+                canvas.drawPath(ribbon, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    style = Paint.Style.STROKE; strokeWidth = max(1.5f, maxWidth * 0.16f)
+                    strokeJoin = Paint.Join.ROUND; color = withAlpha(c, 0.95f); maskFilter = blur
+                })
+            }
         }
+        if (stroke.varies) applyLoadMask(canvas, pts, halo)
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         canvas.restoreToCount(layer)
     }
@@ -157,7 +185,7 @@ object StrokeRenderer {
         if (pts.size == 1) {
             val p = pts.first()
             canvas.drawCircle(p.position.x, p.position.y, p.width / 2f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = rgb; maskFilter = blur
+                color = withAlpha(colorAt(p, rgb), loadAlpha(p.load)); maskFilter = blur
             })
         } else {
             val normals = strokeNormals(pts)
@@ -170,19 +198,39 @@ object StrokeRenderer {
                 val frac = (base + (rnd.nextDouble().toFloat() - 0.5f) * (2f / bristleCount) * 0.8f)
                     .coerceIn(-1f, 1f)
                 val bw = max(0.6f, centerSpacing * (0.9f + rnd.nextDouble().toFloat() * 0.9f))
-                val path = android.graphics.Path()
-                for (j in pts.indices) {
-                    val p = pts[j]
-                    val off = p.position + normals[j] * (frac * p.width / 2f)
-                    if (j == 0) path.moveTo(off.x, off.y) else path.lineTo(off.x, off.y)
-                }
-                canvas.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                val bristlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                     style = Paint.Style.STROKE; strokeWidth = bw
                     strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
-                    color = rgb; maskFilter = blur
-                })
+                    maskFilter = blur
+                }
+                if (!stroke.dirty) {
+                    val path = android.graphics.Path()
+                    for (j in pts.indices) {
+                        val p = pts[j]
+                        val off = p.position + normals[j] * (frac * p.width / 2f)
+                        if (j == 0) path.moveTo(off.x, off.y) else path.lineTo(off.x, off.y)
+                    }
+                    canvas.drawPath(path, bristlePaint.apply { color = rgb })
+                } else {
+                    // Per-segment so each bristle can change colour along its
+                    // length. Safe because the colour is opaque and the layer
+                    // applies the tool's opacity once — overlapping opaque round
+                    // caps don't accumulate. The fade rides applyLoadMask, which
+                    // is exactly why it isn't done with per-segment alpha here.
+                    for (j in 1 until pts.size) {
+                        val a = pts[j - 1]
+                        val b = pts[j]
+                        val pa = a.position + normals[j - 1] * (frac * a.width / 2f)
+                        val pb = b.position + normals[j] * (frac * b.width / 2f)
+                        bristlePaint.color = colorAt(b, rgb)
+                        canvas.drawLine(pa.x, pa.y, pb.x, pb.y, bristlePaint)
+                    }
+                }
             }
         }
+        // The mask ribbon already spans each point's own width; the extra pad
+        // only has to reach past the smeared halo.
+        if (stroke.varies) applyLoadMask(canvas, pts, smear * 3f + 2f)
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         canvas.restoreToCount(layer)
     }
@@ -289,6 +337,81 @@ object StrokeRenderer {
             canvas.drawLine(a.position.x, a.position.y, b.position.x, b.position.y, paint)
             i++
         }
+    }
+
+    // --- Brush load ---------------------------------------------------------
+
+    /**
+     * How a draining brush fades. Below 1 the mark holds its strength through
+     * most of the load and then drops away near the end, rather than dimming
+     * linearly from the first stroke.
+     */
+    private const val LOAD_FADE_EXP = 0.7f
+
+    /** Alpha the mark carries at a given remaining [load]. */
+    private fun loadAlpha(load: Float): Float =
+        if (load >= 1f) 1f else Math.pow(load.coerceAtLeast(0f).toDouble(), LOAD_FADE_EXP.toDouble()).toFloat()
+
+    /** The colour to deposit at [p] — what the brush carried, else the stroke's. */
+    private fun colorAt(p: StrokePoint, rgb: Int): Int =
+        if (p.color != INHERIT_COLOR) p.color or OPAQUE_ALPHA else rgb
+
+    /**
+     * Fades the stroke out along its length as the brush runs dry, by
+     * multiplying coverage with a ribbon whose alpha follows [StrokePoint.load].
+     *
+     * Applied once over the whole layer as a mask (like [applyTooth]) rather
+     * than by drawing each segment translucent. Translucent segments overlap at
+     * the joins and build up there, beading a stroke that should fade smoothly;
+     * a single DST_IN pass can't accumulate. Per-vertex alpha through
+     * [Canvas.drawVertices] interpolates the ramp across one mesh, so there are
+     * no overlaps to accumulate in the mask either.
+     *
+     * The ribbon is inflated by [pad] and extended past both ends, because the
+     * mark it has to cover includes the blurred halo and the round caps — a mask
+     * cut to the exact stroke would leave those at full strength around a faded
+     * body.
+     */
+    private fun applyLoadMask(canvas: Canvas, pts: List<StrokePoint>, pad: Float) {
+        if (pts.size < 2) {
+            // A single dab: nothing to ramp along, so fade it as a whole.
+            return
+        }
+        val normals = strokeNormals(pts)
+        val n = pts.size
+        // Extend the end points outward so the caps fall inside the mask.
+        val first = pts[0].position
+        val last = pts[n - 1].position
+        val headDir = (pts[0].position - pts[1].position).let {
+            if (it.distance < 1e-3f) Vec2(-1f, 0f) else it / it.distance
+        }
+        val tailDir = (pts[n - 1].position - pts[n - 2].position).let {
+            if (it.distance < 1e-3f) Vec2(1f, 0f) else it / it.distance
+        }
+
+        val verts = FloatArray((n + 2) * 4)
+        val colors = IntArray((n + 2) * 2)
+
+        fun put(slot: Int, pos: Vec2, normal: Vec2, hw: Float, load: Float) {
+            val left = pos + normal * hw
+            val right = pos - normal * hw
+            verts[slot * 4] = left.x; verts[slot * 4 + 1] = left.y
+            verts[slot * 4 + 2] = right.x; verts[slot * 4 + 3] = right.y
+            val c = withAlpha(Color.WHITE, loadAlpha(load))
+            colors[slot * 2] = c; colors[slot * 2 + 1] = c
+        }
+
+        put(0, first + headDir * pad, normals[0], pts[0].width / 2f + pad, pts[0].load)
+        for (i in 0 until n) {
+            put(i + 1, pts[i].position, normals[i], pts[i].width / 2f + pad, pts[i].load)
+        }
+        put(n + 1, last + tailDir * pad, normals[n - 1], pts[n - 1].width / 2f + pad, pts[n - 1].load)
+
+        canvas.drawVertices(
+            Canvas.VertexMode.TRIANGLE_STRIP, verts.size, verts, 0,
+            null, 0, colors, 0, null, 0, 0,
+            Paint().apply { blendMode = BlendMode.DST_IN },
+        )
     }
 
     // --- Helpers ------------------------------------------------------------
