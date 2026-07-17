@@ -42,6 +42,55 @@
         </ScrollView>
     </com.google.android.material.card.MaterialCardView>
 
+    <!-- The mixing tray, docked opposite the rail. Pull the tab to bring the
+         palette out, push it to send it away; the tab stays on screen so the
+         palette is always one gesture from the canvas. -->
+    <LinearLayout
+        android:id="@+id/trayPanel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end|center_vertical"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:clipChildren="false">
+
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/trayTab"
+            android:layout_width="28dp"
+            android:layout_height="88dp"
+            android:clickable="true"
+            android:focusable="true"
+            app:cardBackgroundColor="#F0FFFFFF"
+            app:cardCornerRadius="14dp"
+            app:cardElevation="6dp">
+
+            <ImageView
+                android:id="@+id/trayTabIcon"
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:layout_gravity="center"
+                android:src="@drawable/ic_hide"
+                app:tint="#666666"
+                android:contentDescription="Mixing tray" />
+        </com.google.android.material.card.MaterialCardView>
+
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/trayCard"
+            android:layout_width="284dp"
+            android:layout_height="284dp"
+            android:layout_marginStart="6dp"
+            android:layout_marginEnd="12dp"
+            app:cardBackgroundColor="#F5FFFFFF"
+            app:cardCornerRadius="28dp"
+            app:cardElevation="6dp">
+
+            <com.symmetricalpalmtree.paintsprout.TrayView
+                android:id="@+id/tray"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+        </com.google.android.material.card.MaterialCardView>
+    </LinearLayout>
+
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btnShowRail"
         style="@style/Widget.Material3.Button.IconButton.Filled.Tonal"
