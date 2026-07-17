@@ -61,6 +61,34 @@ class StrokeTest {
         assertFalse("load alone isn't contamination", stroke.dirty)
     }
 
+    /**
+     * A loaded brush stamps its colour on every point, but a constant colour is
+     * not contamination. Calling that "dirty" forces the renderer down the
+     * per-segment path — ~150x the draw calls per bristle — and drags the live
+     * preview from 24ms a frame to 250ms.
+     */
+    @Test
+    fun aLoadedBrushHoldingOneColourIsNotDirty() {
+        val green = 0xFF6A8A42.toInt()
+        val stroke = Stroke(Tool.BRUSH, color = green)
+        repeat(10) { i ->
+            stroke.add(StrokePoint(Vec2(i * 5f, 0f), 4f, color = green, load = 1f - i * 0.05f))
+        }
+
+        assertFalse("a constant colour is not a colour change", stroke.dirty)
+        assertTrue("but it is draining", stroke.varies)
+    }
+
+    /** A point with no colour of its own means the stroke's — still no change. */
+    @Test
+    fun inheritedColourIsNotAColourChange() {
+        val stroke = Stroke(Tool.BRUSH, color = 0xFF112233.toInt())
+        stroke.add(StrokePoint(Vec2(0f, 0f), 4f, color = 0xFF112233.toInt()))
+        stroke.add(StrokePoint(Vec2(5f, 0f), 4f)) // INHERIT — resolves to the same colour
+
+        assertFalse(stroke.dirty)
+    }
+
     @Test
     fun aStrokeThatChangedColourIsDirty() {
         val stroke = Stroke(Tool.BRUSH, color = 0xFF000000.toInt())

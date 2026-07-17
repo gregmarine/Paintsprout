@@ -14,11 +14,21 @@ import androidx.annotation.ColorInt
  * brush across the canvas, thousands of samples deep — can't grow the recipe
  * without bound.
  */
-class Recipe private constructor(private val amounts: Map<Int, Float>) {
+class Recipe private constructor(
+    private val amounts: Map<Int, Float>,
+    knownColor: Int? = null,
+) {
+
+    /**
+     * Memoised rather than recomputed: mixing is a 38-band spectral operation,
+     * and a draining brush asks for its colour on every stylus sample.
+     */
+    private var colorCache: Int? = knownColor
 
     /** The colour this recipe reads as once mixed. */
     @get:ColorInt
-    val color: Int by lazy { Pigment.mix(dabs) }
+    val color: Int
+        get() = colorCache ?: Pigment.mix(dabs).also { colorCache = it }
 
     /** How much pigment there is in total, in whatever unit the caller dabs in. */
     val total: Float by lazy { amounts.values.sum() }
@@ -58,7 +68,10 @@ class Recipe private constructor(private val amounts: Map<Int, Float>) {
         val current = total
         if (current <= 0f) return EMPTY
         val factor = newTotal / current
-        return Recipe(amounts.mapValues { it.value * factor })
+        // Scaling every pigment by the same factor cannot change the colour, so
+        // carry the memo across. Without this a draining brush re-runs the
+        // spectral mix on every sample to arrive at the colour it already had.
+        return Recipe(amounts.mapValues { it.value * factor }, colorCache)
     }
 
     /** How much of [color] is present, for tests and debugging. */

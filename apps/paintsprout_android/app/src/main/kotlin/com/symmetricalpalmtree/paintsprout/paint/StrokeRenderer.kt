@@ -134,36 +134,34 @@ object StrokeRenderer {
                 style = Paint.Style.STROKE; strokeWidth = max(1.5f, r * 0.4f)
                 color = withAlpha(c, 0.95f * fade); maskFilter = blur
             })
-        } else if (!stroke.dirty) {
-            val ribbon = ribbonPath(ribbonOutline(pts, strokeNormals(pts)))
-            canvas.drawPath(ribbon, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = withAlpha(rgb, 0.6f); maskFilter = blur
-            })
-            canvas.drawPath(ribbon, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                style = Paint.Style.STROKE; strokeWidth = max(1.5f, maxWidth * 0.16f)
-                strokeJoin = Paint.Join.ROUND; color = withAlpha(rgb, 0.95f); maskFilter = blur
-            })
         } else {
-            // The brush changed colour along the way, so the ribbon can't be one
-            // flat path. Each span gets its own — the two wash alphas stay
-            // constant, and the spans butt together rather than overlapping, so
-            // this doesn't build up the way per-segment translucent strokes do.
             val normals = strokeNormals(pts)
-            for (i in 1 until pts.size) {
-                val span = listOf(pts[i - 1], pts[i])
-                val spanNormals = listOf(normals[i - 1], normals[i])
-                val ribbon = ribbonPath(ribbonOutline(span, spanNormals))
-                val c = colorAt(pts[i], rgb)
-                canvas.drawPath(ribbon, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = withAlpha(c, 0.6f); maskFilter = blur
-                })
-                canvas.drawPath(ribbon, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    style = Paint.Style.STROKE; strokeWidth = max(1.5f, maxWidth * 0.16f)
-                    strokeJoin = Paint.Join.ROUND; color = withAlpha(c, 0.95f); maskFilter = blur
-                })
+            val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { maskFilter = blur }
+            val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE; strokeWidth = max(1.5f, maxWidth * 0.16f)
+                strokeJoin = Paint.Join.ROUND; maskFilter = blur
             }
+            if (!stroke.dirty) {
+                val ribbon = ribbonPath(ribbonOutline(pts, normals))
+                canvas.drawPath(ribbon, fillPaint.apply { color = withAlpha(rgb, 0.6f) })
+                canvas.drawPath(ribbon, rimPaint.apply { color = withAlpha(rgb, 0.95f) })
+            } else {
+                // The brush changed colour along the way, so the ribbon can't be
+                // one flat path. Each span gets its own — the two wash alphas
+                // stay constant, and the spans butt together rather than
+                // overlapping, so this doesn't build up the way per-segment
+                // translucent strokes do.
+                for (i in 1 until pts.size) {
+                    val ribbon = ribbonPath(
+                        ribbonOutline(listOf(pts[i - 1], pts[i]), listOf(normals[i - 1], normals[i])),
+                    )
+                    val c = colorAt(pts[i], rgb)
+                    canvas.drawPath(ribbon, fillPaint.apply { color = withAlpha(c, 0.6f) })
+                    canvas.drawPath(ribbon, rimPaint.apply { color = withAlpha(c, 0.95f) })
+                }
+            }
+            if (stroke.varies) applyLoadMask(canvas, pts, normals, halo)
         }
-        if (stroke.varies) applyLoadMask(canvas, pts, halo)
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         canvas.restoreToCount(layer)
     }
@@ -192,18 +190,21 @@ object StrokeRenderer {
             val rnd = Random(stroke.seed.toLong())
             val bristleCount = (maxWidth / 2.5f).roundToInt().coerceIn(8, 22)
             val centerSpacing = maxWidth / bristleCount
+            // Hoisted: this is per-stroke, and the loop below runs up to 22
+            // times a frame.
+            val dirty = stroke.dirty
+            val bristlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+                maskFilter = blur
+            }
             for (b in 0 until bristleCount) {
                 if (rnd.nextDouble() < 0.1) continue // dry-brush gap
                 val base = (b + 0.5f) / bristleCount * 2f - 1f
                 val frac = (base + (rnd.nextDouble().toFloat() - 0.5f) * (2f / bristleCount) * 0.8f)
                     .coerceIn(-1f, 1f)
-                val bw = max(0.6f, centerSpacing * (0.9f + rnd.nextDouble().toFloat() * 0.9f))
-                val bristlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    style = Paint.Style.STROKE; strokeWidth = bw
-                    strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
-                    maskFilter = blur
-                }
-                if (!stroke.dirty) {
+                bristlePaint.strokeWidth = max(0.6f, centerSpacing * (0.9f + rnd.nextDouble().toFloat() * 0.9f))
+                if (!dirty) {
                     val path = android.graphics.Path()
                     for (j in pts.indices) {
                         val p = pts[j]
@@ -227,10 +228,11 @@ object StrokeRenderer {
                     }
                 }
             }
+            // The mask ribbon already spans each point's own width; the extra
+            // pad only has to reach past the smeared halo. Reuses the normals
+            // computed above rather than deriving them a second time.
+            if (stroke.varies) applyLoadMask(canvas, pts, normals, smear * 3f + 2f)
         }
-        // The mask ribbon already spans each point's own width; the extra pad
-        // only has to reach past the smeared halo.
-        if (stroke.varies) applyLoadMask(canvas, pts, smear * 3f + 2f)
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         canvas.restoreToCount(layer)
     }
@@ -372,12 +374,16 @@ object StrokeRenderer {
      * cut to the exact stroke would leave those at full strength around a faded
      * body.
      */
-    private fun applyLoadMask(canvas: Canvas, pts: List<StrokePoint>, pad: Float) {
+    private fun applyLoadMask(
+        canvas: Canvas,
+        pts: List<StrokePoint>,
+        normals: List<Vec2>,
+        pad: Float,
+    ) {
         if (pts.size < 2) {
             // A single dab: nothing to ramp along, so fade it as a whole.
             return
         }
-        val normals = strokeNormals(pts)
         val n = pts.size
         // Extend the end points outward so the caps fall inside the mask.
         val first = pts[0].position

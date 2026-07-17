@@ -49,15 +49,31 @@ class Stroke(
 ) {
     val points: MutableList<StrokePoint> = mutableListOf()
 
+    private var _varies = false
+    private var _dirty = false
+    private var firstColor = INHERIT_COLOR
+
     fun add(p: StrokePoint) {
         points.add(p)
+        // Tracked as points arrive rather than scanned on demand: the live
+        // preview re-renders the whole stroke every frame and asks these
+        // questions per bristle, so a scan here is a scan per frame per bristle.
+        if (p.load < 1f) _varies = true
+
+        // Carrying a colour is not the same as changing colour. A loaded brush
+        // stamps its colour on every point, but until it drags through wet paint
+        // that colour is constant — and a constant-colour stroke can be drawn as
+        // one path per bristle instead of one per segment. Getting this wrong
+        // costs ~150x the draw calls.
+        val c = if (p.color == INHERIT_COLOR) color else p.color
+        if (points.size == 1) firstColor = c else if (c != firstColor) _dirty = true
     }
 
     val isEmpty: Boolean get() = points.isEmpty()
 
     /** True if the brush ran down at any point — the renderer then fades the mark. */
-    val varies: Boolean get() = points.any { it.load < 1f }
+    val varies: Boolean get() = _varies
 
-    /** True if the brush changed colour mid-stroke (it dragged through wet paint). */
-    val dirty: Boolean get() = points.any { it.color != INHERIT_COLOR }
+    /** True if the colour actually changes along the stroke (it picked pigment up). */
+    val dirty: Boolean get() = _dirty
 }
