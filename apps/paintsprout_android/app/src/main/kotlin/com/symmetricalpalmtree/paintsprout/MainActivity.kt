@@ -131,7 +131,6 @@ class MainActivity : AppCompatActivity() {
         setupTray()
         binding.btnShowRail.setOnClickListener { setRailVisible(true) }
 
-        binding.canvas.frontInk = binding.frontInk
         binding.canvas.tool = tool
         binding.canvas.strokeColor = color
         applySizeToCanvas()

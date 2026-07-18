@@ -67,73 +67,6 @@ object StrokeRenderer {
         }
     }
 
-    /**
-     * Renders one FINALIZED chunk of an in-progress stroke for the
-     * front-buffered overlay: the pen's solid segments or the grain mesh over
-     * just these points, with the surface tooth applied chunk-locally (the
-     * tooth is canvas-anchored, so chunk-by-chunk application composes the same
-     * mark the bake produces). Chunks share their boundary point with their
-     * neighbour, so strips and segments join flush.
-     */
-    fun paintChunk(
-        canvas: Canvas,
-        tool: Tool,
-        color: Int,
-        pts: List<StrokePoint>,
-        surface: SurfaceKind,
-    ) {
-        if (pts.isEmpty()) return
-        val profile = ToolProfile.of(tool)
-        val rgb = color or OPAQUE_ALPHA
-        val tooth = ToothCache.toothFor(surface, tool)
-        var maxWidth = 0f
-        var minX = pts.first().position.x
-        var maxX = minX
-        var minY = pts.first().position.y
-        var maxY = minY
-        for (p in pts) {
-            maxWidth = max(maxWidth, p.width)
-            minX = min(minX, p.position.x); maxX = max(maxX, p.position.x)
-            minY = min(minY, p.position.y); maxY = max(maxY, p.position.y)
-        }
-        val pad = maxWidth / 2f + 2f
-        val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
-        val layer = if (tooth != null) canvas.saveLayer(bounds, null) else -1
-        if (profile.renderStyle == RenderStyle.GRAIN) {
-            if (pts.size == 1) {
-                val p = pts.first()
-                canvas.drawCircle(
-                    p.position.x, p.position.y, p.width / 2f,
-                    Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                        this.color = withAlpha(colorAt(p, rgb), p.density * loadAlpha(p.load))
-                    },
-                )
-            } else {
-                grainStrip(canvas, pts, rgb)
-            }
-        } else {
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                this.color = rgb
-                style = Paint.Style.STROKE
-                strokeCap = Paint.Cap.ROUND
-                strokeJoin = Paint.Join.ROUND
-                strokeWidth = pts.first().width
-            }
-            if (pts.size == 1) {
-                canvas.drawPoint(pts[0].position.x, pts[0].position.y, paint)
-            } else {
-                val path = android.graphics.Path()
-                path.moveTo(pts[0].position.x, pts[0].position.y)
-                for (i in 1 until pts.size) path.lineTo(pts[i].position.x, pts[i].position.y)
-                canvas.drawPath(path, paint)
-            }
-        }
-        if (tooth != null) {
-            applyTooth(canvas, bounds, tooth, surface.toothScale)
-            canvas.restoreToCount(layer)
-        }
-    }
-
     // --- Grain (pencil / marker) --------------------------------------------
 
     private fun paintGrain(
@@ -153,35 +86,30 @@ object StrokeRenderer {
                 },
             )
         } else {
-            grainStrip(canvas, pts, rgb)
+            val normals = strokeNormals(pts)
+            val verts = FloatArray(pts.size * 4) // 2 vertices/point, 2 floats each
+            val colors = IntArray(pts.size * 2)
+            for (i in pts.indices) {
+                val p = pts[i]
+                val hw = max(0.25f, p.width / 2f)
+                val left = p.position + normals[i] * hw
+                val right = p.position - normals[i] * hw
+                // One mesh, so per-vertex alpha can't overlap-accumulate — the
+                // grain path folds load straight into the vertex colour and
+                // needs no separate mask.
+                val col = withAlpha(colorAt(p, rgb), p.density * loadAlpha(p.load))
+                verts[i * 4] = left.x; verts[i * 4 + 1] = left.y
+                verts[i * 4 + 2] = right.x; verts[i * 4 + 3] = right.y
+                colors[i * 2] = col; colors[i * 2 + 1] = col
+            }
+            canvas.drawVertices(
+                Canvas.VertexMode.TRIANGLE_STRIP, verts.size, verts, 0,
+                null, 0, colors, 0, null, 0, 0,
+                Paint().apply { color = Color.WHITE },
+            )
         }
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         canvas.restoreToCount(layer)
-    }
-
-    /** The grain ribbon as one mesh with per-vertex colour (density + load). */
-    private fun grainStrip(canvas: Canvas, pts: List<StrokePoint>, rgb: Int) {
-        val normals = strokeNormals(pts)
-        val verts = FloatArray(pts.size * 4) // 2 vertices/point, 2 floats each
-        val colors = IntArray(pts.size * 2)
-        for (i in pts.indices) {
-            val p = pts[i]
-            val hw = max(0.25f, p.width / 2f)
-            val left = p.position + normals[i] * hw
-            val right = p.position - normals[i] * hw
-            // One mesh, so per-vertex alpha can't overlap-accumulate — the
-            // grain path folds load straight into the vertex colour and
-            // needs no separate mask.
-            val col = withAlpha(colorAt(p, rgb), p.density * loadAlpha(p.load))
-            verts[i * 4] = left.x; verts[i * 4 + 1] = left.y
-            verts[i * 4 + 2] = right.x; verts[i * 4 + 3] = right.y
-            colors[i * 2] = col; colors[i * 2 + 1] = col
-        }
-        canvas.drawVertices(
-            Canvas.VertexMode.TRIANGLE_STRIP, verts.size, verts, 0,
-            null, 0, colors, 0, null, 0, 0,
-            Paint().apply { color = Color.WHITE },
-        )
     }
 
     // --- Wash (watercolor look; wet/spectral is Stage 4) --------------------

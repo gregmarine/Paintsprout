@@ -396,37 +396,6 @@ class PaintCanvasView @JvmOverloads constructor(
     private val activeBounds = RectF()
     private var activeMaxWidth = 0f
 
-    // --- Front-buffered wet ink ---------------------------------------------
-    /** The low-latency overlay, when the host wired one up. */
-    var frontInk: FrontInkView? = null
-
-    /** Whether the ACTIVE stroke's ink is being drawn by the overlay. */
-    private var frontActive = false
-
-    /** How many leading points have been sent to the front buffer. */
-    private var frontSent = 0
-
-    /** Tools the overlay can draw: opaque/simple marks with no live tail needs.
-     *  The eraser reveals what's BELOW the overlay, and wet/translucent tools
-     *  need whole-stroke layers — those stay on the classic path. */
-    private fun frontEligible(t: Tool): Boolean =
-        t == Tool.PEN || t == Tool.PENCIL || t == Tool.MARKER
-
-    /** Sends any newly-finalized points of the active stroke to the overlay. */
-    private fun sendFrontChunk(stroke: Stroke, flushAll: Boolean) {
-        val ink = frontInk ?: return
-        val n = stroke.points.size
-        // Grain normals of the last point are provisional until a successor
-        // exists; hold that point back until pointer-up finalizes it.
-        val target = if (flushAll || stroke.tool == Tool.PEN) n else n - 1
-        if (target <= frontSent && !(flushAll && frontSent < n)) return
-        val from = max(0, frontSent - 1) // share the boundary point: joins flush
-        val snapshot = ArrayList(stroke.points.subList(from, target))
-        if (snapshot.size < 1) return
-        ink.renderChunk(FrontInkView.Chunk(stroke.tool, stroke.color, snapshot, surface))
-        frontSent = target
-    }
-
     // --- History ------------------------------------------------------------
     private val committed = mutableListOf<PaintOp>()
     private val redoStack = mutableListOf<PaintOp>()
@@ -676,7 +645,6 @@ class PaintCanvasView @JvmOverloads constructor(
         bufH = (lh * SUPER_SAMPLE).roundToInt()
         srcRect.set(0, 0, bufW, bufH)
         dstRect.set(0, 0, lw, lh)
-        frontInk?.configureSheet(canvasLeft.toFloat(), canvasTop.toFloat(), lw.toFloat(), lh.toFloat())
 
         // The pickup trail is buffer-sized; drop it so it's reallocated to match.
         pickupBuf?.recycle()
@@ -937,9 +905,6 @@ class PaintCanvasView @JvmOverloads constructor(
 
         val paintLayer = paintBmp ?: return
         val liveClip = activeClip ?: unbakedClips.lastOrNull { it != null }
-        // While the overlay owns the active stroke's ink, the classic path
-        // must not draw it too (double ink).
-        val active = if (frontActive) null else this.active
         val hasEdits = unbaked.isNotEmpty() || active != null
 
         // Draws the edited paint: the committed layer plus the pending strokes. A
@@ -1501,11 +1466,6 @@ class PaintCanvasView @JvmOverloads constructor(
                     stroke, event.getX(actionIndex), event.getY(actionIndex),
                     event.getPressure(actionIndex), event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
                 )
-                // Front-buffered ink only when unclipped (a frisket needs the
-                // classic path's mask compositing).
-                frontActive = frontEligible(tool) && activeClip == null && frontInk?.isReady == true
-                frontSent = 0
-                if (frontActive) sendFrontChunk(stroke, flushAll = false)
                 invalidate()
                 return true
             }
@@ -1545,7 +1505,7 @@ class PaintCanvasView @JvmOverloads constructor(
                     stroke, event.getX(pi), event.getY(pi),
                     event.getPressure(pi), event.getAxisValue(MotionEvent.AXIS_TILT, pi),
                 )
-                if (frontActive) sendFrontChunk(stroke, flushAll = false) else invalidate()
+                invalidate()
                 return true
             }
 
@@ -1572,13 +1532,6 @@ class PaintCanvasView @JvmOverloads constructor(
                 }
                 val stroke = active
                 if (stroke != null && event.getPointerId(actionIndex) == activePointerId) {
-                    if (frontActive) {
-                        sendFrontChunk(stroke, flushAll = true) // tail is final now
-                        frontActive = false
-                        // Let the classic path draw the (now unbaked) stroke for
-                        // a frame before the overlay lets go, so ink never blinks.
-                        postOnAnimation { postOnAnimation { frontInk?.clearInk() } }
-                    }
                     unbaked.add(stroke)
                     unbakedClips.add(activeClip)
                     active = null
