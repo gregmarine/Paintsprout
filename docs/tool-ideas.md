@@ -224,7 +224,8 @@ Where Paintsprout could be genuinely unlike anything else — the hard parts are
 | Status | Item | Notes |
 |--------|------|-------|
 | ⬜ | Wet-on-wet fluid diffusion | Real bleeding that evolves over time, not a static blur at stroke time |
-| ⬜ | Drying timer | Pigment stays wet/reactive for seconds, then sets — timing becomes a skill |
+| 🚧 | Drying timer | Pigment stays wet/reactive for seconds, then sets — timing becomes a skill. Visual half shipped (feel branch): the wash ages live — spread creeps out, rim deepens, fill lightens as each section dries, converging to the baked look. Reactive-while-wet half still open |
+| ⬜ | Drying-feel controls | Expose the drying constants as user settings — dry time (DRY_MS), wet tightness (WET_SPREAD), wet rim faintness (WET_RIM), wet darkening (WET_DARKEN) in StrokeRenderer/PaintCanvasView — so the wash's temperament is tweakable per taste, maybe per paper |
 | ⬜ | Pre-wetting the paper | A later stroke blooms |
 | ⬜ | Gravity / drips | Runs when you tilt the device — accelerometer is right there |
 | ⬜ | Impasto height field | Thickness → normal map; movable light source raking across it — the whole appeal of oil |
