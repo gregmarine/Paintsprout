@@ -141,21 +141,70 @@ object StrokeRenderer {
             val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { maskFilter = blur }
             val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE; strokeWidth = max(1.5f, maxWidth * 0.16f)
-                strokeJoin = Paint.Join.ROUND; maskFilter = blur
+                strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND; maskFilter = blur
             }
+            val lastIdx = pts.size - 1
             for (run in spansOf(stroke, rgb)) {
-                val ribbon = ribbonPath(
-                    ribbonOutline(
-                        pts.subList(run.from, run.to + 1),
-                        normals.subList(run.from, run.to + 1),
-                    ),
+                val subPts = pts.subList(run.from, run.to + 1)
+                val subNorms = normals.subList(run.from, run.to + 1)
+                canvas.drawPath(
+                    ribbonPath(ribbonOutline(subPts, subNorms)),
+                    fillPaint.apply { color = withAlpha(run.color, 0.6f * run.alpha) },
                 )
-                canvas.drawPath(ribbon, fillPaint.apply { color = withAlpha(run.color, 0.6f * run.alpha) })
-                canvas.drawPath(ribbon, rimPaint.apply { color = withAlpha(run.color, 0.95f * run.alpha) })
+                canvas.drawPath(
+                    rimEdgesPath(subPts, subNorms, capStart = run.from == 0, capEnd = run.to == lastIdx),
+                    rimPaint.apply { color = withAlpha(run.color, 0.95f * run.alpha) },
+                )
             }
         }
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         canvas.restoreToCount(layer)
+    }
+
+    /**
+     * The pooled-rim path for one span of a wash: the ribbon's two long edges,
+     * plus the end caps where the whole STROKE starts and stops — but never the
+     * closing cross-lines a full ribbon outline would add at the span's own
+     * boundaries. A draining stroke is split into spans at fixed load steps, so
+     * rimming each span's closed outline painted a dark bar across the stroke's
+     * interior at every split — the too-regular "glops" along a fading wash.
+     * Real pigment pools only at the wash's outer boundary.
+     */
+    private fun rimEdgesPath(
+        pts: List<StrokePoint>,
+        normals: List<Vec2>,
+        capStart: Boolean,
+        capEnd: Boolean,
+    ): android.graphics.Path {
+        val n = pts.size
+        fun edge(i: Int, side: Float): Vec2 {
+            val hw = max(0.5f, pts[i].width / 2f)
+            return pts[i].position + normals[i] * (side * hw)
+        }
+
+        val path = android.graphics.Path()
+        fun move(v: Vec2) = path.moveTo(v.x, v.y)
+        fun line(v: Vec2) = path.lineTo(v.x, v.y)
+        when {
+            capStart && capEnd -> { // single span: the full outline, as before
+                move(edge(0, 1f)); for (i in 1 until n) line(edge(i, 1f))
+                for (i in n - 1 downTo 0) line(edge(i, -1f))
+                path.close()
+            }
+            capEnd -> { // left edge, around the stroke's end, back up the right
+                move(edge(0, 1f)); for (i in 1 until n) line(edge(i, 1f))
+                for (i in n - 1 downTo 0) line(edge(i, -1f))
+            }
+            capStart -> { // down the left edge, around the stroke's start, out the right
+                move(edge(n - 1, 1f)); for (i in n - 2 downTo 0) line(edge(i, 1f))
+                for (i in 0 until n) line(edge(i, -1f))
+            }
+            else -> { // interior span: two open edges, nothing across the stroke
+                move(edge(0, 1f)); for (i in 1 until n) line(edge(i, 1f))
+                move(edge(0, -1f)); for (i in 1 until n) line(edge(i, -1f))
+            }
+        }
+        return path
     }
 
     // --- Bristle (brush) ----------------------------------------------------
