@@ -138,7 +138,14 @@ object StrokeRenderer {
             })
         } else {
             val normals = strokeNormals(pts)
-            val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { maskFilter = blur }
+            // Fill: ONE mesh with per-vertex colour and alpha, so a draining or
+            // contaminated wash fades smoothly instead of stepping span by span
+            // — per-span blurred fills used to overlap at every load boundary
+            // and print a dark crossband there: the too-regular "ladder" on a
+            // fading wash. The soft bleed edge is geometry, not a mask blur.
+            drawWashFillMesh(canvas, pts, normals, rgb, bleed)
+            // Rim: pooled pigment along the outer edges (per-span colour; its
+            // steps run along the edge, never across the stroke).
             val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE; strokeWidth = max(1.5f, maxWidth * 0.16f)
                 strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND; maskFilter = blur
@@ -151,10 +158,6 @@ object StrokeRenderer {
                 val subPts = pts.subList(run.from, run.to + 1)
                 val subNorms = normals.subList(run.from, run.to + 1)
                 canvas.drawPath(
-                    ribbonPath(ribbonOutline(subPts, subNorms)),
-                    fillPaint.apply { color = withAlpha(run.color, 0.6f * run.alpha) },
-                )
-                canvas.drawPath(
                     rimEdgesPath(subPts, subNorms, capStart = run.from == 0, capEnd = run.to == lastIdx),
                     rimPaint.apply { color = withAlpha(run.color, 0.95f * run.alpha) },
                 )
@@ -162,6 +165,74 @@ object StrokeRenderer {
         }
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         canvas.restoreToCount(layer)
+    }
+
+    /**
+     * The wash fill as three triangle strips (left soft band, solid core, right
+     * soft band) sharing exact vertex lines, tapered to nothing past both ends.
+     * Per-vertex colour carries the load fade and any picked-up pigment
+     * continuously along the stroke; alpha ramps from the solid core to zero
+     * across the bleed width, which is what the old per-shape blur provided —
+     * without a mask filter, and without span quantization.
+     */
+    private fun drawWashFillMesh(
+        canvas: Canvas,
+        pts: List<StrokePoint>,
+        normals: List<Vec2>,
+        rgb: Int,
+        bleed: Float,
+    ) {
+        val n = pts.size
+        val soft = max(1f, bleed)
+        val offCore = FloatArray(n)
+        val offOuter = FloatArray(n)
+        val coreCol = IntArray(n)
+        val edgeCol = IntArray(n)
+        for (i in 0 until n) {
+            val p = pts[i]
+            val hw = max(0.5f, p.width / 2f)
+            offCore[i] = max(0.1f, hw - soft)
+            offOuter[i] = hw + soft
+            coreCol[i] = withAlpha(colorAt(p, rgb), 0.6f * loadAlpha(p.load))
+            edgeCol[i] = coreCol[i] and 0x00FFFFFF
+        }
+        // End caps collapse to a point just past each end — kept short (the
+        // bleed plus a little body) so the cap reads as a soft blunt end, not a
+        // pointed beak sticking past the rim.
+        val head = pts[0].position - tangentOf(normals[0]) * (soft + offCore[0] * 0.35f)
+        val tail = pts[n - 1].position + tangentOf(normals[n - 1]) * (soft + offCore[n - 1] * 0.35f)
+        val verts = FloatArray((n + 2) * 4)
+        val colors = IntArray((n + 2) * 2)
+        val paint = Paint()
+
+        fun strip(sideA: Float, offA: FloatArray, colA: IntArray, sideB: Float, offB: FloatArray, colB: IntArray) {
+            var slot = 0
+            fun put(ax: Float, ay: Float, bx: Float, by: Float, ca: Int, cb: Int) {
+                verts[slot * 4] = ax; verts[slot * 4 + 1] = ay
+                verts[slot * 4 + 2] = bx; verts[slot * 4 + 3] = by
+                colors[slot * 2] = ca; colors[slot * 2 + 1] = cb
+                slot++
+            }
+            put(head.x, head.y, head.x, head.y, edgeCol[0], edgeCol[0])
+            for (i in 0 until n) {
+                val p = pts[i].position
+                val nm = normals[i]
+                put(
+                    p.x + nm.x * sideA * offA[i], p.y + nm.y * sideA * offA[i],
+                    p.x + nm.x * sideB * offB[i], p.y + nm.y * sideB * offB[i],
+                    colA[i], colB[i],
+                )
+            }
+            put(tail.x, tail.y, tail.x, tail.y, edgeCol[n - 1], edgeCol[n - 1])
+            canvas.drawVertices(
+                Canvas.VertexMode.TRIANGLE_STRIP, slot * 4, verts, 0,
+                null, 0, colors, 0, null, 0, 0, paint,
+            )
+        }
+
+        strip(1f, offOuter, edgeCol, 1f, offCore, coreCol) // left bleed band
+        strip(1f, offCore, coreCol, -1f, offCore, coreCol) // solid core
+        strip(-1f, offCore, coreCol, -1f, offOuter, edgeCol) // right bleed band
     }
 
     /**
