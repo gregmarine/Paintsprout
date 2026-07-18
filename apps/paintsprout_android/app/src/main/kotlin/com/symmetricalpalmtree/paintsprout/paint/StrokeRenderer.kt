@@ -20,12 +20,13 @@ import kotlin.math.roundToInt
  * (brush), and the shared solid/soft path (pen, spray, eraser), plus the surface
  * [ToothCache] break-up.
  *
- * Wash and solid soften their edges with a per-shape [BlurMaskFilter], rather
- * than Flutter's whole-layer `ImageFilter.blur`, because our software Bitmap
- * bakes can't host a `RenderEffect`. Grain and bristle instead build their marks
- * as meshes with per-vertex colour, which is both cheaper and the only way they
- * can carry a colour and a strength that vary along the stroke — see
- * [drawBristle].
+ * Grain, bristle and the multi-point wash build their marks as meshes with
+ * per-vertex colour — cheaper than mask filters (a [BlurMaskFilter] on a
+ * software canvas was, twice over, the single largest per-frame cost) and the
+ * only way a mark can carry colour and strength that vary continuously along
+ * the stroke. Softness is geometry: a band fading to zero alpha across its
+ * width just is a soft edge. Blur survives only in single-dab marks and the
+ * solid/soft ribbon path.
  */
 object StrokeRenderer {
 
@@ -143,7 +144,7 @@ object StrokeRenderer {
             // mask blur, and each side's offsets are clamped to the local
             // radius of curvature so cross-sections never fold over themselves
             // on tight curves (the starburst artifact blur used to smear).
-            drawWashMesh(canvas, pts, strokeNormals(pts), rgb, bleed, maxWidth)
+            drawWashMesh(canvas, pts, rgb, bleed, maxWidth)
         }
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         canvas.restoreToCount(layer)
@@ -156,16 +157,22 @@ object StrokeRenderer {
      * stroke's ends. Per-vertex colour carries the load fade and any picked-up
      * pigment continuously — no spans, no mask filters.
      *
+     * All geometry — tangents, the width envelope, and curvature — is measured
+     * over an arc-length WINDOW comparable to the stroke's width, never between
+     * adjacent samples: at real pen density (~1.3 px steps) per-sample angles
+     * are sensor noise, which grooved the edges and made the curvature clamp
+     * flicker. Physically this is surface tension: a wet boundary cannot hold
+     * wiggles smaller than the wash is wide.
+     *
      * Fold-proofing: on the inner side of a turn, any offset beyond the local
-     * radius of curvature makes consecutive cross-sections cross, which stacks
-     * the translucent mesh into dark radial streaks. Each side's offsets are
-     * clamped to that radius, so a tight curve pinches (as real paint does)
-     * instead of bursting.
+     * radius of curvature makes consecutive cross-sections cross, stacking the
+     * translucent mesh into dark radial streaks. Each side's offsets are
+     * clamped to that (windowed) radius, so a genuinely tight curve pinches —
+     * as real paint does — instead of bursting.
      */
     private fun drawWashMesh(
         canvas: Canvas,
         pts: List<StrokePoint>,
-        normals: List<Vec2>,
         rgb: Int,
         bleed: Float,
         maxWidth: Float,
@@ -173,8 +180,17 @@ object StrokeRenderer {
         val n = pts.size
         val soft = max(1f, bleed)
         val rimHalf = max(0.75f, maxWidth * 0.08f) + soft * 0.5f
+        val win = max(3f, maxWidth * 0.45f)
 
-        // Per-side offsets (left = +normal, right = -normal), curvature-clamped.
+        // Cumulative arc length + width prefix sums for O(n) windowing.
+        val arc = FloatArray(n)
+        val prefW = FloatArray(n + 1)
+        for (i in 0 until n) {
+            if (i > 0) arc[i] = arc[i - 1] + (pts[i].position - pts[i - 1].position).distance
+            prefW[i + 1] = prefW[i] + pts[i].width
+        }
+
+        val nx = FloatArray(n); val ny = FloatArray(n) // windowed normals
         val coreL = FloatArray(n); val coreR = FloatArray(n)
         val outerL = FloatArray(n); val outerR = FloatArray(n)
         val rimPkL = FloatArray(n); val rimPkR = FloatArray(n)
@@ -183,22 +199,47 @@ object StrokeRenderer {
         val coreCol = IntArray(n); val edgeCol = IntArray(n)
         val rimCol = IntArray(n); val rimEdgeCol = IntArray(n)
 
+        var j = 0 // window start: farthest point within win behind i
+        var k = 0 // window end: farthest point within win ahead of i
         for (i in 0 until n) {
-            val p = pts[i]
-            val hw = max(0.5f, p.width / 2f)
+            while (j < i && arc[i] - arc[j] > win) j++
+            if (k < i) k = i
+            while (k < n - 1 && arc[k + 1] - arc[i] <= win) k++
+
+            val p = pts[i].position
+            // Windowed tangent; per-sample fallback at a true hairpin, where
+            // the window's ends meet and the difference degenerates.
+            var dx = pts[k].position.x - pts[j].position.x
+            var dy = pts[k].position.y - pts[j].position.y
+            var len = kotlin.math.sqrt(dx * dx + dy * dy)
+            if (len < win * 0.25f) {
+                val a = if (i > 0) pts[i - 1].position else p
+                val b = if (i < n - 1) pts[i + 1].position else p
+                dx = b.x - a.x; dy = b.y - a.y
+                len = kotlin.math.sqrt(dx * dx + dy * dy)
+            }
+            if (len < 1e-4f) { dx = 1f; dy = 0f; len = 1f }
+            nx[i] = -dy / len
+            ny[i] = dx / len
+
+            // Windowed width envelope (surface tension smooths the boundary).
+            val hw = max(0.5f, (prefW[k + 1] - prefW[j]) / (k - j + 1) / 2f)
+
+            // Windowed curvature -> radius; only the turn's inner side clamps.
             var limitL = Float.MAX_VALUE
             var limitR = Float.MAX_VALUE
-            if (i in 1 until n - 1) {
-                val v1 = p.position - pts[i - 1].position
-                val v2 = pts[i + 1].position - p.position
-                val l1 = v1.distance
-                val l2 = v2.distance
+            if (j < i && k > i) {
+                val v1x = p.x - pts[j].position.x; val v1y = p.y - pts[j].position.y
+                val v2x = pts[k].position.x - p.x; val v2y = pts[k].position.y - p.y
+                val l1 = kotlin.math.sqrt(v1x * v1x + v1y * v1y)
+                val l2 = kotlin.math.sqrt(v2x * v2x + v2y * v2y)
                 if (l1 > 1e-4f && l2 > 1e-4f) {
-                    val cross = v1.x * v2.y - v1.y * v2.x
-                    val dot = v1.x * v2.x + v1.y * v2.y
+                    val cross = v1x * v2y - v1y * v2x
+                    val dot = v1x * v2x + v1y * v2y
                     val theta = kotlin.math.atan2(kotlin.math.abs(cross), dot)
                     if (theta > 1e-3f) {
-                        val radius = min(l1, l2) / theta
+                        // Chords underestimate the radius ~2x over this window.
+                        val radius = 2f * min(l1, l2) / theta
                         if (cross > 0f) limitL = radius else limitR = radius
                     }
                 }
@@ -213,8 +254,9 @@ object StrokeRenderer {
             rimOutR[i] = min(rimPkR[i] + rimHalf, limitR * 0.98f)
             rimInL[i] = max(0.05f, rimPkL[i] - rimHalf)
             rimInR[i] = max(0.05f, rimPkR[i] - rimHalf)
-            val a = loadAlpha(p.load)
-            val c = colorAt(p, rgb)
+
+            val a = loadAlpha(pts[i].load)
+            val c = colorAt(pts[i], rgb)
             coreCol[i] = withAlpha(c, 0.6f * a)
             edgeCol[i] = coreCol[i] and 0x00FFFFFF
             rimCol[i] = withAlpha(c, 0.95f * a)
@@ -223,8 +265,10 @@ object StrokeRenderer {
 
         // End caps collapse to a point just past each end — short, so the cap
         // reads as a soft blunt end rather than a pointed beak past the rim.
-        val head = pts[0].position - tangentOf(normals[0]) * (soft + coreL[0] * 0.35f)
-        val tail = pts[n - 1].position + tangentOf(normals[n - 1]) * (soft + coreL[n - 1] * 0.35f)
+        val headT = Vec2(ny[0], -nx[0]) // tangent = perp of normal
+        val tailT = Vec2(ny[n - 1], -nx[n - 1])
+        val head = pts[0].position - headT * (soft + coreL[0] * 0.35f)
+        val tail = pts[n - 1].position + tailT * (soft + coreL[n - 1] * 0.35f)
         val verts = FloatArray((n + 2) * 4)
         val colors = IntArray((n + 2) * 2)
         val paint = Paint()
@@ -244,10 +288,9 @@ object StrokeRenderer {
             put(head.x, head.y, head.x, head.y, capCol[0], capCol[0])
             for (i in 0 until n) {
                 val p = pts[i].position
-                val nm = normals[i]
                 put(
-                    p.x + nm.x * sideA * offA[i], p.y + nm.y * sideA * offA[i],
-                    p.x + nm.x * sideB * offB[i], p.y + nm.y * sideB * offB[i],
+                    p.x + nx[i] * sideA * offA[i], p.y + ny[i] * sideA * offA[i],
+                    p.x + nx[i] * sideB * offB[i], p.y + ny[i] * sideB * offB[i],
                     colA[i], colB[i],
                 )
             }
