@@ -51,6 +51,7 @@ import com.symmetricalpalmtree.paintsprout.paint.ConcreteParams
 import com.symmetricalpalmtree.paintsprout.paint.MetalParams
 import com.symmetricalpalmtree.paintsprout.paint.StoneParams
 import com.symmetricalpalmtree.paintsprout.paint.WatercolorParams
+import com.symmetricalpalmtree.paintsprout.paint.WetSim
 import com.symmetricalpalmtree.paintsprout.paint.WoodParams
 import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
 import com.symmetricalpalmtree.paintsprout.paint.resolveDensity
@@ -612,6 +613,66 @@ class PaintCanvasView @JvmOverloads constructor(
         pigmentAgsl?.let { runCatching { RuntimeShader(it) }.getOrNull() }
     }
 
+    // --- Wet simulation (Phase 3) -------------------------------------------
+
+    /** The wet sim's shader trio (water tick, pigment tick, present). */
+    private val wetAgsl: Array<String>? by lazy {
+        runCatching {
+            arrayOf(R.raw.wet_water, R.raw.wet_pigment, R.raw.wet_present).map { res ->
+                resources.openRawResource(res).bufferedReader().use { it.readText() }
+            }.toTypedArray()
+        }.getOrNull()
+    }
+
+    /** The LIVE wet sim (UI thread only). Kept across strokes; fields realloc in begin(). */
+    private var wetSim: WetSim? = null
+
+    /**
+     * The stroke the live sim is simulating: the active watercolor stroke, or —
+     * after pen-up, while [wetSettling] — the wash still spreading and drying.
+     * Null when the ribbon fallback is in effect (no mixer / no shaders).
+     */
+    private var wetStroke: Stroke? = null
+    private var wetStamped = 0
+    private var wetSettling = false
+    private var wetClip: Bitmap? = null
+
+    /**
+     * Finalized wet strokes waiting for their bake: drawn from a snapshot of the
+     * composited crop exactly as the sim last showed it, so the wash neither
+     * vanishes nor changes while the bake replays it into the paint layer.
+     */
+    private class WetPending(val stroke: Stroke, val snapshot: Bitmap, val crop: Rect)
+    private val wetPending = mutableListOf<WetPending>()
+    private val wetPendingPaint = Paint().apply {
+        xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SRC)
+    }
+
+    /** The bake-side sim: one instance, lazily made and reused — bakes are serialized. */
+    private var bakeWetSim: WetSim? = null
+
+    /**
+     * The live wall-clock tick: advance the fields one fixed step, RECORD the
+     * stamp count into the stroke's schedule (that record is what the bake
+     * replays), and keep going until a settling wash calms, then commit it.
+     */
+    private val wetTicker = object : Runnable {
+        override fun run() {
+            val sim = wetSim ?: return
+            val stroke = wetStroke ?: return
+            // Idle while there is nothing to move: before the first stamp, and
+            // once the wash has calmed under a resting pen — otherwise a pen
+            // held still would grow the schedule (and every later replay of it)
+            // by thirty no-op ticks a second. Stamping resumes the ticking.
+            if (wetStamped > 0 && !sim.isCalm) {
+                sim.tick(ToothCache.rawFieldFor(surface), surface.toothScale * SUPER_SAMPLE)
+                stroke.wetSchedule.add(wetStamped)
+                invalidate()
+            }
+            if (wetSettling && sim.isCalm) finalizeWet() else postDelayed(this, WetSim.TICK_MS)
+        }
+    }
+
     /** Marching-ants overlay shader (res/raw/selection_overlay.agsl). */
     private val antsShader: RuntimeShader? by lazy {
         runCatching {
@@ -658,6 +719,7 @@ class PaintCanvasView @JvmOverloads constructor(
         paintBmp?.recycle()
         surfaceBmp = placeholder
         paintBmp = newPaint
+        abortWet()
         unbaked.clear()
         unbakedClips.clear()
         active = null
@@ -762,6 +824,9 @@ class PaintCanvasView @JvmOverloads constructor(
         ) {
             return
         }
+        // A settling wash commits under the old surface first; like every other
+        // op it re-tooths to the new material when the history rebuilds.
+        interruptWet()
         clearRedo()
         surface = kind
         plainColor = bgColor
@@ -904,21 +969,30 @@ class PaintCanvasView @JvmOverloads constructor(
         }
 
         val paintLayer = paintBmp ?: return
-        val liveClip = activeClip ?: unbakedClips.lastOrNull { it != null }
-        val hasEdits = unbaked.isNotEmpty() || active != null
+        val liveClip = activeClip ?: wetClip ?: unbakedClips.lastOrNull { it != null }
+        val hasEdits = unbaked.isNotEmpty() || active != null || wetSettling
 
         // Draws the edited paint: the committed layer plus the pending strokes. A
         // live watercolor stroke re-wets the paint under it directly on this
         // hardware canvas (dilute + push + multiply the wash), so the wet bleed
-        // shows under the pen with no off-thread readback.
+        // shows under the pen with no off-thread readback. A settling wash (pen
+        // lifted, still spreading) renders exactly the same way until it calms.
         fun drawEdited() {
             val a = active
             if (a != null && a.tool == Tool.WATERCOLOR) {
                 withTransientPoint(a, predictedTailPoint()) { drawWetLive(canvas, paintLayer, a) }
                 return
             }
+            val settling = if (wetSettling) wetStroke else null
+            if (a == null && settling != null) {
+                drawWetLive(canvas, paintLayer, settling)
+                return
+            }
             canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
-            for (s in unbaked) drawLiveStroke(canvas, s, isActive = false)
+            drawWetPending(canvas)
+            for (s in unbaked) {
+                if (wetPending.none { it.stroke === s }) drawLiveStroke(canvas, s, isActive = false)
+            }
             a?.let { drawLiveStroke(canvas, it, isActive = true) }
         }
 
@@ -1235,7 +1309,11 @@ class PaintCanvasView @JvmOverloads constructor(
             return
         }
         // Everything below happens in a crop around the stroke, not the buffer.
-        val crop = watercolorCrop(stroke)
+        // With the wet sim running, the wash IS the simulated field and the crop
+        // is the sim's; the ribbon wash only remains as the no-GPU fallback.
+        val sim = wetSim
+        val simLive = sim != null && stroke === wetStroke && wetStamped > 0
+        val crop = if (simLive) sim!!.crop else watercolorCrop(stroke)
         val cw = crop.width()
         val ch = crop.height()
         if (cw <= 0 || ch <= 0) {
@@ -1245,75 +1323,45 @@ class PaintCanvasView @JvmOverloads constructor(
         val l = crop.left.toFloat()
         val t = crop.top.toFloat()
 
-        washFlip = washFlip xor 1
-        val wash = scratchFor(washScratch, washFlip, cw, ch)
-        Canvas(wash).apply {
-            drawColor(Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
-            save()
-            translate(-l, -t)
-            scale(SUPER_SAMPLE, SUPER_SAMPLE)
-            StrokeRenderer.paintStroke(this, stroke, surface)
-            restore()
-        }
-
-        val region = strokeRegionPath(stroke)
-        val avgW = avgWidth(stroke) * SUPER_SAMPLE
-        val soften = max(2f, avgW * 0.14f)
-        val clearFeather = max(2f, avgW * 0.10f)
-        val spread = max(4f, avgW * 0.30f)
-
-        // Backdrop for the mixer: the wet-interacted paint at half res, or — if the
-        // GPU read-back fails — the raw paint layer (still correct colour, no bleed).
-        // The readback is the live path's single most expensive step, and the
-        // backdrop is blurred context under the wash — so it's rebuilt only every
-        // few points (or when the crop moves) and the shader reused in between.
-        val hw = cw / 2
-        val hh = ch / 2
-        val cropKey = (crop.left.toLong() shl 42) xor (crop.top.toLong() shl 21) xor
-            (cw.toLong() shl 11) xor ch.toLong()
-        val cached = wetBackdropShader
-        val backdropShader: Shader
-        if (cached != null && cropKey == wetBackdropKey &&
-            stroke.points.size - wetBackdropAtPoints < WET_BACKDROP_STRIDE
-        ) {
-            backdropShader = cached
+        val washShader: Shader
+        val b: RectF
+        if (simLive) {
+            washShader = sim!!.presentShader()
+            // The wash can have bloomed anywhere the field covers.
+            b = RectF(crop)
         } else {
-            wetLiveFlip = wetLiveFlip xor 1
-            val wetHalf = scratchFor(wetLiveScratch, wetLiveFlip, hw, hh)
-            backdropShader = runCatching {
-                GpuRender.renderInto(wetHalf) { rc ->
-                    recordWetBackdrop(
-                        rc as android.graphics.RecordingCanvas, paintLayer, region, hw, hh,
-                        0.5f, clearFeather * 0.5f, spread * 0.5f, soften * 0.5f, l, t,
-                    )
-                }
-                BitmapShader(wetHalf, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
-                    setLocalMatrix(Matrix().apply { setScale(2f, 2f); postTranslate(l, t) })
-                }
-            }.getOrElse {
-                BitmapShader(paintLayer, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+            washFlip = washFlip xor 1
+            val wash = scratchFor(washScratch, washFlip, cw, ch)
+            Canvas(wash).apply {
+                drawColor(Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+                save()
+                translate(-l, -t)
+                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                StrokeRenderer.paintStroke(this, stroke, surface)
+                restore()
             }
-            wetBackdropShader = backdropShader
-            wetBackdropAtPoints = stroke.points.size
-            wetBackdropKey = cropKey
+            washShader = BitmapShader(wash, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+                setLocalMatrix(Matrix().apply { setTranslate(l, t) })
+            }
+            val avgW = avgWidth(stroke) * SUPER_SAMPLE
+            val soften = max(2f, avgW * 0.14f)
+            val spread = max(4f, avgW * 0.30f)
+            b = RectF()
+            strokeRegionPath(stroke).computeBounds(b, true)
+            // Pad past the stroke to include the bloom that spreads beyond the
+            // ribbon, else the SRC rect below clips the soft bleed into a hard
+            // edge — but stay inside the crop, where the clamped shaders above
+            // are actually valid.
+            b.inset(-(avgW + spread + soften + 4f), -(avgW + spread + soften + 4f))
+            b.intersect(RectF(crop))
         }
 
-        val b = RectF()
-        region.computeBounds(b, true)
-        // Pad past the stroke to include the bloom that spreads beyond the ribbon,
-        // else the SRC rect below clips the soft bleed into a hard edge — but stay
-        // inside the crop, where the clamped shaders above are actually valid.
-        b.inset(-(avgW + spread + soften + 4f), -(avgW + spread + soften + 4f))
-        b.intersect(RectF(crop))
+        val backdropShader = wetBackdropShaderFor(paintLayer, stroke, crop)
 
         canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
+        drawWetPending(canvas)
         mixer.setInputShader("uBackdrop", backdropShader)
-        mixer.setInputShader(
-            "uWash",
-            BitmapShader(wash, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
-                setLocalMatrix(Matrix().apply { setTranslate(l, t) })
-            },
-        )
+        mixer.setInputShader("uWash", washShader)
         mixer.setFloatUniform("uWashGain", 1f)
         mixer.setFloatUniform("uDarkHold", 0f)
         // The mixer emits the FULL composited result over the bounds (backdrop where
@@ -1324,6 +1372,172 @@ class PaintCanvasView @JvmOverloads constructor(
             shader = mixer
             xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SRC)
         })
+    }
+
+    /**
+     * Backdrop for the mixer: the wet-interacted paint at half res, or — if the
+     * GPU read-back fails — the raw paint layer (still correct colour, no bleed).
+     * The readback is the live path's single most expensive step, and the
+     * backdrop is blurred context under the wash — so it's rebuilt only every
+     * few points (or when the crop moves) and the shader reused in between.
+     */
+    private fun wetBackdropShaderFor(paintLayer: Bitmap, stroke: Stroke, crop: Rect): Shader {
+        val cw = crop.width()
+        val ch = crop.height()
+        val cropKey = (crop.left.toLong() shl 42) xor (crop.top.toLong() shl 21) xor
+            (cw.toLong() shl 11) xor ch.toLong()
+        val cached = wetBackdropShader
+        if (cached != null && cropKey == wetBackdropKey &&
+            stroke.points.size - wetBackdropAtPoints < WET_BACKDROP_STRIDE
+        ) {
+            return cached
+        }
+        val l = crop.left.toFloat()
+        val t = crop.top.toFloat()
+        val avgW = avgWidth(stroke) * SUPER_SAMPLE
+        val soften = max(2f, avgW * 0.14f)
+        val clearFeather = max(2f, avgW * 0.10f)
+        val spread = max(4f, avgW * 0.30f)
+        val region = strokeRegionPath(stroke)
+        val hw = cw / 2
+        val hh = ch / 2
+        wetLiveFlip = wetLiveFlip xor 1
+        val wetHalf = scratchFor(wetLiveScratch, wetLiveFlip, hw, hh)
+        val shader = runCatching {
+            GpuRender.renderInto(wetHalf) { rc ->
+                recordWetBackdrop(
+                    rc as android.graphics.RecordingCanvas, paintLayer, region, hw, hh,
+                    0.5f, clearFeather * 0.5f, spread * 0.5f, soften * 0.5f, l, t,
+                )
+            }
+            BitmapShader(wetHalf, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+                setLocalMatrix(Matrix().apply { setScale(2f, 2f); postTranslate(l, t) })
+            }
+        }.getOrElse {
+            BitmapShader(paintLayer, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        }
+        wetBackdropShader = shader
+        wetBackdropAtPoints = stroke.points.size
+        wetBackdropKey = cropKey
+        return shader
+    }
+
+    /**
+     * Draws the finalized-but-unbaked washes from their snapshots. SRC, because
+     * a snapshot is the full composited crop (backdrop where there is no wash) —
+     * over-compositing would double the backdrop. Where a LIVE wash's mixer rect
+     * later overlaps one of these crops the pending wash briefly disappears
+     * under it (the live backdrop reads only the committed paint); the bake
+     * restores the true stacking within a frame or two.
+     */
+    private fun drawWetPending(canvas: Canvas) {
+        for (p in wetPending) {
+            val dst = RectF(
+                p.crop.left / SUPER_SAMPLE, p.crop.top / SUPER_SAMPLE,
+                p.crop.right / SUPER_SAMPLE, p.crop.bottom / SUPER_SAMPLE,
+            )
+            canvas.drawBitmap(p.snapshot, null, dst, wetPendingPaint)
+        }
+    }
+
+    /** Puts the live sim on [stroke]; fields start at the first accepted stamp. */
+    private fun startWetSim(stroke: Stroke) {
+        val agsl = wetAgsl ?: return
+        if (pigmentShader == null) return // no mixer — ribbon fallback end to end
+        if (wetSim == null) wetSim = WetSim(agsl[0], agsl[1], agsl[2])
+        wetStroke = stroke
+        wetStamped = 0
+        wetSettling = false
+        removeCallbacks(wetTicker)
+        postDelayed(wetTicker, WetSim.TICK_MS)
+    }
+
+    /** The live sim crop: [activeBounds] padded like [watercolorCrop], quantized. */
+    private fun liveWetCrop(): Rect {
+        val pad = (activeMaxWidth / 2f + activeMaxWidth * 1.5f + 16f) * SUPER_SAMPLE
+        return quantizedCrop(
+            activeBounds.left * SUPER_SAMPLE - pad, activeBounds.top * SUPER_SAMPLE - pad,
+            activeBounds.right * SUPER_SAMPLE + pad, activeBounds.bottom * SUPER_SAMPLE + pad,
+        )
+    }
+
+    /**
+     * Commits the settled (or interrupted) wash: freeze the recorded schedule
+     * and final crop into the stroke, snapshot the composited crop exactly as
+     * shown (drawn until the bake lands), and hand the stroke to the bake.
+     */
+    private fun finalizeWet() {
+        removeCallbacks(wetTicker)
+        val sim = wetSim
+        val stroke = wetStroke ?: return
+        val clip = wetClip
+        wetStroke = null
+        wetSettling = false
+        wetClip = null
+        if (sim != null && wetStamped > 0) {
+            stroke.wetCrop = Rect(sim.crop)
+            runCatching { renderWetSnapshot(sim, stroke) }.getOrNull()?.let {
+                wetPending.add(WetPending(stroke, it, Rect(sim.crop)))
+            }
+        }
+        wetStamped = 0
+        unbaked.add(stroke)
+        unbakedClips.add(clip)
+        kickBake()
+        invalidate()
+    }
+
+    /**
+     * Cuts a still-settling wash short so something else (a new stroke, undo, a
+     * surface change) can proceed against a committed history. The wash stops
+     * spreading right where the screen showed it — the schedule already recorded
+     * is exactly what bakes, so nothing visibly changes.
+     */
+    private fun interruptWet() {
+        if (wetSettling) finalizeWet()
+    }
+
+    /** Discards the live sim AND the pending snapshots (canvas is being reset). */
+    private fun abortWet() {
+        removeCallbacks(wetTicker)
+        wetStroke = null
+        wetSettling = false
+        wetStamped = 0
+        wetClip?.recycle()
+        wetClip = null
+        for (p in wetPending) p.snapshot.recycle()
+        wetPending.clear()
+    }
+
+    /** Drops pending snapshots whose strokes have been baked into the paint. */
+    private fun pruneWetPending() {
+        if (wetPending.isEmpty()) return
+        val it = wetPending.iterator()
+        while (it.hasNext()) {
+            val p = it.next()
+            if (unbaked.none { u -> u === p.stroke }) {
+                p.snapshot.recycle()
+                it.remove()
+            }
+        }
+    }
+
+    /** The composited crop (backdrop + presented wash) as the screen shows it. */
+    private fun renderWetSnapshot(sim: WetSim, stroke: Stroke): Bitmap {
+        val paintLayer = paintBmp ?: error("no paint layer")
+        val mixer = pigmentShader ?: error("no mixer")
+        val crop = sim.crop
+        mixer.setInputShader("uBackdrop", wetBackdropShaderFor(paintLayer, stroke, crop))
+        mixer.setInputShader("uWash", sim.presentShader())
+        mixer.setFloatUniform("uWashGain", 1f)
+        mixer.setFloatUniform("uDarkHold", 0f)
+        val paint = Paint().apply { shader = mixer }
+        val l = crop.left.toFloat()
+        val t = crop.top.toFloat()
+        return GpuRender.renderToBitmap(crop.width(), crop.height()) { c ->
+            c.translate(-l, -t)
+            c.drawRect(l, t, crop.right.toFloat(), crop.bottom.toFloat(), paint)
+        }
     }
 
     /** Marching ants over the selection, or the transform frame while floating. */
@@ -1424,6 +1638,8 @@ class PaintCanvasView @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN -> {
                 // Ignore presses that land in the mat around the sheet.
                 if (!insideCanvas(event.getX(actionIndex), event.getY(actionIndex))) return true
+                // A new mark cuts a still-settling wash short (committed as shown).
+                interruptWet()
                 if (tool == Tool.WAND) {
                     handleWandDown(event, actionIndex)
                     return true
@@ -1462,6 +1678,7 @@ class PaintCanvasView @JvmOverloads constructor(
                 )
                 val stroke = Stroke(tool, color, seed = Random.nextInt(), baseWidth = sizeFor(tool))
                 active = stroke
+                if (tool == Tool.WATERCOLOR) startWetSim(stroke)
                 // Extras first: the first sample stamps the pickup trail, which
                 // beginActiveExtras would otherwise immediately erase.
                 beginActiveExtras()
@@ -1535,13 +1752,21 @@ class PaintCanvasView @JvmOverloads constructor(
                 }
                 val stroke = active
                 if (stroke != null && event.getPointerId(actionIndex) == activePointerId) {
-                    unbaked.add(stroke)
-                    unbakedClips.add(activeClip)
+                    if (stroke === wetStroke) {
+                        // The wash stays live past pen-up: it keeps spreading and
+                        // drying under the ticker, and commits once it calms (or
+                        // is interrupted). The clip rides along until then.
+                        wetClip = activeClip
+                        wetSettling = true
+                    } else {
+                        unbaked.add(stroke)
+                        unbakedClips.add(activeClip)
+                        kickBake()
+                    }
                     active = null
                     activeClip = null
                     activePointerId = INVALID_POINTER
                     endActiveExtras()
-                    kickBake()
                     invalidate()
                 }
                 return true
@@ -2637,6 +2862,21 @@ class PaintCanvasView @JvmOverloads constructor(
         } else {
             activeBounds.union(pos.x, pos.y)
         }
+        // Deposit into the wet sim: every ACCEPTED point stamps, so the stroke's
+        // point list is exactly the deposition record the bake replays.
+        val sim = wetSim
+        if (sim != null && stroke === wetStroke) {
+            val needed = liveWetCrop()
+            if (wetStamped == 0) {
+                sim.begin(needed)
+            } else if (!sim.crop.contains(needed)) {
+                val u = Rect(needed)
+                u.union(sim.crop)
+                sim.grow(quantizedCrop(u.left.toFloat(), u.top.toFloat(), u.right.toFloat(), u.bottom.toFloat()))
+            }
+            sim.stampPoint(point, stroke.color, SUPER_SAMPLE)
+            wetStamped = stroke.points.size
+        }
     }
 
     /**
@@ -2771,6 +3011,7 @@ class PaintCanvasView @JvmOverloads constructor(
             storeCheckpoint(committed.size, next)
             old?.recycle()
             baking = false
+            pruneWetPending()
             invalidate()
             onHistoryChanged?.invoke()
             if (unbaked.isNotEmpty()) kickBake()
@@ -2847,6 +3088,10 @@ class PaintCanvasView @JvmOverloads constructor(
     }
 
     fun undo() {
+        // A settling wash commits first (it becomes the newest op — so the FIRST
+        // undo after it lands removes the wash; this call itself starts its bake,
+        // and the guard below makes this undo a no-op while that bake runs).
+        interruptWet()
         if (baking || rebuilding || committed.isEmpty()) return
         redoStack.add(committed.removeAt(committed.lastIndex))
         syncSurfaceToHistory()
@@ -2854,6 +3099,7 @@ class PaintCanvasView @JvmOverloads constructor(
     }
 
     fun redo() {
+        interruptWet()
         if (baking || rebuilding || redoStack.isEmpty()) return
         committed.add(redoStack.removeAt(redoStack.lastIndex))
         syncSurfaceToHistory()
@@ -3286,6 +3532,13 @@ class PaintCanvasView @JvmOverloads constructor(
      */
     private fun compositeWatercolorInto(base: Bitmap, stroke: Stroke) {
         if (stroke.isEmpty) return
+        // A stroke the wet sim simulated live bakes by REPLAYING that simulation
+        // (its recorded schedule and final crop); the ribbon path below remains
+        // for the no-GPU fallback — and as the last resort if the replay fails.
+        if (stroke.wetCrop != null) {
+            val ok = runCatching { compositeWetSimInto(base, stroke) }.isSuccess
+            if (ok) return
+        }
         val crop = watercolorCrop(stroke)
         val cw = crop.width()
         val ch = crop.height()
@@ -3331,6 +3584,70 @@ class PaintCanvasView @JvmOverloads constructor(
     }
 
     /**
+     * Bakes a wet-sim watercolor stroke by re-running the simulation the live
+     * preview showed: same stamps, same recorded tick schedule, same
+     * canvas-anchored tooth — over the stroke's final crop from the start (the
+     * live crop grew along the way, so live == bake is near-exact at crop
+     * edges, not bit-exact). The presented wash then composites through the
+     * same backdrop + spectral mix as the ribbon bake. Runs on the bake
+     * dispatcher; [GpuRender] serializes GPU access with the live sim.
+     */
+    private fun compositeWetSimInto(base: Bitmap, stroke: Stroke) {
+        val agsl = wetAgsl ?: error("wet shaders unavailable")
+        val crop = stroke.wetCrop ?: error("not a wet-sim stroke")
+        val cw = crop.width()
+        val ch = crop.height()
+        if (cw <= 0 || ch <= 0) return
+        val sim = bakeWetSim ?: WetSim(agsl[0], agsl[1], agsl[2]).also { bakeWetSim = it }
+        sim.begin(crop)
+        val tooth = ToothCache.rawFieldFor(surface)
+        val toothScale = surface.toothScale * SUPER_SAMPLE
+        var cursor = 0
+        for (n in stroke.wetSchedule) {
+            while (cursor < n && cursor < stroke.points.size) {
+                sim.stampPoint(stroke.points[cursor], stroke.color, SUPER_SAMPLE)
+                cursor++
+            }
+            sim.tick(tooth, toothScale)
+        }
+        // Points laid after the last live tick were stamped but never advanced.
+        while (cursor < stroke.points.size) {
+            sim.stampPoint(stroke.points[cursor], stroke.color, SUPER_SAMPLE)
+            cursor++
+        }
+        val wash = sim.presentToBitmap()
+
+        val l = crop.left.toFloat()
+        val t = crop.top.toFloat()
+        val region = strokeRegionPath(stroke)
+        val avgW = avgWidth(stroke) * SUPER_SAMPLE
+        val soften = max(2f, avgW * 0.14f)
+        val clearFeather = max(2f, avgW * 0.10f)
+        val spread = max(4f, avgW * 0.30f)
+        val backdrop = GpuRender.renderToBitmap(cw, ch) { canvas ->
+            recordWetBackdrop(
+                canvas as android.graphics.RecordingCanvas, base, region, cw, ch,
+                SUPER_SAMPLE, clearFeather, spread, soften, l, t,
+            )
+        }
+        val mixAgsl = pigmentAgsl
+        val mixed = mixAgsl?.let { runCatching { PigmentMixer.mix(it, backdrop, wash) }.getOrNull() }
+        Canvas(base).apply {
+            if (mixed != null) {
+                // The mixed crop is the full replacement for its region
+                // (backdrop where there is no wash), so it overwrites.
+                drawBitmap(mixed, l, t, srcPaint)
+            } else {
+                drawBitmap(backdrop, l, t, srcPaint)
+                drawBitmap(wash, l, t, null)
+            }
+        }
+        backdrop.recycle()
+        wash.recycle()
+        mixed?.recycle()
+    }
+
+    /**
      * The buffer rect the watercolor pipeline must touch for [stroke]: its
      * bounds padded for the widest mark, the bloom spread and the bleed halo,
      * clamped to the buffer — with the SIZE quantized up to [CROP_QUANTUM]
@@ -3355,10 +3672,18 @@ class PaintCanvasView @JvmOverloads constructor(
         // bloom + bleed reach (~1.44*avgW, see drawWetLive's mixer rect), with
         // margin so the crop-clamped shaders never show their edge.
         val pad = (maxW / 2f + avgW * 1.5f + 16f) * SUPER_SAMPLE
-        val l0 = kotlin.math.floor(minX * SUPER_SAMPLE - pad).toInt().coerceIn(0, bufW)
-        val t0 = kotlin.math.floor(minY * SUPER_SAMPLE - pad).toInt().coerceIn(0, bufH)
-        val r0 = ceil(maxX * SUPER_SAMPLE + pad).toInt().coerceIn(0, bufW)
-        val b0 = ceil(maxY * SUPER_SAMPLE + pad).toInt().coerceIn(0, bufH)
+        return quantizedCrop(
+            minX * SUPER_SAMPLE - pad, minY * SUPER_SAMPLE - pad,
+            maxX * SUPER_SAMPLE + pad, maxY * SUPER_SAMPLE + pad,
+        )
+    }
+
+    /** Clamps float buffer bounds and quantizes the SIZE up to [CROP_QUANTUM]. */
+    private fun quantizedCrop(lf: Float, tf: Float, rf: Float, bf: Float): Rect {
+        val l0 = kotlin.math.floor(lf).toInt().coerceIn(0, bufW)
+        val t0 = kotlin.math.floor(tf).toInt().coerceIn(0, bufH)
+        val r0 = ceil(rf).toInt().coerceIn(0, bufW)
+        val b0 = ceil(bf).toInt().coerceIn(0, bufH)
         val qw = min(bufW, (((r0 - l0).coerceAtLeast(1) + CROP_QUANTUM - 1) / CROP_QUANTUM) * CROP_QUANTUM)
         val qh = min(bufH, (((b0 - t0).coerceAtLeast(1) + CROP_QUANTUM - 1) / CROP_QUANTUM) * CROP_QUANTUM)
         val l = l0.coerceAtMost(bufW - qw).coerceAtLeast(0)
@@ -3427,6 +3752,7 @@ class PaintCanvasView @JvmOverloads constructor(
     /** Clears painted strokes, history, and any selection, keeping the surface. */
     fun clear() {
         val old = paintBmp ?: return
+        abortWet()
         unbaked.clear()
         unbakedClips.forEach { it?.recycle() }
         unbakedClips.clear()
@@ -3463,6 +3789,10 @@ class PaintCanvasView @JvmOverloads constructor(
         super.onDetachedFromWindow()
         antsAnimator.cancel()
         scope.cancel()
+        abortWet()
+        wetSim?.release()
+        wetSim = null
+        bakeWetSim?.release()
         recycleCheckpoints()
         activeAccum?.recycle()
         activeAccum = null
