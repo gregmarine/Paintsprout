@@ -137,75 +137,103 @@ object StrokeRenderer {
                 color = withAlpha(c, 0.95f * fade); maskFilter = blur
             })
         } else {
-            val normals = strokeNormals(pts)
-            // Fill: ONE mesh with per-vertex colour and alpha, so a draining or
-            // contaminated wash fades smoothly instead of stepping span by span
-            // — per-span blurred fills used to overlap at every load boundary
-            // and print a dark crossband there: the too-regular "ladder" on a
-            // fading wash. The soft bleed edge is geometry, not a mask blur.
-            drawWashFillMesh(canvas, pts, normals, rgb, bleed)
-            // Rim: pooled pigment along the outer edges (per-span colour; its
-            // steps run along the edge, never across the stroke).
-            val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                style = Paint.Style.STROKE; strokeWidth = max(1.5f, maxWidth * 0.16f)
-                strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND; maskFilter = blur
-            }
-            val lastIdx = pts.size - 1
-            for (run in spansOf(stroke, rgb)) {
-                // A dry span deposits nothing; skip it rather than blur-render
-                // an invisible path (a long drained tail is pure waste).
-                if (run.alpha <= 0.004f) continue
-                val subPts = pts.subList(run.from, run.to + 1)
-                val subNorms = normals.subList(run.from, run.to + 1)
-                canvas.drawPath(
-                    rimEdgesPath(subPts, subNorms, capStart = run.from == 0, capEnd = run.to == lastIdx),
-                    rimPaint.apply { color = withAlpha(run.color, 0.95f * run.alpha) },
-                )
-            }
+            // The whole wash — fill AND pooled rim — as meshes with per-vertex
+            // colour/alpha: the load fades continuously (no span quantization,
+            // no crossband "ladder"), the soft edges are geometry rather than a
+            // mask blur, and each side's offsets are clamped to the local
+            // radius of curvature so cross-sections never fold over themselves
+            // on tight curves (the starburst artifact blur used to smear).
+            drawWashMesh(canvas, pts, strokeNormals(pts), rgb, bleed, maxWidth)
         }
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         canvas.restoreToCount(layer)
     }
 
     /**
-     * The wash fill as three triangle strips (left soft band, solid core, right
-     * soft band) sharing exact vertex lines, tapered to nothing past both ends.
-     * Per-vertex colour carries the load fade and any picked-up pigment
-     * continuously along the stroke; alpha ramps from the solid core to zero
-     * across the bleed width, which is what the old per-shape blur provided —
-     * without a mask filter, and without span quantization.
+     * The whole wash as triangle strips sharing exact vertex lines: a solid
+     * core flanked by soft bleed bands (the fill), and a thin peaked band
+     * riding each edge (the pooled rim), all tapered to a blunt point past the
+     * stroke's ends. Per-vertex colour carries the load fade and any picked-up
+     * pigment continuously — no spans, no mask filters.
+     *
+     * Fold-proofing: on the inner side of a turn, any offset beyond the local
+     * radius of curvature makes consecutive cross-sections cross, which stacks
+     * the translucent mesh into dark radial streaks. Each side's offsets are
+     * clamped to that radius, so a tight curve pinches (as real paint does)
+     * instead of bursting.
      */
-    private fun drawWashFillMesh(
+    private fun drawWashMesh(
         canvas: Canvas,
         pts: List<StrokePoint>,
         normals: List<Vec2>,
         rgb: Int,
         bleed: Float,
+        maxWidth: Float,
     ) {
         val n = pts.size
         val soft = max(1f, bleed)
-        val offCore = FloatArray(n)
-        val offOuter = FloatArray(n)
-        val coreCol = IntArray(n)
-        val edgeCol = IntArray(n)
+        val rimHalf = max(0.75f, maxWidth * 0.08f) + soft * 0.5f
+
+        // Per-side offsets (left = +normal, right = -normal), curvature-clamped.
+        val coreL = FloatArray(n); val coreR = FloatArray(n)
+        val outerL = FloatArray(n); val outerR = FloatArray(n)
+        val rimPkL = FloatArray(n); val rimPkR = FloatArray(n)
+        val rimOutL = FloatArray(n); val rimOutR = FloatArray(n)
+        val rimInL = FloatArray(n); val rimInR = FloatArray(n)
+        val coreCol = IntArray(n); val edgeCol = IntArray(n)
+        val rimCol = IntArray(n); val rimEdgeCol = IntArray(n)
+
         for (i in 0 until n) {
             val p = pts[i]
             val hw = max(0.5f, p.width / 2f)
-            offCore[i] = max(0.1f, hw - soft)
-            offOuter[i] = hw + soft
-            coreCol[i] = withAlpha(colorAt(p, rgb), 0.6f * loadAlpha(p.load))
+            var limitL = Float.MAX_VALUE
+            var limitR = Float.MAX_VALUE
+            if (i in 1 until n - 1) {
+                val v1 = p.position - pts[i - 1].position
+                val v2 = pts[i + 1].position - p.position
+                val l1 = v1.distance
+                val l2 = v2.distance
+                if (l1 > 1e-4f && l2 > 1e-4f) {
+                    val cross = v1.x * v2.y - v1.y * v2.x
+                    val dot = v1.x * v2.x + v1.y * v2.y
+                    val theta = kotlin.math.atan2(kotlin.math.abs(cross), dot)
+                    if (theta > 1e-3f) {
+                        val radius = min(l1, l2) / theta
+                        if (cross > 0f) limitL = radius else limitR = radius
+                    }
+                }
+            }
+            coreL[i] = min(max(0.1f, hw - soft), limitL * 0.75f)
+            coreR[i] = min(max(0.1f, hw - soft), limitR * 0.75f)
+            outerL[i] = min(hw + soft, limitL * 0.95f)
+            outerR[i] = min(hw + soft, limitR * 0.95f)
+            rimPkL[i] = min(hw, limitL * 0.85f)
+            rimPkR[i] = min(hw, limitR * 0.85f)
+            rimOutL[i] = min(rimPkL[i] + rimHalf, limitL * 0.98f)
+            rimOutR[i] = min(rimPkR[i] + rimHalf, limitR * 0.98f)
+            rimInL[i] = max(0.05f, rimPkL[i] - rimHalf)
+            rimInR[i] = max(0.05f, rimPkR[i] - rimHalf)
+            val a = loadAlpha(p.load)
+            val c = colorAt(p, rgb)
+            coreCol[i] = withAlpha(c, 0.6f * a)
             edgeCol[i] = coreCol[i] and 0x00FFFFFF
+            rimCol[i] = withAlpha(c, 0.95f * a)
+            rimEdgeCol[i] = rimCol[i] and 0x00FFFFFF
         }
-        // End caps collapse to a point just past each end — kept short (the
-        // bleed plus a little body) so the cap reads as a soft blunt end, not a
-        // pointed beak sticking past the rim.
-        val head = pts[0].position - tangentOf(normals[0]) * (soft + offCore[0] * 0.35f)
-        val tail = pts[n - 1].position + tangentOf(normals[n - 1]) * (soft + offCore[n - 1] * 0.35f)
+
+        // End caps collapse to a point just past each end — short, so the cap
+        // reads as a soft blunt end rather than a pointed beak past the rim.
+        val head = pts[0].position - tangentOf(normals[0]) * (soft + coreL[0] * 0.35f)
+        val tail = pts[n - 1].position + tangentOf(normals[n - 1]) * (soft + coreL[n - 1] * 0.35f)
         val verts = FloatArray((n + 2) * 4)
         val colors = IntArray((n + 2) * 2)
         val paint = Paint()
 
-        fun strip(sideA: Float, offA: FloatArray, colA: IntArray, sideB: Float, offB: FloatArray, colB: IntArray) {
+        fun strip(
+            sideA: Float, offA: FloatArray, colA: IntArray,
+            sideB: Float, offB: FloatArray, colB: IntArray,
+            capCol: IntArray,
+        ) {
             var slot = 0
             fun put(ax: Float, ay: Float, bx: Float, by: Float, ca: Int, cb: Int) {
                 verts[slot * 4] = ax; verts[slot * 4 + 1] = ay
@@ -213,7 +241,7 @@ object StrokeRenderer {
                 colors[slot * 2] = ca; colors[slot * 2 + 1] = cb
                 slot++
             }
-            put(head.x, head.y, head.x, head.y, edgeCol[0], edgeCol[0])
+            put(head.x, head.y, head.x, head.y, capCol[0], capCol[0])
             for (i in 0 until n) {
                 val p = pts[i].position
                 val nm = normals[i]
@@ -223,62 +251,22 @@ object StrokeRenderer {
                     colA[i], colB[i],
                 )
             }
-            put(tail.x, tail.y, tail.x, tail.y, edgeCol[n - 1], edgeCol[n - 1])
+            put(tail.x, tail.y, tail.x, tail.y, capCol[n - 1], capCol[n - 1])
             canvas.drawVertices(
                 Canvas.VertexMode.TRIANGLE_STRIP, slot * 4, verts, 0,
                 null, 0, colors, 0, null, 0, 0, paint,
             )
         }
 
-        strip(1f, offOuter, edgeCol, 1f, offCore, coreCol) // left bleed band
-        strip(1f, offCore, coreCol, -1f, offCore, coreCol) // solid core
-        strip(-1f, offCore, coreCol, -1f, offOuter, edgeCol) // right bleed band
-    }
-
-    /**
-     * The pooled-rim path for one span of a wash: the ribbon's two long edges,
-     * plus the end caps where the whole STROKE starts and stops — but never the
-     * closing cross-lines a full ribbon outline would add at the span's own
-     * boundaries. A draining stroke is split into spans at fixed load steps, so
-     * rimming each span's closed outline painted a dark bar across the stroke's
-     * interior at every split — the too-regular "glops" along a fading wash.
-     * Real pigment pools only at the wash's outer boundary.
-     */
-    private fun rimEdgesPath(
-        pts: List<StrokePoint>,
-        normals: List<Vec2>,
-        capStart: Boolean,
-        capEnd: Boolean,
-    ): android.graphics.Path {
-        val n = pts.size
-        fun edge(i: Int, side: Float): Vec2 {
-            val hw = max(0.5f, pts[i].width / 2f)
-            return pts[i].position + normals[i] * (side * hw)
-        }
-
-        val path = android.graphics.Path()
-        fun move(v: Vec2) = path.moveTo(v.x, v.y)
-        fun line(v: Vec2) = path.lineTo(v.x, v.y)
-        when {
-            capStart && capEnd -> { // single span: the full outline, as before
-                move(edge(0, 1f)); for (i in 1 until n) line(edge(i, 1f))
-                for (i in n - 1 downTo 0) line(edge(i, -1f))
-                path.close()
-            }
-            capEnd -> { // left edge, around the stroke's end, back up the right
-                move(edge(0, 1f)); for (i in 1 until n) line(edge(i, 1f))
-                for (i in n - 1 downTo 0) line(edge(i, -1f))
-            }
-            capStart -> { // down the left edge, around the stroke's start, out the right
-                move(edge(n - 1, 1f)); for (i in n - 2 downTo 0) line(edge(i, 1f))
-                for (i in 0 until n) line(edge(i, -1f))
-            }
-            else -> { // interior span: two open edges, nothing across the stroke
-                move(edge(0, 1f)); for (i in 1 until n) line(edge(i, 1f))
-                move(edge(0, -1f)); for (i in 1 until n) line(edge(i, -1f))
-            }
-        }
-        return path
+        // Fill: left bleed band, solid core, right bleed band.
+        strip(1f, outerL, edgeCol, 1f, coreL, coreCol, edgeCol)
+        strip(1f, coreL, coreCol, -1f, coreR, coreCol, edgeCol)
+        strip(-1f, coreR, coreCol, -1f, outerR, edgeCol, edgeCol)
+        // Rim: a soft peak riding each edge, over the fill.
+        strip(1f, rimOutL, rimEdgeCol, 1f, rimPkL, rimCol, rimEdgeCol)
+        strip(1f, rimPkL, rimCol, 1f, rimInL, rimEdgeCol, rimEdgeCol)
+        strip(-1f, rimInR, rimEdgeCol, -1f, rimPkR, rimCol, rimEdgeCol)
+        strip(-1f, rimPkR, rimCol, -1f, rimOutR, rimEdgeCol, rimEdgeCol)
     }
 
     // --- Bristle (brush) ----------------------------------------------------
@@ -594,14 +582,6 @@ object StrokeRenderer {
     /** The colour to deposit at [p] — what the brush carried, else the stroke's. */
     private fun colorAt(p: StrokePoint, rgb: Int): Int =
         if (p.color != INHERIT_COLOR) p.color or OPAQUE_ALPHA else rgb
-
-    /**
-     * The stroke as spans of near-constant colour and strength — one span for an
-     * ordinary stroke, more as the brush fades or picks pigment up. See
-     * [strokeRuns] for why this is not done with a mask.
-     */
-    private fun spansOf(stroke: Stroke, rgb: Int): List<StrokeRun> =
-        strokeRuns(stroke, rgb) { loadAlpha(it) }
 
     // --- Helpers ------------------------------------------------------------
 
