@@ -1302,9 +1302,13 @@ class PaintCanvasView @JvmOverloads constructor(
                 // Paint is spent over distance travelled; a new stroke starts
                 // from its own first point, not wherever the last one ended.
                 lastDepositPos = null
-                active = Stroke(tool, color, seed = Random.nextInt()).apply {
-                    add(sample(event, actionIndex))
-                }
+                beginConditioning(event.getPressure(actionIndex))
+                val stroke = Stroke(tool, color, seed = Random.nextInt())
+                active = stroke
+                addSample(
+                    stroke, event.getX(actionIndex), event.getY(actionIndex),
+                    event.getPressure(actionIndex), event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
+                )
                 beginActiveExtras()
                 invalidate()
                 return true
@@ -1335,9 +1339,16 @@ class PaintCanvasView @JvmOverloads constructor(
                 val pi = event.findPointerIndex(activePointerId)
                 if (pi < 0) return true
                 for (h in 0 until event.historySize) {
-                    stroke.add(sampleHistorical(event, pi, h))
+                    addSample(
+                        stroke, event.getHistoricalX(pi, h), event.getHistoricalY(pi, h),
+                        event.getHistoricalPressure(pi, h),
+                        event.getHistoricalAxisValue(MotionEvent.AXIS_TILT, pi, h),
+                    )
                 }
-                stroke.add(sample(event, pi))
+                addSample(
+                    stroke, event.getX(pi), event.getY(pi),
+                    event.getPressure(pi), event.getAxisValue(MotionEvent.AXIS_TILT, pi),
+                )
                 invalidate()
                 return true
             }
@@ -2413,29 +2424,59 @@ class PaintCanvasView @JvmOverloads constructor(
         paLastTapTime = 0L
     }
 
-    private fun sample(e: MotionEvent, pi: Int): StrokePoint =
-        buildPoint(
-            e.getX(pi), e.getY(pi),
-            e.getPressure(pi), e.getAxisValue(MotionEvent.AXIS_TILT, pi),
-        )
+    // --- Input conditioning -------------------------------------------------
+    // The stylus reports ~240 samples/sec with a noisy pressure sensor. Raw
+    // samples flicker the stroke width and pile up thousands of sub-pixel
+    // points on slow strokes, so each raw sample first updates a light
+    // exponential smoothing of pressure/tilt (sensor-noise cleanup — the line
+    // still lands exactly where the pen went), and only samples that moved a
+    // visible distance (or meaningfully changed pressure, e.g. bearing down in
+    // place) become stroke points.
+    private var smoothPressure = 1f
+    private var smoothTilt = 0f
+    private var lastAcceptPos: Vec2? = null
+    private var lastAcceptPressure = 1f
 
-    private fun sampleHistorical(e: MotionEvent, pi: Int, h: Int): StrokePoint =
-        buildPoint(
-            e.getHistoricalX(pi, h), e.getHistoricalY(pi, h),
-            e.getHistoricalPressure(pi, h),
-            e.getHistoricalAxisValue(MotionEvent.AXIS_TILT, pi, h),
-        )
+    private fun normPressure(raw: Float): Float =
+        if (pressureMax > 0f) (raw / pressureMax).coerceIn(0f, 1f) else 1f
+
+    /** Resets the conditioning state at pointer-down (no carry across strokes). */
+    private fun beginConditioning(rawPressure: Float) {
+        smoothPressure = normPressure(rawPressure)
+        smoothTilt = 0f
+        lastAcceptPos = null
+        lastAcceptPressure = smoothPressure
+    }
+
+    /**
+     * Feeds one raw stylus sample through the conditioning: the smoothing sees
+     * every sample (so it tracks time, not acceptance), the stroke only gains a
+     * point when it would visibly matter.
+     */
+    private fun addSample(stroke: Stroke, x: Float, y: Float, rawPressure: Float, tilt: Float) {
+        smoothPressure += SMOOTH_ALPHA * (normPressure(rawPressure) - smoothPressure)
+        smoothTilt += SMOOTH_ALPHA * (tilt - smoothTilt)
+        val pos = Vec2(x, y)
+        val last = lastAcceptPos
+        if (last != null &&
+            (pos - last).distance < MIN_SAMPLE_PX &&
+            kotlin.math.abs(smoothPressure - lastAcceptPressure) < PRESSURE_EPS
+        ) {
+            return
+        }
+        lastAcceptPos = pos
+        lastAcceptPressure = smoothPressure
+        stroke.add(buildPoint(pos, smoothPressure, smoothTilt))
+    }
 
     /**
      * Builds the next sample — and, for wet media, spends the paint it took to
      * get here. Every live point funnels through this, so it's the one place the
      * brush drains.
      */
-    private fun buildPoint(x: Float, y: Float, rawPressure: Float, tilt: Float): StrokePoint {
-        val pressure = if (pressureMax > 0f) (rawPressure / pressureMax).coerceIn(0f, 1f) else 1f
+    private fun buildPoint(pos: Vec2, pressure: Float, tilt: Float): StrokePoint {
         val width = resolveWidth(tool, sizeFor(tool), pressure, tilt)
         val density = resolveDensity(tool, pressure)
-        val pos = Vec2(x, y)
 
         if (!tool.usesLoad) return StrokePoint(pos, width, density)
 
@@ -3293,6 +3334,14 @@ class PaintCanvasView @JvmOverloads constructor(
         const val INVALID_POINTER = -1
         const val WET_DILUTE_ALPHA = 128
         const val SUPER_SAMPLE = 1.0f
+
+        // Input conditioning: EMA weight per raw sample (~10 ms time constant at
+        // 240 Hz), minimum travel before a sample becomes a point (~0.14 mm on
+        // the Movink), and the smoothed-pressure change that forces one through
+        // anyway (bearing down in place must still grow the dab).
+        const val SMOOTH_ALPHA = 0.35f
+        const val MIN_SAMPLE_PX = 1.25f
+        const val PRESSURE_EPS = 0.015f
 
         // Dirty brush: how fast it takes on the paint it drags through. PER_MM is
         // the share of the load swapped for the picked colour per mm travelled
