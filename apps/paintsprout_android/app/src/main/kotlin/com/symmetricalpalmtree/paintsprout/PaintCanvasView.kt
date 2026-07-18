@@ -1389,7 +1389,10 @@ class PaintCanvasView @JvmOverloads constructor(
                 // Paint is spent over distance travelled; a new stroke starts
                 // from its own first point, not wherever the last one ended.
                 lastDepositPos = null
-                beginConditioning(event.getPressure(actionIndex))
+                beginConditioning(
+                    event.getPressure(actionIndex),
+                    event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
+                )
                 val stroke = Stroke(tool, color, seed = Random.nextInt(), baseWidth = sizeFor(tool))
                 active = stroke
                 // Extras first: the first sample stamps the pickup trail, which
@@ -2530,9 +2533,12 @@ class PaintCanvasView @JvmOverloads constructor(
         if (pressureMax > 0f) (raw / pressureMax).coerceIn(0f, 1f) else 1f
 
     /** Resets the conditioning state at pointer-down (no carry across strokes). */
-    private fun beginConditioning(rawPressure: Float) {
+    private fun beginConditioning(rawPressure: Float, tilt: Float) {
         smoothPressure = normPressure(rawPressure)
-        smoothTilt = 0f
+        // Seed with the REAL initial tilt: seeding zero made every stroke start
+        // as if the pen were vertical and "catch up" over the first samples — a
+        // funnel-shaped start, worst on the tilt-heavy marker.
+        smoothTilt = tilt
         lastAcceptPos = null
         lastAcceptPressure = smoothPressure
     }
