@@ -673,6 +673,76 @@ class PaintCanvasView @JvmOverloads constructor(
         }
     }
 
+    // --- Live drying (the wash ages in place; dry == the baked look) --------
+
+    /**
+     * The watercolor stroke whose wash is still drying: each accepted point
+     * records its birth time, and the live render maps age to a drying
+     * progression (spread creeps outward, the rim deepens, the fill lightens
+     * — see StrokeRenderer's dryness curves). The stroke's beginning is
+     * already drying while the tail is still being laid; after pen-up it
+     * stays live until the tail catches up, then bakes. Purely cosmetic and
+     * live-only: the bake always renders fully dry, so the animation
+     * converges to exactly what bakes — no recording, no replay.
+     */
+    private var dryingStroke: Stroke? = null
+    private val dryingBorn = mutableListOf<Long>()
+    private var dryingSettling = false
+
+    /** Redraw pulse while any of the wash is wet; commits once all is dry. */
+    private val dryingPulse = object : Runnable {
+        override fun run() {
+            if (dryingStroke == null) return
+            invalidate()
+            if (dryingSettling && dryingAllDry()) finalizeDrying() else postDelayed(this, DRY_PULSE_MS)
+        }
+    }
+
+    private fun startDrying(stroke: Stroke) {
+        dryingStroke = stroke
+        dryingBorn.clear()
+        dryingSettling = false
+        removeCallbacks(dryingPulse)
+        postDelayed(dryingPulse, DRY_PULSE_MS)
+    }
+
+    /** Points age in laid order, so the whole wash is dry when the youngest is. */
+    private fun dryingAllDry(): Boolean {
+        val last = dryingBorn.lastOrNull() ?: return true
+        return android.os.SystemClock.uptimeMillis() - last >= DRY_MS
+    }
+
+    /**
+     * Per-point drying progress for the live render, or null when [stroke]
+     * isn't the drying one (everything else draws fully dry).
+     */
+    private fun liveWetness(stroke: Stroke): FloatArray? {
+        if (stroke !== dryingStroke || dryingBorn.isEmpty()) return null
+        val now = android.os.SystemClock.uptimeMillis()
+        return FloatArray(stroke.points.size) { i ->
+            if (i < dryingBorn.size) {
+                ((now - dryingBorn[i]).toFloat() / DRY_MS).coerceIn(0f, 1f)
+            } else {
+                0f // transient predicted tail: just laid
+            }
+        }
+    }
+
+    /** Commits the dried (or interrupted — snaps dry) wash to the bake. */
+    private fun finalizeDrying() {
+        removeCallbacks(dryingPulse)
+        val stroke = dryingStroke ?: return
+        val clip = wetClip
+        dryingStroke = null
+        dryingSettling = false
+        dryingBorn.clear()
+        wetClip = null
+        unbaked.add(stroke)
+        unbakedClips.add(clip)
+        kickBake()
+        invalidate()
+    }
+
     /** Marching-ants overlay shader (res/raw/selection_overlay.agsl). */
     private val antsShader: RuntimeShader? by lazy {
         runCatching {
@@ -970,7 +1040,7 @@ class PaintCanvasView @JvmOverloads constructor(
 
         val paintLayer = paintBmp ?: return
         val liveClip = activeClip ?: wetClip ?: unbakedClips.lastOrNull { it != null }
-        val hasEdits = unbaked.isNotEmpty() || active != null || wetSettling
+        val hasEdits = unbaked.isNotEmpty() || active != null || wetSettling || dryingSettling
 
         // Draws the edited paint: the committed layer plus the pending strokes. A
         // live watercolor stroke re-wets the paint under it directly on this
@@ -983,7 +1053,11 @@ class PaintCanvasView @JvmOverloads constructor(
                 withTransientPoint(a, predictedTailPoint()) { drawWetLive(canvas, paintLayer, a) }
                 return
             }
-            val settling = if (wetSettling) wetStroke else null
+            val settling = when {
+                wetSettling -> wetStroke
+                dryingSettling -> dryingStroke
+                else -> null
+            }
             if (a == null && settling != null) {
                 drawWetLive(canvas, paintLayer, settling)
                 return
@@ -1305,7 +1379,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val mixer = pigmentShader
         if (mixer == null || !canvas.isHardwareAccelerated) {
             canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
-            StrokeRenderer.paintStroke(canvas, stroke, surface)
+            StrokeRenderer.paintStroke(canvas, stroke, surface, liveWetness(stroke))
             return
         }
         // Everything below happens in a crop around the stroke, not the buffer.
@@ -1337,7 +1411,7 @@ class PaintCanvasView @JvmOverloads constructor(
                 save()
                 translate(-l, -t)
                 scale(SUPER_SAMPLE, SUPER_SAMPLE)
-                StrokeRenderer.paintStroke(this, stroke, surface)
+                StrokeRenderer.paintStroke(this, stroke, surface, liveWetness(stroke))
                 restore()
             }
             washShader = BitmapShader(wash, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
@@ -1502,14 +1576,19 @@ class PaintCanvasView @JvmOverloads constructor(
      */
     private fun interruptWet() {
         if (wetSettling) finalizeWet()
+        if (dryingSettling) finalizeDrying()
     }
 
     /** Discards the live sim AND the pending snapshots (canvas is being reset). */
     private fun abortWet() {
         removeCallbacks(wetTicker)
+        removeCallbacks(dryingPulse)
         wetStroke = null
         wetSettling = false
         wetStamped = 0
+        dryingStroke = null
+        dryingSettling = false
+        dryingBorn.clear()
         wetClip?.recycle()
         wetClip = null
         for (p in wetPending) p.snapshot.recycle()
@@ -1685,7 +1764,10 @@ class PaintCanvasView @JvmOverloads constructor(
                 )
                 val stroke = Stroke(tool, color, seed = Random.nextInt(), baseWidth = sizeFor(tool))
                 active = stroke
-                if (tool == Tool.WATERCOLOR) startWetSim(stroke)
+                if (tool == Tool.WATERCOLOR) {
+                    startWetSim(stroke)
+                    startDrying(stroke)
+                }
                 // Extras first: the first sample stamps the pickup trail, which
                 // beginActiveExtras would otherwise immediately erase.
                 beginActiveExtras()
@@ -1765,6 +1847,11 @@ class PaintCanvasView @JvmOverloads constructor(
                         // is interrupted). The clip rides along until then.
                         wetClip = activeClip
                         wetSettling = true
+                    } else if (stroke === dryingStroke) {
+                        // The wash stays live until its tail finishes drying,
+                        // then commits — the dried render IS the baked render.
+                        wetClip = activeClip
+                        dryingSettling = true
                     } else {
                         unbaked.add(stroke)
                         unbakedClips.add(activeClip)
@@ -2869,6 +2956,8 @@ class PaintCanvasView @JvmOverloads constructor(
         } else {
             activeBounds.union(pos.x, pos.y)
         }
+        // Each accepted wash point is born now; its age drives the live drying.
+        if (stroke === dryingStroke) dryingBorn.add(android.os.SystemClock.uptimeMillis())
         // Deposit into the wet sim: every ACCEPTED point stamps, so the stroke's
         // point list is exactly the deposition record the bake replays.
         val sim = wetSim
@@ -3929,6 +4018,11 @@ class PaintCanvasView @JvmOverloads constructor(
         // failed on look (airbrush fog) and frame cost (per-tick readbacks on
         // the UI thread). See startWetSim for what re-enabling requires.
         const val WET_SIM_ENABLED = false
+
+        // Live drying: how long a laid wash section takes to fully dry, and
+        // how often the wet render refreshes while anything is still wet.
+        const val DRY_MS = 3500L
+        const val DRY_PULSE_MS = 33L
 
         // Line tool: min drag to count as a line, handle hit radii (px), and how
         // far the rotate handle sits off the line's centre.

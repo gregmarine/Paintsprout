@@ -30,7 +30,19 @@ import kotlin.math.roundToInt
  */
 object StrokeRenderer {
 
-    fun paintStroke(canvas: Canvas, stroke: Stroke, surface: SurfaceKind = SurfaceKind.PAPER) {
+    /**
+     * @param dryness live-only, wash strokes: per-point drying progress in
+     *   [0,1] (1 = fully dried). Null — the default, and always the bake —
+     *   renders fully dry, so the drying animation CONVERGES to the baked
+     *   result rather than being a separate look. Indices past the array
+     *   (the transient predicted tail) count as freshly laid (0).
+     */
+    fun paintStroke(
+        canvas: Canvas,
+        stroke: Stroke,
+        surface: SurfaceKind = SurfaceKind.PAPER,
+        dryness: FloatArray? = null,
+    ) {
         if (stroke.isEmpty) return
 
         val profile = ToolProfile.of(stroke.tool)
@@ -59,7 +71,7 @@ object StrokeRenderer {
             RenderStyle.GRAIN ->
                 paintGrain(canvas, stroke, rgb, tooth, toothScale, maxWidth, minX, minY, maxX, maxY)
             RenderStyle.WASH ->
-                paintWash(canvas, stroke, rgb, tooth, toothScale, maxWidth, blurSigma, minX, minY, maxX, maxY)
+                paintWash(canvas, stroke, rgb, tooth, toothScale, maxWidth, blurSigma, minX, minY, maxX, maxY, dryness)
             RenderStyle.BRISTLE ->
                 paintBristle(canvas, stroke, rgb, tooth, toothScale, maxWidth, avgWidth, minX, minY, maxX, maxY)
             RenderStyle.SOLID, RenderStyle.SOFT ->
@@ -118,6 +130,7 @@ object StrokeRenderer {
         canvas: Canvas, stroke: Stroke, rgb: Int, tooth: android.graphics.Bitmap?,
         toothScale: Float, maxWidth: Float, bleed: Float,
         minX: Float, minY: Float, maxX: Float, maxY: Float,
+        dryness: FloatArray? = null,
     ) {
         val halo = bleed * 3f + 2f
         val pad = maxWidth / 2f + halo
@@ -127,15 +140,16 @@ object StrokeRenderer {
         val pts = stroke.points
         if (pts.size == 1) {
             val p = pts.first()
-            val r = max(1f, p.width / 2f)
+            val d = drynessAt(dryness, 0)
+            val r = max(1f, p.width / 2f) * spreadOf(d)
             val c = colorAt(p, rgb)
             val fade = loadAlpha(p.load)
             canvas.drawCircle(p.position.x, p.position.y, r, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = withAlpha(c, 0.6f * fade); maskFilter = blur
+                color = withAlpha(c, (0.6f * fade * wetDarkenOf(d)).coerceAtMost(1f)); maskFilter = blur
             })
             canvas.drawCircle(p.position.x, p.position.y, r, Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE; strokeWidth = max(1.5f, r * 0.4f)
-                color = withAlpha(c, 0.95f * fade); maskFilter = blur
+                color = withAlpha(c, 0.95f * fade * rimOf(d)); maskFilter = blur
             })
         } else {
             // The whole wash — fill AND pooled rim — as meshes with per-vertex
@@ -144,11 +158,45 @@ object StrokeRenderer {
             // mask blur, and each side's offsets are clamped to the local
             // radius of curvature so cross-sections never fold over themselves
             // on tight curves (the starburst artifact blur used to smear).
-            drawWashMesh(canvas, pts, rgb, bleed, maxWidth)
+            drawWashMesh(canvas, pts, rgb, bleed, maxWidth, dryness)
         }
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         canvas.restoreToCount(layer)
     }
+
+    // --- The drying progression (live-only; dry == the baked look) ----------
+    //
+    // A freshly laid section of wash sits tighter than its final footprint,
+    // reads a touch darker (wet pigment is denser than dried), and has almost
+    // no rim. As it dries the boundary creeps outward to the final width, the
+    // fill lightens to its final strength, and pigment gathers at the edge —
+    // the rim develops late, the way a real wash's edge darkens as the last
+    // water leaves. All three curves reach exactly 1 at dryness 1, which is
+    // what the null-dryness (bake) path renders.
+
+    private fun drynessAt(dryness: FloatArray?, i: Int): Float =
+        when {
+            dryness == null -> 1f
+            i >= dryness.size -> 0f // transient predicted tail: just laid
+            else -> dryness[i]
+        }
+
+    /** Boundary creep: starts at [WET_SPREAD] of the final width, eases out. */
+    private fun spreadOf(d: Float): Float {
+        val ease = 1f - (1f - d) * (1f - d)
+        return WET_SPREAD + (1f - WET_SPREAD) * ease
+    }
+
+    /** Rim development: faint while wet, deepening late in the dry. */
+    private fun rimOf(d: Float): Float =
+        WET_RIM + (1f - WET_RIM) * d * d * (3f - 2f * d)
+
+    /** Wet fill reads slightly denser; dries lighter to the final strength. */
+    private fun wetDarkenOf(d: Float): Float = 1f + WET_DARKEN * (1f - d)
+
+    private const val WET_SPREAD = 0.86f
+    private const val WET_RIM = 0.18f
+    private const val WET_DARKEN = 0.12f
 
     /**
      * The whole wash as triangle strips sharing exact vertex lines: a solid
@@ -176,6 +224,7 @@ object StrokeRenderer {
         rgb: Int,
         bleed: Float,
         maxWidth: Float,
+        dryness: FloatArray? = null,
     ) {
         val n = pts.size
         val soft = max(1f, bleed)
@@ -222,8 +271,12 @@ object StrokeRenderer {
             nx[i] = -dy / len
             ny[i] = dx / len
 
-            // Windowed width envelope (surface tension smooths the boundary).
-            val hw = max(0.5f, (prefW[k + 1] - prefW[j]) / (k - j + 1) / 2f)
+            // Windowed width envelope (surface tension smooths the boundary),
+            // scaled by the drying creep: a young section sits tighter than
+            // its final footprint. Dryness varies smoothly along the stroke
+            // (points age in laid order), so the boundary stays smooth.
+            val dry = drynessAt(dryness, i)
+            val hw = max(0.5f, (prefW[k + 1] - prefW[j]) / (k - j + 1) / 2f) * spreadOf(dry)
 
             // Windowed curvature -> radius; only the turn's inner side clamps.
             var limitL = Float.MAX_VALUE
@@ -257,9 +310,9 @@ object StrokeRenderer {
 
             val a = loadAlpha(pts[i].load)
             val c = colorAt(pts[i], rgb)
-            coreCol[i] = withAlpha(c, 0.6f * a)
+            coreCol[i] = withAlpha(c, (0.6f * a * wetDarkenOf(dry)).coerceAtMost(1f))
             edgeCol[i] = coreCol[i] and 0x00FFFFFF
-            rimCol[i] = withAlpha(c, 0.95f * a)
+            rimCol[i] = withAlpha(c, 0.95f * a * rimOf(dry))
             rimEdgeCol[i] = rimCol[i] and 0x00FFFFFF
         }
 
