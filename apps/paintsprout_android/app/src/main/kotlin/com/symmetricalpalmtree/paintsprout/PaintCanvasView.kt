@@ -1442,6 +1442,13 @@ class PaintCanvasView @JvmOverloads constructor(
 
     /** Puts the live sim on [stroke]; fields start at the first accepted stamp. */
     private fun startWetSim(stroke: Stroke) {
+        // User verdict on the Movink (2026-07-18): this first wiring reads as
+        // airbrush fog, not watercolor, and the per-tick GPU readbacks lag the
+        // UI thread badly (worse with brush size). Gated OFF — the tool uses
+        // the ribbon path — until the sim is GPU-resident, ticked off the UI
+        // thread, and deposits a flat surface-tension wash, tuned against the
+        // ribbon look as the baseline.
+        if (!WET_SIM_ENABLED) return
         val agsl = wetAgsl ?: return
         if (pigmentShader == null) return // no mixer — ribbon fallback end to end
         if (wetSim == null) wetSim = WetSim(agsl[0], agsl[1], agsl[2])
@@ -3917,6 +3924,11 @@ class PaintCanvasView @JvmOverloads constructor(
         // frame): it's blurred context under the wash, so brief staleness is
         // invisible, and slow strokes — where it changes slowest — rebuild least.
         const val WET_BACKDROP_STRIDE = 8
+
+        // The live wet simulation, gated off after its first on-device round
+        // failed on look (airbrush fog) and frame cost (per-tick readbacks on
+        // the UI thread). See startWetSim for what re-enabling requires.
+        const val WET_SIM_ENABLED = false
 
         // Line tool: min drag to count as a line, handle hit radii (px), and how
         // far the rotate handle sits off the line's centre.
