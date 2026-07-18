@@ -89,7 +89,7 @@ physically rotate the tablet instead.
 | ⬜ | Pattern brushes | Repeat art along a path |
 | ⬜ | Brush presets library | Per-tool saved settings + favorites |
 | ⬜ | Pressure-curve editor | Per tool |
-| ⬜ | Stroke stabilization / streamline | Largest single improvement to perceived line quality on a tablet; noticed immediately |
+| ❄️ | Stroke stabilization / streamline | Deferred 2026-07-18 — see [For consideration](#for-consideration-not-aligned-with-current-philosophy) |
 
 ---
 
@@ -261,3 +261,4 @@ coming from other apps will expect them, and we'll remain open to reconsidering 
 | ❄️ | Canvas pan | The canvas is the screen; there's nothing off-screen |
 | ❄️ | Canvas rotation (two-finger) | Physically rotate the tablet |
 | ❄️ | Flip canvas horizontally | Physical artists use a mirror to check composition |
+| ❄️ | Stroke stabilization / streamline | Drags the line behind the pen on a leash to smooth it — a drawing assist; a real pen doesn't do this. (Sensor-noise conditioning is NOT this and ships with the fidelity phase.) |

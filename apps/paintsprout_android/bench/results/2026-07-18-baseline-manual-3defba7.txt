@@ -1,0 +1,121 @@
+# Paintsprout MANUAL frame bench (real stylus, four-part set: slow diagonal / fast squiggle / enso / shading pass)
+# date: 2026-07-18  commit: 3defba7  device: DTHA116 (Android 14)
+
+== pencil ==
+Total frames rendered: 732
+Janky frames: 3 (0.41%)
+Janky frames (legacy): 4 (0.55%)
+50th percentile: 7ms
+90th percentile: 8ms
+95th percentile: 9ms
+99th percentile: 16ms
+Number Missed Vsync: 0
+Number High input latency: 303
+Number Slow UI thread: 1
+Number Slow bitmap uploads: 3
+Number Slow issue draw commands: 0
+Number Frame deadline missed: 3
+Number Frame deadline missed (legacy): 3
+
+== pen ==
+Total frames rendered: 1045
+Janky frames: 3 (0.29%)
+Janky frames (legacy): 3 (0.29%)
+50th percentile: 8ms
+90th percentile: 8ms
+95th percentile: 9ms
+99th percentile: 12ms
+Number Missed Vsync: 0
+Number High input latency: 721
+Number Slow UI thread: 0
+Number Slow bitmap uploads: 3
+Number Slow issue draw commands: 0
+Number Frame deadline missed: 3
+Number Frame deadline missed (legacy): 3
+
+== brush ==
+# note: brush ran dry mid-set; user reloaded from the tray, so this window
+# includes tray-panel frames (cheap ones — they dilute medians slightly, tails still valid)
+Total frames rendered: 1256
+Janky frames: 6 (0.48%)
+Janky frames (legacy): 78 (6.21%)
+50th percentile: 10ms
+90th percentile: 21ms
+95th percentile: 25ms
+99th percentile: 32ms
+Number Missed Vsync: 0
+Number High input latency: 1218
+Number Slow UI thread: 3
+Number Slow bitmap uploads: 0
+Number Slow issue draw commands: 5
+Number Frame deadline missed: 6
+Number Frame deadline missed (legacy): 10
+
+== watercolor ==
+# user-observed: periodic 'glop' of paint along a dragged stroke — too regular to be
+# hand shake. Matches the rim-per-span ladder bug (spansOf splits the draining stroke
+# every ALPHA_STEP of load; each span strokes its own rim). Fix scheduled in Phase 1.
+Total frames rendered: 1711
+Janky frames: 130 (7.60%)
+Janky frames (legacy): 413 (24.14%)
+50th percentile: 15ms
+90th percentile: 46ms
+95th percentile: 57ms
+99th percentile: 89ms
+Number Missed Vsync: 87
+Number High input latency: 1377
+Number Slow UI thread: 129
+Number Slow bitmap uploads: 1
+Number Slow issue draw commands: 51
+Number Frame deadline missed: 130
+Number Frame deadline missed (legacy): 143
+
+== marker ==
+Total frames rendered: 1049
+Janky frames: 1 (0.10%)
+Janky frames (legacy): 0 (0.00%)
+50th percentile: 8ms
+90th percentile: 11ms
+95th percentile: 11ms
+99th percentile: 12ms
+Number Missed Vsync: 0
+Number High input latency: 897
+Number Slow UI thread: 0
+Number Slow bitmap uploads: 0
+Number Slow issue draw commands: 1
+Number Frame deadline missed: 1
+Number Frame deadline missed (legacy): 0
+
+== spray ==
+Total frames rendered: 944
+Janky frames: 5 (0.53%)
+Janky frames (legacy): 9 (0.95%)
+50th percentile: 13ms
+90th percentile: 14ms
+95th percentile: 14ms
+99th percentile: 20ms
+Number Missed Vsync: 0
+Number High input latency: 1226
+Number Slow UI thread: 1
+Number Slow bitmap uploads: 1
+Number Slow issue draw commands: 5
+Number Frame deadline missed: 5
+Number Frame deadline missed (legacy): 5
+
+== eraser ==
+# note: blank canvas, so nothing visible — cost is still real (paper-color stroke + tooth layers)
+Total frames rendered: 931
+Janky frames: 4 (0.43%)
+Janky frames (legacy): 4 (0.43%)
+50th percentile: 8ms
+90th percentile: 9ms
+95th percentile: 9ms
+99th percentile: 16ms
+Number Missed Vsync: 0
+Number High input latency: 1056
+Number Slow UI thread: 0
+Number Slow bitmap uploads: 3
+Number Slow issue draw commands: 1
+Number Frame deadline missed: 4
+Number Frame deadline missed (legacy): 4
+
