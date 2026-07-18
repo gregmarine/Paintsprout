@@ -145,6 +145,9 @@ object StrokeRenderer {
             }
             val lastIdx = pts.size - 1
             for (run in spansOf(stroke, rgb)) {
+                // A dry span deposits nothing; skip it rather than blur-render
+                // an invisible path (a long drained tail is pure waste).
+                if (run.alpha <= 0.004f) continue
                 val subPts = pts.subList(run.from, run.to + 1)
                 val subNorms = normals.subList(run.from, run.to + 1)
                 canvas.drawPath(

@@ -1,0 +1,117 @@
+# Paintsprout frame bench
+# date: 2026-07-18 12:41
+# commit: 857cf59
+# device: DTHA116 (Android 14)
+
+== pencil ==
+Total frames rendered: 782
+Janky frames: 0 (0.00%)
+Janky frames (legacy): 0 (0.00%)
+50th percentile: 11ms
+90th percentile: 11ms
+95th percentile: 11ms
+99th percentile: 13ms
+Number Missed Vsync: 0
+Number High input latency: 431
+Number Slow UI thread: 0
+Number Slow bitmap uploads: 0
+Number Slow issue draw commands: 0
+Number Frame deadline missed: 0
+Number Frame deadline missed (legacy): 0
+
+== pen ==
+Total frames rendered: 873
+Janky frames: 0 (0.00%)
+Janky frames (legacy): 1 (0.11%)
+50th percentile: 8ms
+90th percentile: 12ms
+95th percentile: 12ms
+99th percentile: 14ms
+Number Missed Vsync: 0
+Number High input latency: 622
+Number Slow UI thread: 0
+Number Slow bitmap uploads: 0
+Number Slow issue draw commands: 0
+Number Frame deadline missed: 0
+Number Frame deadline missed (legacy): 0
+
+== brush ==
+Total frames rendered: 875
+Janky frames: 0 (0.00%)
+Janky frames (legacy): 0 (0.00%)
+50th percentile: 11ms
+90th percentile: 15ms
+95th percentile: 18ms
+99th percentile: 21ms
+Number Missed Vsync: 0
+Number High input latency: 936
+Number Slow UI thread: 0
+Number Slow bitmap uploads: 0
+Number Slow issue draw commands: 0
+Number Frame deadline missed: 0
+Number Frame deadline missed (legacy): 0
+
+== watercolor ==
+Total frames rendered: 989
+Janky frames: 24 (2.43%)
+Janky frames (legacy): 166 (16.78%)
+50th percentile: 13ms
+90th percentile: 27ms
+95th percentile: 34ms
+99th percentile: 53ms
+Number Missed Vsync: 3
+Number High input latency: 1086
+Number Slow UI thread: 22
+Number Slow bitmap uploads: 0
+Number Slow issue draw commands: 6
+Number Frame deadline missed: 24
+Number Frame deadline missed (legacy): 25
+
+== marker ==
+Total frames rendered: 875
+Janky frames: 0 (0.00%)
+Janky frames (legacy): 0 (0.00%)
+50th percentile: 8ms
+90th percentile: 11ms
+95th percentile: 11ms
+99th percentile: 12ms
+Number Missed Vsync: 0
+Number High input latency: 946
+Number Slow UI thread: 0
+Number Slow bitmap uploads: 0
+Number Slow issue draw commands: 0
+Number Frame deadline missed: 0
+Number Frame deadline missed (legacy): 0
+
+== spray ==
+Total frames rendered: 859
+Janky frames: 4 (0.47%)
+Janky frames (legacy): 5 (0.58%)
+50th percentile: 12ms
+90th percentile: 12ms
+95th percentile: 13ms
+99th percentile: 25ms
+Number Missed Vsync: 0
+Number High input latency: 382
+Number Slow UI thread: 0
+Number Slow bitmap uploads: 0
+Number Slow issue draw commands: 4
+Number Frame deadline missed: 4
+Number Frame deadline missed (legacy): 4
+
+== eraser ==
+Total frames rendered: 873
+Janky frames: 0 (0.00%)
+Janky frames (legacy): 1 (0.11%)
+50th percentile: 8ms
+90th percentile: 12ms
+95th percentile: 12ms
+99th percentile: 13ms
+Number Missed Vsync: 0
+Number High input latency: 628
+Number Slow UI thread: 0
+Number Slow bitmap uploads: 0
+Number Slow issue draw commands: 0
+Number Frame deadline missed: 0
+Number Frame deadline missed (legacy): 0
+

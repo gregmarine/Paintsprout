@@ -299,11 +299,29 @@ class PaintCanvasView @JvmOverloads constructor(
     private var washFlip = 0
 
     // Half-resolution wet backdrop for the LIVE preview: the dilute+bloom is blurry,
-    // so computing it at half res keeps the per-frame GPU read-back (needed to feed
-    // the diluted backdrop to the spectral mixer as a texture) cheap. Double-buffered
+    // so computing it at half res keeps the GPU read-back (needed to feed the
+    // diluted backdrop to the spectral mixer as a texture) cheap. Double-buffered
     // for the same reason the wash is — HWUI samples it a frame later.
     private val wetLiveScratch = arrayOfNulls<Bitmap>(2)
     private var wetLiveFlip = 0
+
+    // Cached live backdrop shader between rebuilds (see drawWetLive). Reset per stroke.
+    private var wetBackdropShader: Shader? = null
+    private var wetBackdropAtPoints = 0
+    private var wetBackdropKey = 0L
+
+    /**
+     * The crop-sized scratch at [idx], reallocated only when the crop's
+     * quantized size actually changes ([watercolorCrop] keeps that rare).
+     * Recycling the same-index buffer is safe: it was last shown two frames
+     * ago, and HWUI holds only the previous frame's (other-index) buffer.
+     */
+    private fun scratchFor(arr: Array<Bitmap?>, idx: Int, w: Int, h: Int): Bitmap {
+        val cur = arr[idx]
+        if (cur != null && cur.width == w && cur.height == h) return cur
+        cur?.recycle()
+        return createBitmap(w, h).also { arr[idx] = it }
+    }
 
     /** Frees both wash scratch buffers (double-buffered — see [drawWetLive]). */
     private fun recycleWashScratch() {
@@ -1120,11 +1138,23 @@ class PaintCanvasView @JvmOverloads constructor(
             StrokeRenderer.paintStroke(canvas, stroke, surface)
             return
         }
+        // Everything below happens in a crop around the stroke, not the buffer.
+        val crop = watercolorCrop(stroke)
+        val cw = crop.width()
+        val ch = crop.height()
+        if (cw <= 0 || ch <= 0) {
+            canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
+            return
+        }
+        val l = crop.left.toFloat()
+        val t = crop.top.toFloat()
+
         washFlip = washFlip xor 1
-        val wash = (washScratch[washFlip] ?: createBitmap(bufW, bufH).also { washScratch[washFlip] = it })
+        val wash = scratchFor(washScratch, washFlip, cw, ch)
         Canvas(wash).apply {
             drawColor(Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
             save()
+            translate(-l, -t)
             scale(SUPER_SAMPLE, SUPER_SAMPLE)
             StrokeRenderer.paintStroke(this, stroke, surface)
             restore()
@@ -1138,33 +1168,56 @@ class PaintCanvasView @JvmOverloads constructor(
 
         // Backdrop for the mixer: the wet-interacted paint at half res, or — if the
         // GPU read-back fails — the raw paint layer (still correct colour, no bleed).
-        wetLiveFlip = wetLiveFlip xor 1
-        val hw = bufW / 2
-        val hh = bufH / 2
-        val wetHalf = (wetLiveScratch[wetLiveFlip] ?: createBitmap(hw, hh).also { wetLiveScratch[wetLiveFlip] = it })
-        val backdropShader = runCatching {
-            GpuRender.renderInto(wetHalf) { rc ->
-                recordWetBackdrop(
-                    rc as android.graphics.RecordingCanvas, paintLayer, region, hw, hh,
-                    0.5f, clearFeather * 0.5f, spread * 0.5f, soften * 0.5f,
-                )
+        // The readback is the live path's single most expensive step, and the
+        // backdrop is blurred context under the wash — so it's rebuilt only every
+        // few points (or when the crop moves) and the shader reused in between.
+        val hw = cw / 2
+        val hh = ch / 2
+        val cropKey = (crop.left.toLong() shl 42) xor (crop.top.toLong() shl 21) xor
+            (cw.toLong() shl 11) xor ch.toLong()
+        val cached = wetBackdropShader
+        val backdropShader: Shader
+        if (cached != null && cropKey == wetBackdropKey &&
+            stroke.points.size - wetBackdropAtPoints < WET_BACKDROP_STRIDE
+        ) {
+            backdropShader = cached
+        } else {
+            wetLiveFlip = wetLiveFlip xor 1
+            val wetHalf = scratchFor(wetLiveScratch, wetLiveFlip, hw, hh)
+            backdropShader = runCatching {
+                GpuRender.renderInto(wetHalf) { rc ->
+                    recordWetBackdrop(
+                        rc as android.graphics.RecordingCanvas, paintLayer, region, hw, hh,
+                        0.5f, clearFeather * 0.5f, spread * 0.5f, soften * 0.5f, l, t,
+                    )
+                }
+                BitmapShader(wetHalf, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+                    setLocalMatrix(Matrix().apply { setScale(2f, 2f); postTranslate(l, t) })
+                }
+            }.getOrElse {
+                BitmapShader(paintLayer, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
             }
-            BitmapShader(wetHalf, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
-                setLocalMatrix(Matrix().apply { setScale(2f, 2f) })
-            }
-        }.getOrElse {
-            BitmapShader(paintLayer, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+            wetBackdropShader = backdropShader
+            wetBackdropAtPoints = stroke.points.size
+            wetBackdropKey = cropKey
         }
 
         val b = RectF()
         region.computeBounds(b, true)
         // Pad past the stroke to include the bloom that spreads beyond the ribbon,
-        // else the SRC rect below clips the soft bleed into a hard edge.
+        // else the SRC rect below clips the soft bleed into a hard edge — but stay
+        // inside the crop, where the clamped shaders above are actually valid.
         b.inset(-(avgW + spread + soften + 4f), -(avgW + spread + soften + 4f))
+        b.intersect(RectF(crop))
 
         canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
         mixer.setInputShader("uBackdrop", backdropShader)
-        mixer.setInputShader("uWash", BitmapShader(wash, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
+        mixer.setInputShader(
+            "uWash",
+            BitmapShader(wash, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+                setLocalMatrix(Matrix().apply { setTranslate(l, t) })
+            },
+        )
         mixer.setFloatUniform("uWashGain", 1f)
         mixer.setFloatUniform("uDarkHold", 0f)
         // The mixer emits the FULL composited result over the bounds (backdrop where
@@ -2564,6 +2617,8 @@ class PaintCanvasView @JvmOverloads constructor(
         activeAccum?.recycle()
         activeAccum = null
         accumDrawn = 0
+        wetBackdropShader = null
+        wetBackdropAtPoints = 0
         // Keep pickupBuf allocated for reuse; just drop its contents.
         pickupBuf?.eraseColor(Color.TRANSPARENT)
     }
@@ -2611,11 +2666,7 @@ class PaintCanvasView @JvmOverloads constructor(
                     val clip = op.clip
                     if (clip == null) {
                         if (s.tool == Tool.WATERCOLOR) {
-                            val mixed = compositeWatercolor(cur, s)
-                            if (mixed !== cur) {
-                                cur.recycle()
-                                cur = mixed
-                            }
+                            compositeWatercolorInto(cur, s)
                         } else {
                             Canvas(cur).apply {
                                 save()
@@ -2625,10 +2676,10 @@ class PaintCanvasView @JvmOverloads constructor(
                             }
                         }
                     } else {
-                        val full = if (s.tool == Tool.WATERCOLOR) {
-                            compositeWatercolor(cur, s)
-                        } else {
-                            cur.copy(Bitmap.Config.ARGB_8888, true).also {
+                        val full = cur.copy(Bitmap.Config.ARGB_8888, true).also {
+                            if (s.tool == Tool.WATERCOLOR) {
+                                compositeWatercolorInto(it, s)
+                            } else {
                                 Canvas(it).apply {
                                     save()
                                     scale(SUPER_SAMPLE, SUPER_SAMPLE)
@@ -2638,7 +2689,7 @@ class PaintCanvasView @JvmOverloads constructor(
                             }
                         }
                         val out = blendMasked(cur, full, clip)
-                        if (full !== cur) full.recycle()
+                        full.recycle()
                         cur.recycle()
                         cur = out
                     }
@@ -3099,57 +3150,109 @@ class PaintCanvasView @JvmOverloads constructor(
 
     // --- Watercolor (from Stage 4b) -----------------------------------------
 
-    private fun compositeWatercolor(base: Bitmap, stroke: Stroke): Bitmap {
-        val backdrop = wetBackdrop(base, stroke)
-        val wash = createBitmap(bufW, bufH)
-        Canvas(wash).apply {
-            scale(SUPER_SAMPLE, SUPER_SAMPLE)
-            StrokeRenderer.paintStroke(this, stroke, surface)
-        }
-        val agsl = pigmentAgsl
-        val result = if (agsl == null) {
-            overComposite(backdrop, wash)
-        } else {
-            runCatching { PigmentMixer.mix(agsl, backdrop, wash) }.getOrElse { overComposite(backdrop, wash) }
-        }
-        backdrop.recycle()
-        wash.recycle()
-        return result
-    }
-
     /**
-     * The wet backdrop: [base] with the stroke region diluted (feathered clear)
-     * and pushed (a blurred, faded copy bloomed into a wider region), done in a
-     * SINGLE GPU pass. The three blurs are child [RenderNode]s carrying a blur
-     * [RenderEffect], composited on the recording canvas with `saveLayer` blend
-     * modes — so there's one GPU readback instead of the four the old
-     * blur-per-round-trip version needed. Never recycles [base].
+     * Bakes a watercolor stroke into [base] IN PLACE: the paint under the
+     * stroke is wetted (diluted + pushed) and the wash mixed on spectrally —
+     * all confined to a crop around the stroke ([watercolorCrop]) rather than
+     * the full buffer, so a small wash on a big canvas costs what the wash
+     * covers, not what the canvas measures. Falls back to a plain
+     * over-composite if the pigment shader is unavailable.
      */
-    private fun wetBackdrop(base: Bitmap, stroke: Stroke): Bitmap {
+    private fun compositeWatercolorInto(base: Bitmap, stroke: Stroke) {
+        if (stroke.isEmpty) return
+        val crop = watercolorCrop(stroke)
+        val cw = crop.width()
+        val ch = crop.height()
+        if (cw <= 0 || ch <= 0) return
+        val l = crop.left.toFloat()
+        val t = crop.top.toFloat()
         val region = strokeRegionPath(stroke)
         val avgW = avgWidth(stroke) * SUPER_SAMPLE
         val soften = max(2f, avgW * 0.14f)
         val clearFeather = max(2f, avgW * 0.10f)
         val spread = max(4f, avgW * 0.30f)
-        return GpuRender.renderToBitmap(bufW, bufH) { canvas ->
+        val backdrop = GpuRender.renderToBitmap(cw, ch) { canvas ->
             recordWetBackdrop(
-                canvas as android.graphics.RecordingCanvas, base, region, bufW, bufH,
-                SUPER_SAMPLE, clearFeather, spread, soften,
+                canvas as android.graphics.RecordingCanvas, base, region, cw, ch,
+                SUPER_SAMPLE, clearFeather, spread, soften, l, t,
             )
         }
+        val wash = createBitmap(cw, ch)
+        Canvas(wash).apply {
+            translate(-l, -t)
+            scale(SUPER_SAMPLE, SUPER_SAMPLE)
+            StrokeRenderer.paintStroke(this, stroke, surface)
+        }
+        val agsl = pigmentAgsl
+        val mixed = if (agsl == null) {
+            null
+        } else {
+            runCatching { PigmentMixer.mix(agsl, backdrop, wash) }.getOrNull()
+        }
+        Canvas(base).apply {
+            if (mixed != null) {
+                // The mixed crop is the full replacement for its region
+                // (backdrop where there is no wash), so it overwrites.
+                drawBitmap(mixed, l, t, srcPaint)
+            } else {
+                drawBitmap(backdrop, l, t, srcPaint)
+                drawBitmap(wash, l, t, null)
+            }
+        }
+        backdrop.recycle()
+        wash.recycle()
+        mixed?.recycle()
+    }
+
+    /**
+     * The buffer rect the watercolor pipeline must touch for [stroke]: its
+     * bounds padded for the widest mark, the bloom spread and the bleed halo,
+     * clamped to the buffer — with the SIZE quantized up to [CROP_QUANTUM]
+     * multiples so the GPU pool sees a handful of distinct sizes instead of a
+     * new one every frame as the stroke grows.
+     */
+    private fun watercolorCrop(stroke: Stroke): Rect {
+        val pts = stroke.points
+        var minX = Float.MAX_VALUE
+        var minY = Float.MAX_VALUE
+        var maxX = -Float.MAX_VALUE
+        var maxY = -Float.MAX_VALUE
+        var maxW = 0f
+        var sumW = 0f
+        for (p in pts) {
+            minX = min(minX, p.position.x); maxX = max(maxX, p.position.x)
+            minY = min(minY, p.position.y); maxY = max(maxY, p.position.y)
+            maxW = max(maxW, p.width); sumW += p.width
+        }
+        val avgW = sumW / pts.size
+        // Must cover everything the pipeline draws: the ribbon (maxW/2), the
+        // bloom + bleed reach (~1.44*avgW, see drawWetLive's mixer rect), with
+        // margin so the crop-clamped shaders never show their edge.
+        val pad = (maxW / 2f + avgW * 1.5f + 16f) * SUPER_SAMPLE
+        val l0 = kotlin.math.floor(minX * SUPER_SAMPLE - pad).toInt().coerceIn(0, bufW)
+        val t0 = kotlin.math.floor(minY * SUPER_SAMPLE - pad).toInt().coerceIn(0, bufH)
+        val r0 = ceil(maxX * SUPER_SAMPLE + pad).toInt().coerceIn(0, bufW)
+        val b0 = ceil(maxY * SUPER_SAMPLE + pad).toInt().coerceIn(0, bufH)
+        val qw = min(bufW, (((r0 - l0).coerceAtLeast(1) + CROP_QUANTUM - 1) / CROP_QUANTUM) * CROP_QUANTUM)
+        val qh = min(bufH, (((b0 - t0).coerceAtLeast(1) + CROP_QUANTUM - 1) / CROP_QUANTUM) * CROP_QUANTUM)
+        val l = l0.coerceAtMost(bufW - qw).coerceAtLeast(0)
+        val t = t0.coerceAtMost(bufH - qh).coerceAtLeast(0)
+        return Rect(l, t, l + qw, t + qh)
     }
 
     /**
      * Records the wet backdrop composite onto [rc] (a hardware [RecordingCanvas],
      * either GpuRender's full-res bake surface or the half-res live one): [base]
      * with the stroke [region] diluted (feathered clear) and pushed (a blurred,
-     * faded copy bloomed into a wider region). Geometry and blur radii are scaled by
-     * [sc] so the same recipe renders at either resolution. Everything is done with
-     * blur-[RenderEffect] child [RenderNode]s in a single pass (no round-trips).
+     * faded copy bloomed into a wider region). Geometry and blur radii are scaled
+     * by [sc], and everything is shifted by (-[ox], -[oy]) buffer px first, so the
+     * same recipe renders any crop of the buffer at either resolution. Everything
+     * is done with blur-[RenderEffect] child [RenderNode]s in a single pass.
      */
     private fun recordWetBackdrop(
         rc: android.graphics.RecordingCanvas, base: Bitmap, region: android.graphics.Path,
         w: Int, h: Int, sc: Float, clearFeather: Float, spread: Float, soften: Float,
+        ox: Float, oy: Float,
     ) {
         val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
         val fw = w.toFloat()
@@ -3158,16 +3261,18 @@ class PaintCanvasView @JvmOverloads constructor(
             setPosition(0, 0, w, h)
             setRenderEffect(RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP))
             val c = beginRecording(w, h)
+            c.scale(sc, sc)
+            c.translate(-ox, -oy)
             record(c)
             endRecording()
         }
         // White stroke region, feathered two ways (tight clear + wide bloom).
-        val clearNode = blurNode(clearFeather) { it.scale(sc, sc); it.drawPath(region, white) }
-        val spreadNode = blurNode(spread) { it.scale(sc, sc); it.drawPath(region, white) }
-        val baseBlurNode = blurNode(soften) { it.scale(sc, sc); it.drawBitmap(base, 0f, 0f, null) }
+        val clearNode = blurNode(clearFeather) { it.drawPath(region, white) }
+        val spreadNode = blurNode(spread) { it.drawPath(region, white) }
+        val baseBlurNode = blurNode(soften) { it.drawBitmap(base, 0f, 0f, null) }
         try {
             // 1. base
-            rc.save(); rc.scale(sc, sc); rc.drawBitmap(base, 0f, 0f, null); rc.restore()
+            rc.save(); rc.scale(sc, sc); rc.translate(-ox, -oy); rc.drawBitmap(base, 0f, 0f, null); rc.restore()
             // 2. dilute: punch a feathered hole where the stroke floods with water
             val l1 = rc.saveLayer(0f, 0f, fw, fh, Paint().apply { blendMode = BlendMode.DST_OUT })
             rc.drawRenderNode(clearNode)
@@ -3191,15 +3296,6 @@ class PaintCanvasView @JvmOverloads constructor(
         var sum = 0f
         for (p in stroke.points) sum += p.width
         return sum / stroke.points.size
-    }
-
-    private fun overComposite(base: Bitmap, wash: Bitmap): Bitmap {
-        val out = createBitmap(bufW, bufH)
-        Canvas(out).apply {
-            drawBitmap(base, 0f, 0f, null)
-            drawBitmap(wash, 0f, 0f, null)
-        }
-        return out
     }
 
     /** Clears painted strokes, history, and any selection, keeping the surface. */
@@ -3357,6 +3453,15 @@ class PaintCanvasView @JvmOverloads constructor(
         const val CHECKPOINT_STRIDE = 6
         const val MAX_CHECKPOINTS = 6
 
+        // Watercolor crop sizes round up to this so the GPU pool and the live
+        // scratch bitmaps see a handful of sizes, not one per frame.
+        const val CROP_QUANTUM = 512
+
+        // Rebuild the live wet backdrop after this many new points (not every
+        // frame): it's blurred context under the wash, so brief staleness is
+        // invisible, and slow strokes — where it changes slowest — rebuild least.
+        const val WET_BACKDROP_STRIDE = 8
+
         // Line tool: min drag to count as a line, handle hit radii (px), and how
         // far the rotate handle sits off the line's centre.
         const val MIN_LINE_LEN = 6f
@@ -3384,4 +3489,5 @@ class PaintCanvasView @JvmOverloads constructor(
     // Reusable mask-compositing paints.
     private val dstOutPaint = Paint().apply { blendMode = BlendMode.DST_OUT }
     private val dstInPaint = Paint().apply { blendMode = BlendMode.DST_IN }
+    private val srcPaint = Paint().apply { blendMode = BlendMode.SRC }
 }
