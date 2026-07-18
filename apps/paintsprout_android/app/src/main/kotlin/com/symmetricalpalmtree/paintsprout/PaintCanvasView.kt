@@ -347,6 +347,51 @@ class PaintCanvasView @JvmOverloads constructor(
     /** The active stroke's bristle layout (brush only; frozen per stroke). */
     private var bristleLayout: com.symmetricalpalmtree.paintsprout.paint.BristleLayout? = null
 
+    /**
+     * Kalman-predicted pen position: the live TAIL is drawn where the pen will
+     * be when this frame reaches the glass, cutting perceived ink lag. Strictly
+     * cosmetic — predicted points never enter the stroke, the accumulators, or
+     * the load accounting; each real frame re-derives the tail from real data,
+     * so a wrong prediction can never persist.
+     */
+    private val motionPredictor by lazy {
+        androidx.input.motionprediction.MotionEventPredictor.newInstance(this)
+    }
+
+    /** Builds the transient predicted tail point (no side effects, no spend). */
+    private fun predictedTailPoint(): StrokePoint? {
+        if (active == null) return null
+        val e = motionPredictor.predict() ?: return null
+        try {
+            if (!insideCanvas(e.x, e.y)) return null
+            val pressure = normPressure(e.pressure)
+            val tilt = e.getAxisValue(MotionEvent.AXIS_TILT)
+            val width = resolveWidth(tool, sizeFor(tool), pressure, tilt)
+            val density = resolveDensity(tool, pressure)
+            return if (tool.usesLoad) {
+                StrokePoint(Vec2(e.x, e.y), width, density, color = brushLoad.color, load = brushLoad.fill)
+            } else {
+                StrokePoint(Vec2(e.x, e.y), width, density)
+            }
+        } finally {
+            e.recycle()
+        }
+    }
+
+    /** Runs [draw] with [p] temporarily appended to [stroke] (preview only). */
+    private inline fun withTransientPoint(stroke: Stroke, p: StrokePoint?, draw: () -> Unit) {
+        if (p == null) {
+            draw()
+            return
+        }
+        stroke.points.add(p)
+        try {
+            draw()
+        } finally {
+            stroke.points.removeAt(stroke.points.size - 1)
+        }
+    }
+
     /** Padded bounds of the active stroke, for bounded blit layers. */
     private val activeBounds = RectF()
     private var activeMaxWidth = 0f
@@ -869,7 +914,7 @@ class PaintCanvasView @JvmOverloads constructor(
         fun drawEdited() {
             val a = active
             if (a != null && a.tool == Tool.WATERCOLOR) {
-                drawWetLive(canvas, paintLayer, a)
+                withTransientPoint(a, predictedTailPoint()) { drawWetLive(canvas, paintLayer, a) }
                 return
             }
             canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
@@ -1100,10 +1145,18 @@ class PaintCanvasView @JvmOverloads constructor(
      */
     private fun drawLiveStroke(canvas: Canvas, s: Stroke, isActive: Boolean) {
         if (isActive && activeAccum != null) {
+            // Accumulate REAL points first; the predicted point only ever rides
+            // the tail drawn fresh this frame, never the accumulator.
             when (s.tool) {
                 Tool.SPRAY -> {
                     ensureSprayAccum(s)
-                    blitAccum(canvas, s, liveTail = null)
+                    withTransientPoint(s, predictedTailPoint()) {
+                        blitAccum(canvas, s) { c ->
+                            if (s.points.size > accumDrawn) {
+                                StrokeRenderer.appendSoftSegments(c, s, accumDrawn)
+                            }
+                        }
+                    }
                     return
                 }
                 Tool.BRUSH -> {
@@ -1113,13 +1166,22 @@ class PaintCanvasView @JvmOverloads constructor(
                     activeAccum?.let { accum ->
                         accumDrawn = StrokeRenderer.appendBristleSegments(Canvas(accum), s, layout, accumDrawn)
                     }
-                    blitAccum(canvas, s) { StrokeRenderer.drawBristleLiveTail(it, s, layout) }
+                    val predicted = predictedTailPoint()
+                    withTransientPoint(s, predicted) {
+                        blitAccum(canvas, s) {
+                            StrokeRenderer.drawBristleLiveTail(it, s, layout, tailPoints = if (predicted != null) 3 else 2)
+                        }
+                    }
                     return
                 }
                 else -> {}
             }
         }
-        StrokeRenderer.paintStroke(canvas, s, surface)
+        if (isActive) {
+            withTransientPoint(s, predictedTailPoint()) { StrokeRenderer.paintStroke(canvas, s, surface) }
+        } else {
+            StrokeRenderer.paintStroke(canvas, s, surface)
+        }
     }
 
     /** Appends any not-yet-drawn spray segments to [activeAccum]. */
@@ -1352,6 +1414,8 @@ class PaintCanvasView @JvmOverloads constructor(
         // Work in canvas-local coordinates: (0,0) is the sheet's top-left, so every
         // handler below is oblivious to the mat/centring offset.
         event.offsetLocation(-canvasLeft.toFloat(), -canvasTop.toFloat())
+        // Feed the predictor canvas-local events; predictions come back in kind.
+        motionPredictor.record(event)
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {

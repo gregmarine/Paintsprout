@@ -401,23 +401,27 @@ object StrokeRenderer {
         return target
     }
 
-    /** The live tail: the last segment plus the tapered end, redrawn per frame. */
-    fun drawBristleLiveTail(canvas: Canvas, stroke: Stroke, layout: BristleLayout) {
+    /**
+     * The live tail: the last [tailPoints] points plus the tapered end, redrawn
+     * per frame (3 when a predicted point rides beyond the last real one).
+     */
+    fun drawBristleLiveTail(canvas: Canvas, stroke: Stroke, layout: BristleLayout, tailPoints: Int = 2) {
         val pts = stroke.points
         val n = pts.size
         if (n == 1) {
             drawBristleDab(canvas, pts.first(), stroke.color or OPAQUE_ALPHA, layout)
             return
         }
-        val from = n - 2
+        val from = max(0, n - tailPoints)
+        val count = n - from
         val rgb = stroke.color or OPAQUE_ALPHA
         val normals = strokeNormalsRange(pts, from, n - 1)
-        val ink = IntArray(2) { k ->
+        val ink = IntArray(count) { k ->
             val p = pts[from + k]
             withAlpha(colorAt(p, rgb), loadAlpha(p.load))
         }
-        val verts = FloatArray(4 * 4)
-        val colors = IntArray(4 * 2)
+        val verts = FloatArray((count + 2) * 4)
+        val colors = IntArray((count + 2) * 2)
         val paint = Paint()
         for (b in 0 until layout.count) {
             bristleSpan(
