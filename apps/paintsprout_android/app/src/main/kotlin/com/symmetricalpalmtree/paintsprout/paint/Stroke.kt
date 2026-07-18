@@ -57,6 +57,24 @@ class Stroke(
 ) {
     val points: MutableList<StrokePoint> = mutableListOf()
 
+    /**
+     * The wet simulation's recorded tick schedule (watercolor only; empty for
+     * every other tool and for the ribbon fallback). Live ticks run on the wall
+     * clock — the wash keeps moving while the pen pauses, and for a while after
+     * pen-up — but each tick RECORDS how many points had been stamped before
+     * it. Replaying stamps and ticks from this list re-runs exactly the
+     * simulation the live preview showed, which is what makes undo/redo honest
+     * for a wall-clock-driven effect.
+     */
+    val wetSchedule: MutableList<Int> = mutableListOf()
+
+    /**
+     * The buffer crop the live wet sim ended on (watercolor only). The live
+     * crop grows as the stroke wanders; the bake replays over this final crop
+     * from the start so both see the same field extent.
+     */
+    var wetCrop: android.graphics.Rect? = null
+
     fun add(p: StrokePoint) {
         points.add(p)
     }
