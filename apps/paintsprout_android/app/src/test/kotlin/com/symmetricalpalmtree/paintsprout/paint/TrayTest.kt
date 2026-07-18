@@ -116,11 +116,12 @@ class TrayTest {
         assertTrue(load.isDry)
     }
 
-    /** The dirty brush: dragging through yellow turns a blue brush green. */
+    /** The dirty brush: dragging a blue brush through yellow turns it green. */
     @Test
-    fun pickingUpPigmentContaminatesTheLoad() {
+    fun contaminatingTheLoadShiftsItsColour() {
         val clean = BrushLoad.of(blue)
-        val dirty = clean.pickUp(yellow, 1f)
+        // Swap half the load for yellow -> equal blue and yellow -> green.
+        val dirty = clean.contaminate(yellow, 0.5f)
 
         assertNotEquals(clean.color, dirty.color)
         assertEquals(Pigment.mix(blue, 1f, yellow, 1f), dirty.color)
@@ -130,36 +131,54 @@ class TrayTest {
         assertTrue("a blue brush dragged through yellow should read green, was #${"%06X".format(dirty.color and 0xFFFFFF)}", g > r + 40)
     }
 
+    /** Contamination swaps paint, it doesn't add any — a dirty brush doesn't refill. */
+    @Test
+    fun contaminatingKeepsTheVolumeConstant() {
+        val load = BrushLoad.of(blue).deposit(0.4f) // 0.6 left
+        val before = load.volume
+        val dirty = load.contaminate(red, 0.5f)
+
+        assertEquals(before, dirty.volume, eps)
+    }
+
+    /** Dragging through the colour it already carries changes nothing. */
+    @Test
+    fun draggingThroughItsOwnColourIsANoOp() {
+        val load = BrushLoad.of(blue).deposit(0.3f)
+        val same = load.contaminate(blue, 0.4f)
+
+        assertEquals(load.color, same.color)
+        assertEquals(load.volume, same.volume, eps)
+        assertEquals(1, same.recipe.pigmentCount)
+    }
+
     /**
-     * The brush forgets: because depositing drains the old mixture away while
-     * pickup adds to it, paint the brush started with is steadily replaced by
-     * paint it drags through.
+     * The brush forgets: dragging through red the whole way, each pass swaps a
+     * little of the load for red, so red steadily overtakes the blue it started
+     * with.
      */
     @Test
     fun aBrushGraduallyForgetsWhatItStartedWith() {
         var load = BrushLoad.of(blue)
 
-        // Paint along, picking up red the whole way.
-        repeat(40) {
-            load = load.deposit(0.05f).pickUp(red, 0.05f)
-        }
+        repeat(40) { load = load.contaminate(red, 0.1f) }
 
         assertTrue(
             "red should have overtaken blue: red=${load.recipe.amountOf(red)} blue=${load.recipe.amountOf(blue)}",
             load.recipe.amountOf(red) > load.recipe.amountOf(blue) * 5,
         )
-        // Still only two pigments tracked despite 40 pickups.
-        assertEquals(2, load.recipe.pigmentCount)
     }
 
-    /** Picking up paint puts paint on the brush; it shouldn't dry while loading. */
+    /** Contaminating through many colours can't grow the recipe without bound. */
     @Test
-    fun pickingUpAddsVolume() {
-        val load = BrushLoad.of(blue).deposit(0.8f)
-        val reloaded = load.pickUp(red, 0.5f)
-
-        assertTrue(reloaded.volume > load.volume)
-        assertFalse(reloaded.isDry)
+    fun contaminationDoesNotGrowTheRecipeUnbounded() {
+        var load = BrushLoad.of(blue)
+        // Drag through a long, ever-changing wash.
+        repeat(200) { i ->
+            val c = 0xFF000000.toInt() or (i * 7 and 0xFFFFFF)
+            load = load.contaminate(c, 0.05f)
+        }
+        assertTrue("recipe stayed bounded, was ${load.recipe.pigmentCount}", load.recipe.pigmentCount <= 12)
     }
 
     // --- Tray --------------------------------------------------------------

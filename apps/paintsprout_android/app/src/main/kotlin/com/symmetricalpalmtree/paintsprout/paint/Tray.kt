@@ -74,6 +74,33 @@ class Recipe private constructor(
         return Recipe(amounts.mapValues { it.value * factor }, colorCache)
     }
 
+    /**
+     * Keeps at most [MAX_PIGMENTS], and drops only genuinely dead traces.
+     * Contaminating a brush over and over leaves a long tail of vanishing
+     * entries (each contamination scales the old ones down); without this the
+     * recipe map — and the cost of mixing it — would grow the longer a dirty
+     * brush is dragged.
+     *
+     * The trace floor is deliberately far below a single pickup's share: a
+     * dirty brush takes on a new colour a little at a time, and the same colour
+     * coalesces and builds up over many steps, so pruning at the per-step share
+     * would cull each pickup before it could accumulate and the brush would
+     * never get dirty. The floor only removes what has decayed to nothing; the
+     * count cap does the real bounding.
+     */
+    fun withoutTraces(minFraction: Float = TRACE_FRACTION): Recipe {
+        if (amounts.size <= 1) return this
+        val t = total
+        if (t <= 0f) return this
+        var kept: Map<Int, Float> = amounts.filterValues { it >= t * minFraction }
+        if (kept.isEmpty()) return this // never prune everything away
+        if (kept.size > MAX_PIGMENTS) {
+            kept = kept.entries.sortedByDescending { it.value }
+                .take(MAX_PIGMENTS).associate { it.key to it.value }
+        }
+        return if (kept.size == amounts.size) this else Recipe(LinkedHashMap(kept))
+    }
+
     /** How much of [color] is present, for tests and debugging. */
     fun amountOf(@ColorInt color: Int): Float = amounts[color] ?: 0f
 
@@ -87,6 +114,16 @@ class Recipe private constructor(
 
     companion object {
         val EMPTY = Recipe(emptyMap())
+
+        /**
+         * A pigment below this share of the total has decayed to nothing and is
+         * dropped. Far below a single pickup's share (see [withoutTraces]) so
+         * contamination can accumulate rather than being culled each step.
+         */
+        const val TRACE_FRACTION = 0.001f
+
+        /** Most pigments a recipe carries at once — bounds the cost of mixing it. */
+        const val MAX_PIGMENTS = 8
 
         fun of(@ColorInt color: Int, amount: Float = 1f): Recipe = EMPTY.plus(color, amount)
     }
@@ -111,10 +148,10 @@ data class Pot(val name: String, @param:ColorInt val color: Int, val custom: Boo
  *
  * The load's [recipe] doubles as its volume: [Recipe.total] is how much paint
  * is left, and because scaling a recipe doesn't change its colour, draining the
- * brush fades the mark without shifting its hue. Picking up pigment adds to the
- * recipe and *does* shift it — and since depositing drains the old paint away
- * proportionally, the brush gradually forgets what it started with, the way a
- * real one does.
+ * brush fades the mark without shifting its hue. Dragging through paint
+ * [contaminate]s the load — it swaps a fraction of the mixture for what the
+ * brush picked up, shifting its colour without refilling it — so a dirty brush
+ * gradually becomes the colours it has been through, the way a real one does.
  *
  * @param capacity what a full brush holds; [fill] is measured against it.
  */
@@ -142,10 +179,22 @@ data class BrushLoad(val recipe: Recipe, val capacity: Float = DEFAULT_CAPACITY)
         else copy(recipe = recipe.scaledTo(left))
     }
 
-    /** Takes on pigment the brush has dragged through, contaminating the load. */
-    fun pickUp(@ColorInt color: Int, amount: Float): BrushLoad {
-        if (amount <= 0f) return this
-        return copy(recipe = recipe.plus(color, amount))
+    /**
+     * Swaps [fraction] of the load for [color] — the pigment the brush just
+     * dragged through. The total is unchanged, so this contaminates the colour
+     * without refilling the brush: a dirty brush doesn't gain paint.
+     *
+     * Because it's a swap, dragging through paint of the colour the brush
+     * already carries is a no-op (it removes and re-adds the same thing), so a
+     * brush passing over its own fresh trail doesn't reinforce or refill itself
+     * — only crossing a *different* colour actually shifts it.
+     */
+    fun contaminate(@ColorInt color: Int, fraction: Float): BrushLoad {
+        val v = volume
+        if (fraction <= 0f || v <= DRY_THRESHOLD) return this
+        val f = fraction.coerceIn(0f, 1f)
+        val kept = recipe.scaledTo(v * (1f - f)).plus(color, v * f)
+        return copy(recipe = kept.withoutTraces())
     }
 
     companion object {

@@ -162,6 +162,16 @@ class PaintCanvasView @JvmOverloads constructor(
     /** Where the tip last laid paint, for measuring how much the next step spends. */
     private var lastDepositPos: Vec2? = null
 
+    /**
+     * The active wet stroke's own trail, so a dirty brush can pick up paint it
+     * laid moments ago (crossing back over itself), not just committed paint.
+     * Committed paint is read straight from [paintBmp]; this holds only the live
+     * stroke. Cleared at the start of each wet stroke.
+     */
+    private var pickupBuf: Bitmap? = null
+    private var pickupCanvas: Canvas? = null
+    private val pickupStampPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
     /** Base size override; null uses the tool's default. */
     var baseSize: Float? = null
 
@@ -562,6 +572,11 @@ class PaintCanvasView @JvmOverloads constructor(
         bufH = (lh * SUPER_SAMPLE).roundToInt()
         srcRect.set(0, 0, bufW, bufH)
         dstRect.set(0, 0, lw, lh)
+
+        // The pickup trail is buffer-sized; drop it so it's reallocated to match.
+        pickupBuf?.recycle()
+        pickupBuf = null
+        pickupCanvas = null
 
         val placeholder = createBitmap(bufW, bufH).apply { Canvas(this).drawColor(plainColor) }
         val newPaint = createBitmap(bufW, bufH)
@@ -2427,17 +2442,62 @@ class PaintCanvasView @JvmOverloads constructor(
         val last = lastDepositPos
         lastDepositPos = pos
         if (last != null) {
+            val mm = pxPerMm.coerceAtLeast(0.0001f)
+            val distMm = (pos - last).distance / mm
             // Paint is spent per unit of surface covered: how far the tip
             // travelled, times how wide a track it left.
-            val mm = pxPerMm.coerceAtLeast(0.0001f)
-            val areaMm2 = ((pos - last).distance / mm) * (width / mm)
-            if (areaMm2 > 0f) {
-                brushLoad = brushLoad.deposit(areaMm2 / BrushLoad.COVERAGE_MM2)
-                onBrushLoadChanged?.invoke(brushLoad)
+            val areaMm2 = distMm * (width / mm)
+            if (areaMm2 > 0f) brushLoad = brushLoad.deposit(areaMm2 / BrushLoad.COVERAGE_MM2)
+
+            // A dirty brush takes on the paint it drags through. Swap a little of
+            // the load for whatever colour is under the tip, scaled by how far it
+            // moved and how much paint is actually there — so a brush dragged over
+            // bare paper picks up nothing.
+            val picked = pickupColorAt(pos)
+            if (picked != 0) {
+                val coverage = (picked ushr 24) / 255f
+                val fraction = (distMm * PICKUP_PER_MM * coverage).coerceIn(0f, PICKUP_MAX_FRACTION)
+                brushLoad = brushLoad.contaminate(picked or 0xFF000000.toInt(), fraction)
             }
+            onBrushLoadChanged?.invoke(brushLoad)
         }
 
-        return StrokePoint(pos, width, density, color = brushLoad.color, load = brushLoad.fill)
+        val sp = StrokePoint(pos, width, density, color = brushLoad.color, load = brushLoad.fill)
+        // Record what we just laid so a later part of the same stroke can pick it
+        // up. Done after sampling, so a point never picks up its own deposit.
+        stampPickupTrail(pos, width, brushLoad.color)
+        return sp
+    }
+
+    /**
+     * The colour on the canvas under [pos] — the committed paint, else the
+     * brush's own live trail. Returns 0 (nothing to pick up) over bare surface.
+     * Only the paint layer is sampled, never the surface, so dragging over
+     * unpainted paper contaminates nothing — the same rule the magic wand
+     * follows.
+     *
+     * Committed paint is consulted first, and this matters: consecutive points
+     * overlap by roughly the brush radius, so the tip is nearly always sitting
+     * on the trail it just laid. If the trail won, it would shadow the paint
+     * underneath and the brush could never pick anything up. So the trail only
+     * speaks where there is no committed paint — a later part of the stroke
+     * crossing back over an earlier part on bare ground.
+     */
+    private fun pickupColorAt(pos: Vec2): Int {
+        val bx = (pos.x * SUPER_SAMPLE).toInt()
+        val by = (pos.y * SUPER_SAMPLE).toInt()
+        if (bx < 0 || by < 0 || bx >= bufW || by >= bufH) return 0
+
+        paintBmp?.getPixel(bx, by)?.let { if ((it ushr 24) > PICKUP_ALPHA_FLOOR) return it }
+        pickupBuf?.getPixel(bx, by)?.let { if ((it ushr 24) > PICKUP_ALPHA_FLOOR) return it }
+        return 0
+    }
+
+    /** Stamps the colour deposited at [pos] into the live trail for later pickup. */
+    private fun stampPickupTrail(pos: Vec2, width: Float, @ColorInt color: Int) {
+        val c = pickupCanvas ?: return
+        pickupStampPaint.color = color or 0xFF000000.toInt()
+        c.drawCircle(pos.x * SUPER_SAMPLE, pos.y * SUPER_SAMPLE, (width * SUPER_SAMPLE) / 2f, pickupStampPaint)
     }
 
     /** Sets up per-stroke live-preview scratch (spray accumulation / wet backdrop). */
@@ -2448,6 +2508,14 @@ class PaintCanvasView @JvmOverloads constructor(
         if (active?.tool == Tool.SPRAY && logicalW > 0 && logicalH > 0) {
             activeAccum = createBitmap(logicalW, logicalH)
         }
+        // The dirty brush's own-trail buffer: reused across strokes, cleared here.
+        if (active?.tool?.usesLoad == true && bufW > 0 && bufH > 0) {
+            val buf = pickupBuf ?: createBitmap(bufW, bufH).also {
+                pickupBuf = it
+                pickupCanvas = Canvas(it)
+            }
+            buf.eraseColor(Color.TRANSPARENT)
+        }
     }
 
     /** Tears down per-stroke live-preview scratch on pointer-up. */
@@ -2455,6 +2523,8 @@ class PaintCanvasView @JvmOverloads constructor(
         activeAccum?.recycle()
         activeAccum = null
         accumDrawn = 0
+        // Keep pickupBuf allocated for reuse; just drop its contents.
+        pickupBuf?.eraseColor(Color.TRANSPARENT)
     }
 
     // --- Baking -------------------------------------------------------------
@@ -3134,6 +3204,9 @@ class PaintCanvasView @JvmOverloads constructor(
         activeAccum?.recycle()
         activeAccum = null
         recycleWashScratch()
+        pickupBuf?.recycle()
+        pickupBuf = null
+        pickupCanvas = null
         surfaceBmp?.recycle()
         paintBmp?.recycle()
         surfaceBmp = null
@@ -3220,6 +3293,15 @@ class PaintCanvasView @JvmOverloads constructor(
         const val INVALID_POINTER = -1
         const val WET_DILUTE_ALPHA = 128
         const val SUPER_SAMPLE = 1.0f
+
+        // Dirty brush: how fast it takes on the paint it drags through. PER_MM is
+        // the share of the load swapped for the picked colour per mm travelled
+        // (over fully-covered paint); MAX_FRACTION caps a single step so a fast
+        // stroke can't swap the whole load at once; ALPHA_FLOOR ignores near-bare
+        // pixels so faint edges don't contaminate. Tuned by eye on-device.
+        const val PICKUP_PER_MM = 0.05f
+        const val PICKUP_MAX_FRACTION = 0.35f
+        const val PICKUP_ALPHA_FLOOR = 12
 
         // Undo/redo: keep a paint snapshot every STRIDE ops, at most MAX of them
         // (most-recent), so an undo replays at most STRIDE ops from a checkpoint.
