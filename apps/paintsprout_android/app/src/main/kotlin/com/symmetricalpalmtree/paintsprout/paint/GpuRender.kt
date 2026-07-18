@@ -75,9 +75,16 @@ object GpuRender {
     fun renderInto(dst: Bitmap, effect: RenderEffect? = null, draw: (Canvas) -> Unit) =
         synchronized(lock) {
             renderInternal(dst.width, dst.height, effect, draw) { hw ->
-                Canvas(dst).apply {
-                    drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
-                    drawBitmap(hw, 0f, 0f, null)
+                // A wrapped hardware buffer cannot be drawn by a software canvas
+                // (throws); copy() is the sanctioned GPU readback into software.
+                val sw = hw.copy(Bitmap.Config.ARGB_8888, false)
+                try {
+                    Canvas(dst).apply {
+                        drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+                        drawBitmap(sw, 0f, 0f, null)
+                    }
+                } finally {
+                    sw.recycle()
                 }
             }
         }
