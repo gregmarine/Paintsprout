@@ -137,6 +137,29 @@ class StrokeGeometryTest {
     }
 
     @Test
+    fun strokeNormalsRangeMatchesWholeStrokeComputation() {
+        // A wiggly stroke; every interior sub-range must agree with the full
+        // computation (the incremental append relies on this).
+        val pts = listOf(
+            StrokePoint(Vec2(0f, 0f), 2f),
+            StrokePoint(Vec2(10f, 4f), 2f),
+            StrokePoint(Vec2(18f, -3f), 2f),
+            StrokePoint(Vec2(30f, 5f), 2f),
+            StrokePoint(Vec2(41f, 2f), 2f),
+        )
+        val full = strokeNormals(pts)
+        for (from in pts.indices) {
+            for (to in from until pts.size) {
+                val range = strokeNormalsRange(pts, from, to)
+                for (i in from..to) {
+                    assertEquals("x[$from..$to @$i]", full[i].x, range[i - from].x, eps)
+                    assertEquals("y[$from..$to @$i]", full[i].y, range[i - from].y, eps)
+                }
+            }
+        }
+    }
+
+    @Test
     fun ribbonOutlineClampsHalfWidthToMinimum() {
         // width 0.4 -> half-width 0.2 -> clamped up to 0.5.
         val pts = listOf(

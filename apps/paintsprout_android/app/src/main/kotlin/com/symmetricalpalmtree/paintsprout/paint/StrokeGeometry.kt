@@ -93,6 +93,31 @@ fun strokeNormals(pts: List<StrokePoint>): List<Vec2> {
 }
 
 /**
+ * Unit normals for just the points [from..to] (inclusive), reading only the
+ * neighbours the formula needs — so an incremental append costs the range, not
+ * the stroke. Entry k corresponds to point from+k, and matches what
+ * [strokeNormals] would produce at the same index PROVIDED the points after
+ * [to] existed when [strokeNormals] ran (interior normals are final once both
+ * neighbours exist; only the last point's normal is provisional).
+ */
+fun strokeNormalsRange(pts: List<StrokePoint>, from: Int, to: Int): List<Vec2> {
+    require(pts.size >= 2) { "strokeNormalsRange needs at least 2 points" }
+    require(from in 0..to && to < pts.size) { "bad range $from..$to for ${pts.size} points" }
+    val normals = ArrayList<Vec2>(to - from + 1)
+    for (i in from..to) {
+        val tangent = when (i) {
+            0 -> pts[1].position - pts[0].position
+            pts.size - 1 -> pts[i].position - pts[i - 1].position
+            else -> pts[i + 1].position - pts[i - 1].position
+        }
+        val len = tangent.distance
+        val dir = if (len < 1e-3f) Vec2(1f, 0f) else tangent / len
+        normals.add(Vec2(-dir.y, dir.x))
+    }
+    return normals
+}
+
+/**
  * A single closed polygon covering the whole variable-width stroke: down the
  * left edge (position + normal*halfWidth) and back up the right edge. Returns
  * the ordered polygon vertices; the renderer turns them into a filled `Path`

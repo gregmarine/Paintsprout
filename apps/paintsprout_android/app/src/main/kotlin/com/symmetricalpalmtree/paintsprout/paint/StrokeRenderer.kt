@@ -218,54 +218,121 @@ object StrokeRenderer {
         minX: Float, minY: Float, maxX: Float, maxY: Float,
     ) {
         val profile = ToolProfile.of(stroke.tool)
-        val smear = profile.blurFactor * avgWidth
-        val pad = maxWidth / 2f + smear * 3f + 2f
+        val layout = BristleLayout(stroke, maxWidth)
+        val pad = maxWidth / 2f + layout.smear * 3f + 2f
         val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
         val layer = canvas.saveLayer(bounds, Paint().apply { alpha = alpha255(profile.opacity) })
-        val blur = if (smear > 0.3f) BlurMaskFilter(smear, BlurMaskFilter.Blur.NORMAL) else null
         val pts = stroke.points
         if (pts.size == 1) {
-            val p = pts.first()
-            canvas.drawCircle(p.position.x, p.position.y, p.width / 2f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = withAlpha(colorAt(p, rgb), loadAlpha(p.load)); maskFilter = blur
-            })
+            drawBristleDab(canvas, pts.first(), rgb, layout)
         } else {
             val normals = strokeNormals(pts)
-            val rnd = Random(stroke.seed.toLong())
-            val bristleCount = (maxWidth / 2.5f).roundToInt().coerceIn(8, 22)
-            val centerSpacing = maxWidth / bristleCount
-            val meshPaint = Paint()
-
-            // What each point deposits: the colour the brush carried there, at
-            // the strength its remaining load allows. Resolved once and shared
-            // by every bristle.
             val ink = IntArray(pts.size) { i ->
                 withAlpha(colorAt(pts[i], rgb), loadAlpha(pts[i].load))
             }
-            // Reused across bristles — this runs every frame of the live preview.
-            // Two slots spare for the tapered ends.
+            // Reused across bristles; two slots spare for the tapered ends.
             val verts = FloatArray((pts.size + 2) * 4)
             val colors = IntArray((pts.size + 2) * 2)
-
-            for (b in 0 until bristleCount) {
-                if (rnd.nextDouble() < 0.1) continue // dry-brush gap
-                val base = (b + 0.5f) / bristleCount * 2f - 1f
-                val frac = (base + (rnd.nextDouble().toFloat() - 0.5f) * (2f / bristleCount) * 0.8f)
-                    .coerceIn(-1f, 1f)
-                val bw = max(0.6f, centerSpacing * (0.9f + rnd.nextDouble().toFloat() * 0.9f))
-                val half = bw / 2f + smear * 2f
-                drawBristle(canvas, pts, normals, ink, frac, half, -1f, verts, colors, meshPaint)
-                drawBristle(canvas, pts, normals, ink, frac, half, 1f, verts, colors, meshPaint)
+            val meshPaint = Paint()
+            for (b in 0 until layout.count) {
+                bristleSpan(
+                    canvas, pts, normals, ink, layout.fracs[b], layout.halves[b], -1f,
+                    0, pts.size - 1, withHead = true, withTail = true, verts, colors, meshPaint,
+                )
+                bristleSpan(
+                    canvas, pts, normals, ink, layout.fracs[b], layout.halves[b], 1f,
+                    0, pts.size - 1, withHead = true, withTail = true, verts, colors, meshPaint,
+                )
             }
         }
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         canvas.restoreToCount(layer)
     }
 
+    /** A single pressed dab: a soft disc in the ink the brush carried. */
+    private fun drawBristleDab(canvas: Canvas, p: StrokePoint, rgb: Int, layout: BristleLayout) {
+        val blur = if (layout.smear > 0.3f) BlurMaskFilter(layout.smear, BlurMaskFilter.Blur.NORMAL) else null
+        canvas.drawCircle(
+            p.position.x, p.position.y, p.width / 2f,
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = withAlpha(colorAt(p, rgb), loadAlpha(p.load)); maskFilter = blur
+            },
+        )
+    }
+
     /**
-     * Half of one bristle: a mesh running from its transparent edge to its solid
-     * core, on the [side] given (-1 left, +1 right). Two halves make a bristle
-     * that fades out at both edges.
+     * Appends the bristle geometry for the active stroke's points beyond
+     * [accumPts] (how many leading points are already appended) onto [canvas] —
+     * RAW, with no opacity layer and no tooth; the caller's blit applies those.
+     * Only points whose geometry is final are appended (a point's normal moves
+     * until its successor exists), so the last point stays out. Returns the new
+     * accumPts. [drawBristleLiveTail] draws that provisional tail each frame.
+     */
+    fun appendBristleSegments(canvas: Canvas, stroke: Stroke, layout: BristleLayout, accumPts: Int): Int {
+        val pts = stroke.points
+        val n = pts.size
+        val target = n - 1 // leave the live tail point out
+        if (n < 2 || accumPts >= target) return accumPts
+        val from = max(0, accumPts - 1) // share the vertex line with what's drawn
+        val to = target - 1
+        val rgb = stroke.color or OPAQUE_ALPHA
+        // Range-local normals: all of [from..to] have both neighbours, so they
+        // are final and identical to a whole-stroke computation.
+        val normals = strokeNormalsRange(pts, from, to)
+        val ink = IntArray(to - from + 1) { k ->
+            val p = pts[from + k]
+            withAlpha(colorAt(p, rgb), loadAlpha(p.load))
+        }
+        val verts = FloatArray((to - from + 3) * 4)
+        val colors = IntArray((to - from + 3) * 2)
+        val paint = Paint()
+        for (b in 0 until layout.count) {
+            bristleSpan(
+                canvas, pts, normals, ink, layout.fracs[b], layout.halves[b], -1f,
+                from, to, withHead = from == 0, withTail = false, verts, colors, paint, base = from,
+            )
+            bristleSpan(
+                canvas, pts, normals, ink, layout.fracs[b], layout.halves[b], 1f,
+                from, to, withHead = from == 0, withTail = false, verts, colors, paint, base = from,
+            )
+        }
+        return target
+    }
+
+    /** The live tail: the last segment plus the tapered end, redrawn per frame. */
+    fun drawBristleLiveTail(canvas: Canvas, stroke: Stroke, layout: BristleLayout) {
+        val pts = stroke.points
+        val n = pts.size
+        if (n == 1) {
+            drawBristleDab(canvas, pts.first(), stroke.color or OPAQUE_ALPHA, layout)
+            return
+        }
+        val from = n - 2
+        val rgb = stroke.color or OPAQUE_ALPHA
+        val normals = strokeNormalsRange(pts, from, n - 1)
+        val ink = IntArray(2) { k ->
+            val p = pts[from + k]
+            withAlpha(colorAt(p, rgb), loadAlpha(p.load))
+        }
+        val verts = FloatArray(4 * 4)
+        val colors = IntArray(4 * 2)
+        val paint = Paint()
+        for (b in 0 until layout.count) {
+            bristleSpan(
+                canvas, pts, normals, ink, layout.fracs[b], layout.halves[b], -1f,
+                from, n - 1, withHead = false, withTail = true, verts, colors, paint, base = from,
+            )
+            bristleSpan(
+                canvas, pts, normals, ink, layout.fracs[b], layout.halves[b], 1f,
+                from, n - 1, withHead = false, withTail = true, verts, colors, paint, base = from,
+            )
+        }
+    }
+
+    /**
+     * Half of one bristle over points [from..to]: a mesh running from its
+     * transparent edge to its solid core, on the [side] given (-1 left, +1
+     * right). Two halves make a bristle that fades out at both edges.
      *
      * Bristles are meshes rather than blurred strokes because a mask filter
      * cannot ride on [Canvas.drawVertices], and the mesh is what buys everything
@@ -275,10 +342,13 @@ object StrokeRenderer {
      * its own opening. The softness the blur used to provide is built into the
      * geometry: a thin bar blurred is a soft-edged bar, so the mesh just is one.
      *
-     * [verts] and [colors] are scratch owned by the caller; this runs 22 times a
-     * frame and must not allocate.
+     * [withHead]/[withTail] add the tapered end caps — only the stroke's true
+     * ends get them; incremental appends join flush at shared points instead.
+     * [base] is the point index that [normals] and [ink] entry 0 correspond to
+     * (range-local arrays). [verts] and [colors] are scratch owned by the
+     * caller; this runs dozens of times a frame and must not allocate.
      */
-    private fun drawBristle(
+    private fun bristleSpan(
         canvas: Canvas,
         pts: List<StrokePoint>,
         normals: List<Vec2>,
@@ -286,35 +356,46 @@ object StrokeRenderer {
         frac: Float,
         halfWidth: Float,
         side: Float,
+        from: Int,
+        to: Int,
+        withHead: Boolean,
+        withTail: Boolean,
         verts: FloatArray,
         colors: IntArray,
         paint: Paint,
+        base: Int = 0,
     ) {
-        val n = pts.size
+        fun normalAt(i: Int) = normals[i - base]
+        fun spineAt(i: Int) = pts[i].position + normalAt(i) * (frac * pts[i].width / 2f)
 
-        fun spineAt(i: Int) = pts[i].position + normals[i] * (frac * pts[i].width / 2f)
-        fun put(slot: Int, spine: Vec2, normal: Vec2, ink: Int) {
+        var slot = 0
+        fun put(spine: Vec2, normal: Vec2, inkColor: Int) {
             val edge = spine + normal * (side * halfWidth)
             verts[slot * 4] = edge.x; verts[slot * 4 + 1] = edge.y
             verts[slot * 4 + 2] = spine.x; verts[slot * 4 + 3] = spine.y
             // Same hue at the edge, no coverage — so it fades out rather than
             // fringing toward another colour.
-            colors[slot * 2] = ink and 0x00FFFFFF
-            colors[slot * 2 + 1] = ink
+            colors[slot * 2] = inkColor and 0x00FFFFFF
+            colors[slot * 2 + 1] = inkColor
+            slot++
         }
 
         // A stroked path had round caps, and the blur softened them further; a
         // bare mesh ends flat, which lands as a straight edge across the mark —
         // glaring at the start of an enso, where the faded tail sweeps in behind
-        // it. Taper the ends to nothing instead.
-        val headDir = tangentOf(normals[0])
-        val tailDir = tangentOf(normals[n - 1])
-        put(0, spineAt(0) - headDir * halfWidth, normals[0], ink[0] and 0x00FFFFFF)
-        for (i in 0 until n) put(i + 1, spineAt(i), normals[i], ink[i])
-        put(n + 1, spineAt(n - 1) + tailDir * halfWidth, normals[n - 1], ink[n - 1] and 0x00FFFFFF)
+        // it. Taper the true ends to nothing instead.
+        if (withHead) {
+            val headDir = tangentOf(normalAt(from))
+            put(spineAt(from) - headDir * halfWidth, normalAt(from), ink[from - base] and 0x00FFFFFF)
+        }
+        for (i in from..to) put(spineAt(i), normalAt(i), ink[i - base])
+        if (withTail) {
+            val tailDir = tangentOf(normalAt(to))
+            put(spineAt(to) + tailDir * halfWidth, normalAt(to), ink[to - base] and 0x00FFFFFF)
+        }
 
         canvas.drawVertices(
-            Canvas.VertexMode.TRIANGLE_STRIP, verts.size, verts, 0,
+            Canvas.VertexMode.TRIANGLE_STRIP, slot * 4, verts, 0,
             null, 0, colors, 0, null, 0, 0, paint,
         )
     }
@@ -459,4 +540,50 @@ object StrokeRenderer {
 
     private fun withAlpha(rgb: Int, a: Float): Int =
         (alpha255(a) shl 24) or (rgb and 0x00FFFFFF)
+}
+
+/**
+ * The per-stroke bristle layout: which bristles paint (dry-brush gaps survive as
+ * missing entries), where each rides across the brush ([fracs], -1..1) and its
+ * half-thickness ([halves]). Deterministic from the stroke's seed and nominal
+ * width, so the live preview (which appends geometry incrementally and must
+ * never re-lay old bristles) and the bake (which re-renders from scratch) put
+ * down identical marks.
+ *
+ * Sized from [Stroke.baseWidth] at full spread — a brush's bristle count is a
+ * property of the brush the artist picked, not of how hard one stroke pressed.
+ * Light pressure bunches those same bristles into a narrow track, exactly like
+ * real hair. [maxWidthFallback] (the observed width) serves strokes captured
+ * without a baseWidth.
+ */
+class BristleLayout(stroke: Stroke, maxWidthFallback: Float) {
+    @JvmField val fracs: FloatArray
+    @JvmField val halves: FloatArray
+    @JvmField val smear: Float
+
+    val count: Int get() = fracs.size
+
+    init {
+        val profile = ToolProfile.of(stroke.tool)
+        val spread =
+            if (stroke.baseWidth > 0f) stroke.baseWidth * profile.maxPressureFactor else maxWidthFallback
+        smear = profile.blurFactor * spread * 0.55f
+        val n = (spread / 2.5f).roundToInt().coerceIn(8, 22)
+        val spacing = spread / n
+        val rnd = Random(stroke.seed.toLong())
+        val fr = FloatArray(n)
+        val hv = FloatArray(n)
+        var kept = 0
+        for (b in 0 until n) {
+            if (rnd.nextDouble() < 0.1) continue // dry-brush gap
+            val base = (b + 0.5f) / n * 2f - 1f
+            fr[kept] = (base + (rnd.nextDouble().toFloat() - 0.5f) * (2f / n) * 0.8f)
+                .coerceIn(-1f, 1f)
+            val bw = max(0.6f, spacing * (0.9f + rnd.nextDouble().toFloat() * 0.9f))
+            hv[kept] = bw / 2f + smear * 2f
+            kept++
+        }
+        fracs = fr.copyOf(kept)
+        halves = hv.copyOf(kept)
+    }
 }

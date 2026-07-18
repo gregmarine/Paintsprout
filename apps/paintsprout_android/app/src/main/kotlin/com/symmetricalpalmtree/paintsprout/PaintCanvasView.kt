@@ -332,14 +332,24 @@ class PaintCanvasView @JvmOverloads constructor(
     }
 
     /**
-     * Incremental accumulation buffer for the active spray stroke. Spray redraws
-     * as many blurred segments as the stroke is long, so redrawing the whole
-     * stroke every frame is O(n²) and janks on long strokes; instead we append
-     * only the new segments here each frame and blit this once. [accumDrawn] is
-     * how many of the stroke's points are already in it.
+     * Incremental accumulation buffer for the active spray OR brush stroke.
+     * Both redraw work proportional to the stroke's length, so redrawing the
+     * whole stroke every frame is O(n²) and janks on long strokes; instead only
+     * the new, finalized geometry is appended here each frame (raw — no
+     * opacity/tooth; the blit applies those over [activeBounds]) and the still-
+     * moving tail is drawn fresh on top. [accumDrawn] is how many of the
+     * stroke's points are already in it. The bitmap is kept across strokes and
+     * erased, not reallocated.
      */
     private var activeAccum: Bitmap? = null
     private var accumDrawn = 0
+
+    /** The active stroke's bristle layout (brush only; frozen per stroke). */
+    private var bristleLayout: com.symmetricalpalmtree.paintsprout.paint.BristleLayout? = null
+
+    /** Padded bounds of the active stroke, for bounded blit layers. */
+    private val activeBounds = RectF()
+    private var activeMaxWidth = 0f
 
     // --- History ------------------------------------------------------------
     private val committed = mutableListOf<PaintOp>()
@@ -1084,17 +1094,32 @@ class PaintCanvasView @JvmOverloads constructor(
     }
 
     /**
-     * Draws one pending stroke in the live preview. The active spray stroke uses
-     * the incremental [activeAccum] (append-only) to stay fast on long strokes;
-     * everything else renders straight.
+     * Draws one pending stroke in the live preview. The active spray and brush
+     * strokes use the incremental [activeAccum] (append-only, live tail drawn
+     * fresh) to stay fast on long strokes; everything else renders straight.
      */
     private fun drawLiveStroke(canvas: Canvas, s: Stroke, isActive: Boolean) {
-        if (isActive && s.tool == Tool.SPRAY && activeAccum != null) {
-            ensureSprayAccum(s)
-            blitSprayAccum(canvas)
-        } else {
-            StrokeRenderer.paintStroke(canvas, s, surface)
+        if (isActive && activeAccum != null) {
+            when (s.tool) {
+                Tool.SPRAY -> {
+                    ensureSprayAccum(s)
+                    blitAccum(canvas, s, liveTail = null)
+                    return
+                }
+                Tool.BRUSH -> {
+                    val layout = bristleLayout
+                        ?: com.symmetricalpalmtree.paintsprout.paint.BristleLayout(s, activeMaxWidth)
+                            .also { bristleLayout = it }
+                    activeAccum?.let { accum ->
+                        accumDrawn = StrokeRenderer.appendBristleSegments(Canvas(accum), s, layout, accumDrawn)
+                    }
+                    blitAccum(canvas, s) { StrokeRenderer.drawBristleLiveTail(it, s, layout) }
+                    return
+                }
+                else -> {}
+            }
         }
+        StrokeRenderer.paintStroke(canvas, s, surface)
     }
 
     /** Appends any not-yet-drawn spray segments to [activeAccum]. */
@@ -1105,18 +1130,27 @@ class PaintCanvasView @JvmOverloads constructor(
         accumDrawn = stroke.points.size
     }
 
-    /** Blits the spray accumulation with the tool's opacity + surface tooth. */
-    private fun blitSprayAccum(canvas: Canvas) {
+    /**
+     * Blits the accumulated stroke (plus its live tail, if any) with the tool's
+     * opacity and the surface tooth — inside a layer clipped to the stroke's
+     * padded bounds, not the whole canvas, so the per-frame cost follows the
+     * stroke's size.
+     */
+    private fun blitAccum(canvas: Canvas, stroke: Stroke, liveTail: ((Canvas) -> Unit)?) {
         val accum = activeAccum ?: return
-        val opacity = com.symmetricalpalmtree.paintsprout.paint.ToolProfile.of(Tool.SPRAY).opacity
-        val tooth = ToothCache.toothFor(surface, Tool.SPRAY)
-        val lp = Paint().apply { alpha = (opacity * 255f).roundToInt().coerceIn(0, 255) }
-        val layer = canvas.saveLayer(0f, 0f, logicalW.toFloat(), logicalH.toFloat(), lp)
+        val profile = com.symmetricalpalmtree.paintsprout.paint.ToolProfile.of(stroke.tool)
+        val tooth = ToothCache.toothFor(surface, stroke.tool)
+        val pad = activeMaxWidth / 2f + activeMaxWidth * profile.blurFactor * 3f + 8f
+        val bounds = RectF(activeBounds).apply {
+            inset(-pad, -pad)
+            intersect(0f, 0f, logicalW.toFloat(), logicalH.toFloat())
+        }
+        val lp = Paint().apply { alpha = (profile.opacity * 255f).roundToInt().coerceIn(0, 255) }
+        val layer = canvas.saveLayer(bounds, lp)
         canvas.drawBitmap(accum, 0f, 0f, null)
+        liveTail?.invoke(canvas)
         if (tooth != null) {
-            com.symmetricalpalmtree.paintsprout.paint.applyTooth(
-                canvas, RectF(0f, 0f, logicalW.toFloat(), logicalH.toFloat()), tooth, surface.toothScale,
-            )
+            com.symmetricalpalmtree.paintsprout.paint.applyTooth(canvas, bounds, tooth, surface.toothScale)
         }
         canvas.restoreToCount(layer)
     }
@@ -1356,13 +1390,15 @@ class PaintCanvasView @JvmOverloads constructor(
                 // from its own first point, not wherever the last one ended.
                 lastDepositPos = null
                 beginConditioning(event.getPressure(actionIndex))
-                val stroke = Stroke(tool, color, seed = Random.nextInt())
+                val stroke = Stroke(tool, color, seed = Random.nextInt(), baseWidth = sizeFor(tool))
                 active = stroke
+                // Extras first: the first sample stamps the pickup trail, which
+                // beginActiveExtras would otherwise immediately erase.
+                beginActiveExtras()
                 addSample(
                     stroke, event.getX(actionIndex), event.getY(actionIndex),
                     event.getPressure(actionIndex), event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
                 )
-                beginActiveExtras()
                 invalidate()
                 return true
             }
@@ -2519,7 +2555,15 @@ class PaintCanvasView @JvmOverloads constructor(
         }
         lastAcceptPos = pos
         lastAcceptPressure = smoothPressure
-        stroke.add(buildPoint(pos, smoothPressure, smoothTilt))
+        val point = buildPoint(pos, smoothPressure, smoothTilt)
+        stroke.add(point)
+        // Grow the live-blit bounds (padded when used; see blit helpers).
+        activeMaxWidth = max(activeMaxWidth, point.width)
+        if (stroke.points.size == 1) {
+            activeBounds.set(pos.x, pos.y, pos.x, pos.y)
+        } else {
+            activeBounds.union(pos.x, pos.y)
+        }
     }
 
     /**
@@ -2594,13 +2638,22 @@ class PaintCanvasView @JvmOverloads constructor(
         c.drawCircle(pos.x * SUPER_SAMPLE, pos.y * SUPER_SAMPLE, (width * SUPER_SAMPLE) / 2f, pickupStampPaint)
     }
 
-    /** Sets up per-stroke live-preview scratch (spray accumulation / wet backdrop). */
+    /** Sets up per-stroke live-preview scratch (accumulator / wet backdrop). */
     private fun beginActiveExtras() {
-        activeAccum?.recycle()
-        activeAccum = null
         accumDrawn = 0
-        if (active?.tool == Tool.SPRAY && logicalW > 0 && logicalH > 0) {
-            activeAccum = createBitmap(logicalW, logicalH)
+        bristleLayout = null
+        val wantsAccum = active?.tool == Tool.SPRAY || active?.tool == Tool.BRUSH
+        if (wantsAccum && logicalW > 0 && logicalH > 0) {
+            val cur = activeAccum
+            if (cur != null && cur.width == logicalW && cur.height == logicalH) {
+                cur.eraseColor(Color.TRANSPARENT)
+            } else {
+                cur?.recycle()
+                activeAccum = createBitmap(logicalW, logicalH)
+            }
+        } else {
+            activeAccum?.recycle()
+            activeAccum = null
         }
         // The dirty brush's own-trail buffer: reused across strokes, cleared here.
         if (active?.tool?.usesLoad == true && bufW > 0 && bufH > 0) {
@@ -2614,9 +2667,9 @@ class PaintCanvasView @JvmOverloads constructor(
 
     /** Tears down per-stroke live-preview scratch on pointer-up. */
     private fun endActiveExtras() {
-        activeAccum?.recycle()
-        activeAccum = null
+        // Keep the accumulator allocated for the next stroke; just reset use.
         accumDrawn = 0
+        bristleLayout = null
         wetBackdropShader = null
         wetBackdropAtPoints = 0
         // Keep pickupBuf allocated for reuse; just drop its contents.

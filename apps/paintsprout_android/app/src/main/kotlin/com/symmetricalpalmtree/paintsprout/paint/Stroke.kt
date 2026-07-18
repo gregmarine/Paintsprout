@@ -46,6 +46,14 @@ class Stroke(
     val tool: Tool,
     @param:ColorInt val color: Int,
     val seed: Int = 0,
+    /**
+     * The tool's nominal (unpressed) width in buffer px at capture time, or 0
+     * when unknown. The bristle renderer sizes its layout from this — a
+     * brush's bristle count is a property of the brush, not of how hard one
+     * stroke pressed — and replay re-renders identically because it's stored.
+     * 0 falls back to the observed stroke width (legacy strokes, tests).
+     */
+    val baseWidth: Float = 0f,
 ) {
     val points: MutableList<StrokePoint> = mutableListOf()
 
