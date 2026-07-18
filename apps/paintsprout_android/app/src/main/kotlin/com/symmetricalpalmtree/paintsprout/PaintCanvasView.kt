@@ -1416,6 +1416,9 @@ class PaintCanvasView @JvmOverloads constructor(
         event.offsetLocation(-canvasLeft.toFloat(), -canvasTop.toFloat())
         // Feed the predictor canvas-local events; predictions come back in kind.
         motionPredictor.record(event)
+        // Stylus events arrive batched to vsync by default; ask for immediate
+        // delivery while drawing — up to a frame less input latency.
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) requestUnbufferedDispatch(event)
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
