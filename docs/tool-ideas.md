@@ -30,7 +30,10 @@ physically rotate the tablet instead.
 - ✅ **Tools:** Pencil, Pen, Line, Arc, Polyline, Polyarc, Brush, Watercolor, Marker, Spray, Eraser, Magic Wand
 - ✅ **Render styles:** solid, soft, grain, bristle, wash
 - ✅ **Surfaces (9):** Plain, Paper, Canvas, Watercolor, Wood, Stone, Concrete, Metal, Chalkboard — each with per-surface custom parameters + per-artwork seed, and a tooth field that breaks up strokes
-- ✅ **Pigment mixing:** spectral Kubelka-Munk (blue + yellow = green) at stroke time
+- ✅ **Pigment mixing:** spectral Kubelka-Munk (blue + yellow = green), on the GPU at stroke time and on the CPU (`Pigment.kt`) for the tray/brush
+- ✅ **Mixing tray:** a docked pull-out palette — named-pigment wells around the rim + a central mixing well, drag pigments in to mix them spectrally, tap to load the brush; add any wheel colour as a new well
+- ✅ **Brush load:** the brush carries a finite load from the tray, spends it over the ground it covers (per real mm²) and fades as it runs dry, reload from the well
+- ✅ **Dirty brush:** dragging through paint on the canvas contaminates the load — a blue brush pulled across a yellow band comes out green and carries it forward
 - ✅ **Undo/redo:** unlimited, via replayable ops
 - ✅ **Magic-wand selection:** select, fill/erase, frisket-constrained painting, move/scale/rotate
 - ✅ **Watercolor interaction:** washes out existing paint
@@ -173,7 +176,7 @@ Biggest structural gap. Two layers today (surface, paint); paint layer is flat r
 ## Color
 | Status | Item | Notes |
 |--------|------|-------|
-| ⬜ | Eyedropper | Can't sample a color from our own canvas — strange hole given we have pigment mixing |
+| ⬜ | Eyedropper | No user-facing tool yet, though the dirty brush already samples canvas colour internally (`pickupColorAt`) — exposing it as a tap-to-pick tool is a small step |
 | ⬜ | Foreground/background pair | With swap |
 | ⬜ | User-controlled alpha | Per-tool opacity exists; user alpha does not |
 | ⬜ | Saved palettes | Named, import/export |
@@ -181,8 +184,8 @@ Biggest structural gap. Two layers today (surface, paint); paint layer is flat r
 | ⬜ | Recent colors history | |
 | ⬜ | Color harmony wheel | Complementary, triadic, analogous |
 | ⬜ | Numeric entry | Hex, RGB, HSL sliders |
-| ⬜ | Physical mixing tray | Drag pigments together, mix *before* painting, load brush from tray. KM engine already does the hard part — **most Paintsprout-shaped idea on the list** |
-| ⬜ | Named real pigments | Ultramarine, Cadmium Yellow, Quinacridone Magenta, Phthalo Green — measured KM coefficients, not arbitrary RGB |
+| ✅ | Physical mixing tray | Docked pull-out palette: named-pigment wells + a central mixing well, drag to mix spectrally *before* painting, tap to load the brush. Custom colours off the wheel become wells too |
+| 🚧 | Named real pigments | Ultramarine, Cadmium Yellow, Quinacridone Magenta, Phthalo Green, etc. shipped as the tray's wells — but curated **sRGB** with real names, NOT measured KM coefficients. Measured coefficients (truer mixing) remain the refinement |
 | ⬜ | Grayscale value preview | Check values |
 | ⬜ | Colorblind preview | |
 
@@ -225,8 +228,8 @@ Where Paintsprout could be genuinely unlike anything else — the hard parts are
 | ⬜ | Pre-wetting the paper | A later stroke blooms |
 | ⬜ | Gravity / drips | Runs when you tilt the device — accelerometer is right there |
 | ⬜ | Impasto height field | Thickness → normal map; movable light source raking across it — the whole appeal of oil |
-| ⬜ | Bidirectional paint pickup | Brush carries, deposits, and picks up underlying pigment; dragging through wet paint smears and contaminates the brush |
-| ⬜ | Brush load | Paint runs out; reload from palette — forces the rhythm of real painting |
+| ✅ | Bidirectional paint pickup | Brush carries, deposits, and picks up the paint it drags through (canvas or its own trail), contaminating the load — colour swaps in without refilling. Wet media only |
+| ✅ | Brush load | Finite load from the tray, spent per real mm² covered, fades as it runs dry, reload from the palette — the rhythm of real painting |
 | ⬜ | Salt & masking fluid | Watercolor resist effects |
 
 ---
