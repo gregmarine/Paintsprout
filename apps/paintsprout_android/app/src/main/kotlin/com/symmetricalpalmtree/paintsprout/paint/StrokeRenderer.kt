@@ -16,14 +16,16 @@ import kotlin.math.roundToInt
  * preview and the bake, so what you see while drawing is exactly what commits —
  * the same contract as `paintStroke` in the Flutter `stroke.dart`.
  *
- * Ports every render branch: grain (pencil/marker), wash (watercolor's look —
- * the wet/spectral interaction is Stage 4), bristle (brush), and the shared
- * solid/soft path (pen, spray, eraser), plus the surface [ToothCache] break-up.
+ * Ports every render branch: grain (pencil/marker), wash (watercolor), bristle
+ * (brush), and the shared solid/soft path (pen, spray, eraser), plus the surface
+ * [ToothCache] break-up.
  *
- * The soft-edge blur uses [BlurMaskFilter] (per-shape) rather than Flutter's
- * whole-layer `ImageFilter.blur`, because our software Bitmap bakes can't host a
- * `RenderEffect`. Stage 4 introduces a GPU-offscreen path (for AGSL) where a
- * true layer blur can be adopted if this approximation falls short.
+ * Wash and solid soften their edges with a per-shape [BlurMaskFilter], rather
+ * than Flutter's whole-layer `ImageFilter.blur`, because our software Bitmap
+ * bakes can't host a `RenderEffect`. Grain and bristle instead build their marks
+ * as meshes with per-vertex colour, which is both cheaper and the only way they
+ * can carry a colour and a strength that vary along the stroke — see
+ * [drawBristle].
  */
 object StrokeRenderer {
 
@@ -78,7 +80,9 @@ object StrokeRenderer {
             val p = pts.first()
             canvas.drawCircle(
                 p.position.x, p.position.y, p.width / 2f,
-                Paint(Paint.ANTI_ALIAS_FLAG).apply { color = withAlpha(rgb, p.density) },
+                Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = withAlpha(colorAt(p, rgb), p.density * loadAlpha(p.load))
+                },
             )
         } else {
             val normals = strokeNormals(pts)
@@ -89,7 +93,10 @@ object StrokeRenderer {
                 val hw = max(0.25f, p.width / 2f)
                 val left = p.position + normals[i] * hw
                 val right = p.position - normals[i] * hw
-                val col = withAlpha(rgb, p.density)
+                // One mesh, so per-vertex alpha can't overlap-accumulate — the
+                // grain path folds load straight into the vertex colour and
+                // needs no separate mask.
+                val col = withAlpha(colorAt(p, rgb), p.density * loadAlpha(p.load))
                 verts[i * 4] = left.x; verts[i * 4 + 1] = left.y
                 verts[i * 4 + 2] = right.x; verts[i * 4 + 3] = right.y
                 colors[i * 2] = col; colors[i * 2 + 1] = col
@@ -111,7 +118,8 @@ object StrokeRenderer {
         toothScale: Float, maxWidth: Float, bleed: Float,
         minX: Float, minY: Float, maxX: Float, maxY: Float,
     ) {
-        val pad = maxWidth / 2f + bleed * 3f + 2f
+        val halo = bleed * 3f + 2f
+        val pad = maxWidth / 2f + halo
         val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
         val layer = canvas.saveLayer(bounds, Paint().apply { alpha = alpha255(ToolProfile.of(stroke.tool).opacity) })
         val blur = if (bleed > 0.3f) BlurMaskFilter(bleed, BlurMaskFilter.Blur.NORMAL) else null
@@ -119,22 +127,32 @@ object StrokeRenderer {
         if (pts.size == 1) {
             val p = pts.first()
             val r = max(1f, p.width / 2f)
+            val c = colorAt(p, rgb)
+            val fade = loadAlpha(p.load)
             canvas.drawCircle(p.position.x, p.position.y, r, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = withAlpha(rgb, 0.6f); maskFilter = blur
+                color = withAlpha(c, 0.6f * fade); maskFilter = blur
             })
             canvas.drawCircle(p.position.x, p.position.y, r, Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE; strokeWidth = max(1.5f, r * 0.4f)
-                color = withAlpha(rgb, 0.95f); maskFilter = blur
+                color = withAlpha(c, 0.95f * fade); maskFilter = blur
             })
         } else {
-            val ribbon = ribbonPath(ribbonOutline(pts, strokeNormals(pts)))
-            canvas.drawPath(ribbon, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = withAlpha(rgb, 0.6f); maskFilter = blur
-            })
-            canvas.drawPath(ribbon, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            val normals = strokeNormals(pts)
+            val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { maskFilter = blur }
+            val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE; strokeWidth = max(1.5f, maxWidth * 0.16f)
-                strokeJoin = Paint.Join.ROUND; color = withAlpha(rgb, 0.95f); maskFilter = blur
-            })
+                strokeJoin = Paint.Join.ROUND; maskFilter = blur
+            }
+            for (run in spansOf(stroke, rgb)) {
+                val ribbon = ribbonPath(
+                    ribbonOutline(
+                        pts.subList(run.from, run.to + 1),
+                        normals.subList(run.from, run.to + 1),
+                    ),
+                )
+                canvas.drawPath(ribbon, fillPaint.apply { color = withAlpha(run.color, 0.6f * run.alpha) })
+                canvas.drawPath(ribbon, rimPaint.apply { color = withAlpha(run.color, 0.95f * run.alpha) })
+            }
         }
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         canvas.restoreToCount(layer)
@@ -157,35 +175,100 @@ object StrokeRenderer {
         if (pts.size == 1) {
             val p = pts.first()
             canvas.drawCircle(p.position.x, p.position.y, p.width / 2f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = rgb; maskFilter = blur
+                color = withAlpha(colorAt(p, rgb), loadAlpha(p.load)); maskFilter = blur
             })
         } else {
             val normals = strokeNormals(pts)
             val rnd = Random(stroke.seed.toLong())
             val bristleCount = (maxWidth / 2.5f).roundToInt().coerceIn(8, 22)
             val centerSpacing = maxWidth / bristleCount
+            val meshPaint = Paint()
+
+            // What each point deposits: the colour the brush carried there, at
+            // the strength its remaining load allows. Resolved once and shared
+            // by every bristle.
+            val ink = IntArray(pts.size) { i ->
+                withAlpha(colorAt(pts[i], rgb), loadAlpha(pts[i].load))
+            }
+            // Reused across bristles — this runs every frame of the live preview.
+            // Two slots spare for the tapered ends.
+            val verts = FloatArray((pts.size + 2) * 4)
+            val colors = IntArray((pts.size + 2) * 2)
+
             for (b in 0 until bristleCount) {
                 if (rnd.nextDouble() < 0.1) continue // dry-brush gap
                 val base = (b + 0.5f) / bristleCount * 2f - 1f
                 val frac = (base + (rnd.nextDouble().toFloat() - 0.5f) * (2f / bristleCount) * 0.8f)
                     .coerceIn(-1f, 1f)
                 val bw = max(0.6f, centerSpacing * (0.9f + rnd.nextDouble().toFloat() * 0.9f))
-                val path = android.graphics.Path()
-                for (j in pts.indices) {
-                    val p = pts[j]
-                    val off = p.position + normals[j] * (frac * p.width / 2f)
-                    if (j == 0) path.moveTo(off.x, off.y) else path.lineTo(off.x, off.y)
-                }
-                canvas.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    style = Paint.Style.STROKE; strokeWidth = bw
-                    strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
-                    color = rgb; maskFilter = blur
-                })
+                val half = bw / 2f + smear * 2f
+                drawBristle(canvas, pts, normals, ink, frac, half, -1f, verts, colors, meshPaint)
+                drawBristle(canvas, pts, normals, ink, frac, half, 1f, verts, colors, meshPaint)
             }
         }
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         canvas.restoreToCount(layer)
     }
+
+    /**
+     * Half of one bristle: a mesh running from its transparent edge to its solid
+     * core, on the [side] given (-1 left, +1 right). Two halves make a bristle
+     * that fades out at both edges.
+     *
+     * Bristles are meshes rather than blurred strokes because a mask filter
+     * cannot ride on [Canvas.drawVertices], and the mesh is what buys everything
+     * else: it carries a colour and a strength at *every* point, so a fading or
+     * contaminated bristle costs no mask and no extra draw call — and it
+     * composites normally, so a stroke crossing itself unions instead of erasing
+     * its own opening. The softness the blur used to provide is built into the
+     * geometry: a thin bar blurred is a soft-edged bar, so the mesh just is one.
+     *
+     * [verts] and [colors] are scratch owned by the caller; this runs 22 times a
+     * frame and must not allocate.
+     */
+    private fun drawBristle(
+        canvas: Canvas,
+        pts: List<StrokePoint>,
+        normals: List<Vec2>,
+        ink: IntArray,
+        frac: Float,
+        halfWidth: Float,
+        side: Float,
+        verts: FloatArray,
+        colors: IntArray,
+        paint: Paint,
+    ) {
+        val n = pts.size
+
+        fun spineAt(i: Int) = pts[i].position + normals[i] * (frac * pts[i].width / 2f)
+        fun put(slot: Int, spine: Vec2, normal: Vec2, ink: Int) {
+            val edge = spine + normal * (side * halfWidth)
+            verts[slot * 4] = edge.x; verts[slot * 4 + 1] = edge.y
+            verts[slot * 4 + 2] = spine.x; verts[slot * 4 + 3] = spine.y
+            // Same hue at the edge, no coverage — so it fades out rather than
+            // fringing toward another colour.
+            colors[slot * 2] = ink and 0x00FFFFFF
+            colors[slot * 2 + 1] = ink
+        }
+
+        // A stroked path had round caps, and the blur softened them further; a
+        // bare mesh ends flat, which lands as a straight edge across the mark —
+        // glaring at the start of an enso, where the faded tail sweeps in behind
+        // it. Taper the ends to nothing instead.
+        val headDir = tangentOf(normals[0])
+        val tailDir = tangentOf(normals[n - 1])
+        put(0, spineAt(0) - headDir * halfWidth, normals[0], ink[0] and 0x00FFFFFF)
+        for (i in 0 until n) put(i + 1, spineAt(i), normals[i], ink[i])
+        put(n + 1, spineAt(n - 1) + tailDir * halfWidth, normals[n - 1], ink[n - 1] and 0x00FFFFFF)
+
+        canvas.drawVertices(
+            Canvas.VertexMode.TRIANGLE_STRIP, verts.size, verts, 0,
+            null, 0, colors, 0, null, 0, 0, paint,
+        )
+    }
+
+    /** The direction of travel that goes with a stroke normal. */
+    private fun tangentOf(normal: Vec2) = Vec2(normal.y, -normal.x)
 
     // --- Shared solid / soft path (pen, spray, eraser) ----------------------
 
@@ -290,6 +373,31 @@ object StrokeRenderer {
             i++
         }
     }
+
+    // --- Brush load ---------------------------------------------------------
+
+    /**
+     * How a draining brush fades. Below 1 the mark holds its strength through
+     * most of the load and then drops away near the end, rather than dimming
+     * linearly from the first stroke.
+     */
+    private const val LOAD_FADE_EXP = 0.7f
+
+    /** Alpha the mark carries at a given remaining [load]. */
+    private fun loadAlpha(load: Float): Float =
+        if (load >= 1f) 1f else Math.pow(load.coerceAtLeast(0f).toDouble(), LOAD_FADE_EXP.toDouble()).toFloat()
+
+    /** The colour to deposit at [p] — what the brush carried, else the stroke's. */
+    private fun colorAt(p: StrokePoint, rgb: Int): Int =
+        if (p.color != INHERIT_COLOR) p.color or OPAQUE_ALPHA else rgb
+
+    /**
+     * The stroke as spans of near-constant colour and strength — one span for an
+     * ordinary stroke, more as the brush fades or picks pigment up. See
+     * [strokeRuns] for why this is not done with a mask.
+     */
+    private fun spansOf(stroke: Stroke, rgb: Int): List<StrokeRun> =
+        strokeRuns(stroke, rgb) { loadAlpha(it) }
 
     // --- Helpers ------------------------------------------------------------
 

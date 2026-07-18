@@ -40,6 +40,14 @@ enum class Tool {
         get() = this != PEN && this != ERASER && this != LINE && this != ARC &&
             this != POLYLINE && this != POLYARC
 
+    /**
+     * Wet media: they carry a finite load of paint from the tray, run out as
+     * they go, and pick up pigment they drag through. Dry media don't — a
+     * pencil dragged through wet paint must not load up with it.
+     */
+    val usesLoad: Boolean
+        get() = this == BRUSH || this == WATERCOLOR
+
     /** Sensible starting base size (logical px) per tool. Fallback only; the UI
      *  drives size in millimetres (see [defaultSizeMm]). */
     val defaultSize: Float

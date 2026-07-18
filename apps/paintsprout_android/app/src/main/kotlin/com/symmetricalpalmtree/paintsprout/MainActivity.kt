@@ -9,7 +9,9 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.GridLayout
 import android.widget.ImageButton
@@ -18,6 +20,7 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.res.ResourcesCompat
+import androidx.core.view.doOnLayout
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -32,10 +35,12 @@ import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.ChalkboardParams
 import com.symmetricalpalmtree.paintsprout.paint.ConcreteParams
 import com.symmetricalpalmtree.paintsprout.paint.MetalParams
+import com.symmetricalpalmtree.paintsprout.paint.Pot
 import com.symmetricalpalmtree.paintsprout.paint.StoneParams
 import com.symmetricalpalmtree.paintsprout.paint.SurfaceKind
 import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
 import com.symmetricalpalmtree.paintsprout.paint.Tool
+import com.symmetricalpalmtree.paintsprout.paint.Tray
 import com.symmetricalpalmtree.paintsprout.paint.WatercolorParams
 import com.symmetricalpalmtree.paintsprout.paint.WoodParams
 import kotlin.math.roundToInt
@@ -66,6 +71,11 @@ class MainActivity : AppCompatActivity() {
     private var concreteParams = ConcreteParams()
     private var metalParams = MetalParams()
     private var chalkboardParams = ChalkboardParams()
+    /** The palette. Pots and the mixing well; see [TrayView]. */
+    private val tray = Tray()
+    private var trayOut = false
+    private var trayHiddenX = 0f
+
     private var hasSelection = false
     private var hasPendingLine = false
     private var hasPendingArc = false
@@ -118,6 +128,7 @@ class MainActivity : AppCompatActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
         buildRail()
+        setupTray()
         binding.btnShowRail.setOnClickListener { setRailVisible(true) }
 
         binding.canvas.tool = tool
@@ -219,6 +230,9 @@ class MainActivity : AppCompatActivity() {
 
         colorBtn.visibility = if (tool == Tool.ERASER) View.GONE else View.VISIBLE
         colorBtn.setImageDrawable(swatchDrawable(color))
+        // iconButton tints every icon slate so the tool glyphs match; the swatch
+        // *is* the colour, so it must not be tinted or it always reads dark.
+        colorBtn.imageTintList = null
 
         sizeBtn.visibility = if (tool == Tool.WAND) View.GONE else View.VISIBLE
         sizeBtn.text = formatMm(sizes[tool] ?: tool.defaultSizeMm)
@@ -251,7 +265,11 @@ class MainActivity : AppCompatActivity() {
     /** Pushes the current tool's stored mm size to the canvas as pixels at this PPI. */
     private fun applySizeToCanvas() {
         val mm = sizes[tool] ?: tool.defaultSizeMm
-        binding.canvas.baseSize = Calibration.mmToPx(mm, Calibration.effectivePpi(this))
+        val ppi = Calibration.effectivePpi(this)
+        binding.canvas.baseSize = Calibration.mmToPx(mm, ppi)
+        // The brush spends paint per real mm² covered, so it needs the same
+        // physical scale the sizes use.
+        binding.canvas.pxPerMm = Calibration.mmToPx(1f, ppi)
     }
 
     /** Compact mm label for the rail button: "0.5", "4", "12.5". */
@@ -272,6 +290,108 @@ class MainActivity : AppCompatActivity() {
         binding.railCard.visibility = if (visible) View.VISIBLE else View.GONE
         binding.btnShowRail.visibility = if (visible) View.GONE else View.VISIBLE
     }
+
+    // --- Mixing tray --------------------------------------------------------
+
+    /**
+     * The palette is a docked panel rather than a dialog (every other picker is
+     * one) because you mix a colour *while* painting — a modal would put the
+     * canvas away every time you reach for the palette.
+     */
+    private fun setupTray() {
+        binding.tray.tray = tray
+        binding.tray.onLoadBrush = { load ->
+            // Straight to the canvas, keeping the mixture: going via
+            // onColorChanged would recharge the brush with one flat pigment and
+            // discard the recipe just mixed.
+            binding.canvas.loadBrush(load)
+            color = load.color
+            updateRail()
+        }
+        binding.tray.onAddPot = {
+            pickColor("Add a pigment", color) { c ->
+                tray.addPot(Pot(namePot(c), c, custom = true))
+                binding.tray.tray = tray
+            }
+        }
+
+        // Park the palette off-screen until it's pulled out, leaving the tab.
+        binding.trayPanel.doOnLayout {
+            trayHiddenX = binding.trayCard.width.toFloat() +
+                (binding.trayCard.layoutParams as? ViewGroup.MarginLayoutParams)?.marginEnd?.toFloat().orZero()
+            binding.trayPanel.translationX = trayHiddenX
+            updateTrayTab()
+        }
+
+        attachTrayTabGesture()
+    }
+
+    /**
+     * The tab both taps and drags: a tap toggles, a drag follows the finger and
+     * snaps to whichever side it was heading for.
+     */
+    private fun attachTrayTabGesture() {
+        val slop = ViewConfiguration.get(this).scaledTouchSlop
+        var downX = 0f
+        var startX = 0f
+        var dragging = false
+
+        binding.trayTab.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.rawX
+                    startX = binding.trayPanel.translationX
+                    dragging = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - downX
+                    if (!dragging && Math.abs(dx) > slop) dragging = true
+                    if (dragging) {
+                        binding.trayPanel.translationX = (startX + dx).coerceIn(0f, trayHiddenX)
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (dragging) {
+                        // Snap to whichever side it's closer to.
+                        setTrayOut(binding.trayPanel.translationX < trayHiddenX / 2f)
+                    } else {
+                        setTrayOut(!trayOut)
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun setTrayOut(out: Boolean) {
+        trayOut = out
+        binding.trayPanel.animate()
+            .translationX(if (out) 0f else trayHiddenX)
+            .setDuration(180)
+            .start()
+        updateTrayTab()
+    }
+
+    private fun updateTrayTab() {
+        // Chevron points the way the palette will travel.
+        binding.trayTabIcon.setImageResource(if (trayOut) R.drawable.ic_show else R.drawable.ic_hide)
+    }
+
+    /** Labels a wheel colour by its nearest named pigment, so pots stay nameable. */
+    private fun namePot(@androidx.annotation.ColorInt c: Int): String {
+        val nearest = Tray.STANDARD_POTS.minByOrNull { pot ->
+            val dr = ((pot.color shr 16) and 0xFF) - ((c shr 16) and 0xFF)
+            val dg = ((pot.color shr 8) and 0xFF) - ((c shr 8) and 0xFF)
+            val db = (pot.color and 0xFF) - (c and 0xFF)
+            dr * dr + dg * dg + db * db
+        }
+        return nearest?.let { "Mixed (near ${it.name})" } ?: "Mixed"
+    }
+
+    private fun Float?.orZero(): Float = this ?: 0f
 
     // --- Pickers ------------------------------------------------------------
 
