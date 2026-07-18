@@ -55,3 +55,80 @@ Number Slow issue draw commands: 2
 Number Frame deadline missed: 7
 Number Frame deadline missed (legacy): 6
 
+== watercolor (after 4 iterations: mesh fill+rim, windowed geometry) ==
+# user: grooves + ladder GONE. Remaining, DEFERRED TO PHASE 3 (structural to
+# ribbon geometry, dissolved by the wet-sim rebuild): (a) glop at squiggle
+# hairpin reversals; (b) odd stroke start ('brush not hitting right at first').
+Total frames rendered: 1677
+Janky frames: 63 (3.76%)
+Janky frames (legacy): 308 (18.37%)
+50th percentile: 11ms
+90th percentile: 34ms
+95th percentile: 44ms
+99th percentile: 61ms
+Number Missed Vsync: 34
+Number High input latency: 1632
+Number Slow UI thread: 62
+Number Slow bitmap uploads: 1
+Number Slow issue draw commands: 7
+Number Frame deadline missed: 63
+Number Frame deadline missed (legacy): 71
+
+== marker ==
+# user: feels good overall; same stroke-start funnel (tilt EMA zero-reset bug,
+# fixed after this round) and same inner-curve fold glob (grain mesh, deferred
+# to Phase 6's nib rebuild).
+Total frames rendered: 1239
+Janky frames: 3 (0.24%)
+Janky frames (legacy): 3 (0.24%)
+50th percentile: 7ms
+90th percentile: 8ms
+95th percentile: 8ms
+99th percentile: 10ms
+Number Missed Vsync: 0
+Number High input latency: 591
+Number Slow UI thread: 0
+Number Slow bitmap uploads: 3
+Number Slow issue draw commands: 0
+Number Frame deadline missed: 3
+Number Frame deadline missed (legacy): 3
+
+# marker addendum after tilt-seed fix: start 'better but not quite there';
+# tilted marks look bad (tilt just multiplies ribbon width — Phase 6 replaces
+# this with chisel-nib geometry, direction-dependent width). DEFERRED.
+
+== spray ==
+# user: performance great; slight stroke-size reduction at pen-up (live blurs
+# per-segment width, bake blurs whole-stroke average — pre-existing; Phase 7
+# droplets must bake identical to live).
+Total frames rendered: 945
+Janky frames: 7 (0.74%)
+Janky frames (legacy): 12 (1.27%)
+50th percentile: 11ms
+90th percentile: 14ms
+95th percentile: 15ms
+99th percentile: 24ms
+Number Missed Vsync: 0
+Number High input latency: 1306
+Number Slow UI thread: 2
+Number Slow bitmap uploads: 2
+Number Slow issue draw commands: 4
+Number Frame deadline missed: 7
+Number Frame deadline missed (legacy): 6
+
+== eraser ==
+Total frames rendered: 948
+Janky frames: 4 (0.42%)
+Janky frames (legacy): 4 (0.42%)
+50th percentile: 7ms
+90th percentile: 8ms
+95th percentile: 9ms
+99th percentile: 15ms
+Number Missed Vsync: 0
+Number High input latency: 657
+Number Slow UI thread: 1
+Number Slow bitmap uploads: 4
+Number Slow issue draw commands: 0
+Number Frame deadline missed: 4
+Number Frame deadline missed (legacy): 4
+
