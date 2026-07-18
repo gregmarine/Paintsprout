@@ -66,5 +66,9 @@ dependencies {
     // ink tail is drawn where the pen will be when the frame reaches glass.
     implementation("androidx.input:input-motionprediction:1.0.0-beta05")
 
+    // Stylus latency (Apache-2.0): front-buffered rendering — finalized wet-ink
+    // chunks draw straight to the display, skipping the compositor pipeline.
+    implementation("androidx.graphics:graphics-core:1.0.3")
+
     testImplementation("junit:junit:4.13.2")
 }

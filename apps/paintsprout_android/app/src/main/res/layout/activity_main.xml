@@ -11,6 +11,13 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Low-latency wet-ink overlay: finalized chunks of the active stroke are
+         front-buffered straight to the display, skipping the compositor. -->
+    <com.symmetricalpalmtree.paintsprout.FrontInkView
+        android:id="@+id/frontInk"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
     <!-- Floating tool rail. Its buttons are built in code (a loop over the
          tools, plus context-sensitive color/size/surface/selection actions),
          mirroring the Flutter reference's _ToolRail. -->
