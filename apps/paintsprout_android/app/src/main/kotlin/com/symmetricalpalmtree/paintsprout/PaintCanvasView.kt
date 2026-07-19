@@ -745,48 +745,22 @@ class PaintCanvasView @JvmOverloads constructor(
         dryingSettling = false
         dryingBorn.clear()
         wetClip = null
-        // A water stroke draws nothing itself, so between this commit and the
-        // bake landing its whole effect would vanish for a few frames — the
-        // end-of-drying flicker. Bridge the gap with a snapshot of what the
-        // bake will produce (same recipe, same inputs), pruned once it lands.
-        if (stroke.water) {
-            runCatching { renderWaterSnapshot(stroke) }.getOrNull()?.let {
-                wetPending.add(WetPending(stroke, it.second, it.first))
+        // Between this commit and the bake landing, the live wet composite
+        // (the wash through the spectral mixer over its diluted backdrop, or a
+        // water stroke's whole effect) would fall back to a plain ribbon — or
+        // to nothing — for the few frames the bake takes: the end-of-drying
+        // flicker. Bridge the gap with a snapshot of exactly what the bake
+        // will produce (same recipe, same committed paint — bakes are
+        // serialized, so the base cannot move in between), pruned once it lands.
+        paintBmp?.let { paintLayer ->
+            runCatching { renderWatercolorCrop(paintLayer, stroke) }.getOrNull()?.let { (crop, bmp) ->
+                wetPending.add(WetPending(stroke, bmp, crop))
             }
         }
         unbaked.add(stroke)
         unbakedClips.add(clip)
         kickBake()
         invalidate()
-    }
-
-    /**
-     * The fully-developed water effect over its crop — pixel-for-pixel what
-     * [compositeWatercolorInto]'s water branch will bake, rendered against the
-     * same committed paint (bakes are serialized, so the base cannot move
-     * between this snapshot and that bake).
-     */
-    private fun renderWaterSnapshot(stroke: Stroke): Pair<Rect, Bitmap> {
-        val paintLayer = paintBmp ?: error("no paint layer")
-        val crop = watercolorCrop(stroke)
-        val cw = crop.width()
-        val ch = crop.height()
-        val l = crop.left.toFloat()
-        val t = crop.top.toFloat()
-        val avgW = avgWidth(stroke) * SUPER_SAMPLE
-        val soften = max(2f, avgW * 0.14f)
-        val clearFeather = max(2f, avgW * 0.10f)
-        val spread = max(4f, avgW * 0.30f) * WATER_SPREAD_SCALE
-        val nodes = mutableListOf<RenderNode>()
-        val bmp = GpuRender.renderToBitmap(cw, ch) { c ->
-            nodes += recordWetBackdrop(
-                c as android.graphics.RecordingCanvas, paintLayer,
-                { m -> StrokeRenderer.paintWetMask(m, stroke, null) },
-                cw, ch, SUPER_SAMPLE, clearFeather, spread, soften, l, t, WATER_DILUTE_ALPHA,
-            )
-        }
-        nodes.forEach { it.discardDisplayList() }
-        return crop to bmp
     }
 
     /** Marching-ants overlay shader (res/raw/selection_overlay.agsl). */
@@ -3727,10 +3701,24 @@ class PaintCanvasView @JvmOverloads constructor(
             val ok = runCatching { compositeWetSimInto(base, stroke) }.isSuccess
             if (ok) return
         }
+        val (crop, bmp) = renderWatercolorCrop(base, stroke) ?: return
+        Canvas(base).drawBitmap(bmp, crop.left.toFloat(), crop.top.toFloat(), srcPaint)
+        bmp.recycle()
+    }
+
+    /**
+     * The full watercolor composite over [stroke]'s crop of [base] — the exact
+     * pixels the bake writes there: the wet backdrop (paint diluted + pushed
+     * under the stroke), and for pigmented strokes the dry wash spectrally
+     * mixed on. Shared by the bake and by [finalizeDrying]'s gap-bridging
+     * snapshot, so the two can never diverge. Water strokes' lasting effect is
+     * the backdrop alone. Returns null for a degenerate crop.
+     */
+    private fun renderWatercolorCrop(base: Bitmap, stroke: Stroke): Pair<Rect, Bitmap>? {
         val crop = watercolorCrop(stroke)
         val cw = crop.width()
         val ch = crop.height()
-        if (cw <= 0 || ch <= 0) return
+        if (cw <= 0 || ch <= 0) return null
         val l = crop.left.toFloat()
         val t = crop.top.toFloat()
         val avgW = avgWidth(stroke) * SUPER_SAMPLE
@@ -3756,11 +3744,9 @@ class PaintCanvasView @JvmOverloads constructor(
         }
         nodes.forEach { it.discardDisplayList() }
         if (stroke.water) {
-            // Clean water bakes as its lasting effect alone: the paint under
-            // the stroke diluted and pushed. No wash, nothing to mix.
-            Canvas(base).drawBitmap(backdrop, l, t, srcPaint)
-            backdrop.recycle()
-            return
+            // Clean water's lasting effect is the diluted-and-pushed paint
+            // alone: no wash, nothing to mix.
+            return crop to backdrop
         }
         val wash = createBitmap(cw, ch)
         Canvas(wash).apply {
@@ -3774,19 +3760,17 @@ class PaintCanvasView @JvmOverloads constructor(
         } else {
             runCatching { PigmentMixer.mix(agsl, backdrop, wash) }.getOrNull()
         }
-        Canvas(base).apply {
-            if (mixed != null) {
-                // The mixed crop is the full replacement for its region
-                // (backdrop where there is no wash), so it overwrites.
-                drawBitmap(mixed, l, t, srcPaint)
-            } else {
-                drawBitmap(backdrop, l, t, srcPaint)
-                drawBitmap(wash, l, t, null)
-            }
+        return if (mixed != null) {
+            // The mixed crop is the full replacement for its region (backdrop
+            // where there is no wash).
+            backdrop.recycle()
+            wash.recycle()
+            crop to mixed
+        } else {
+            Canvas(backdrop).drawBitmap(wash, 0f, 0f, null)
+            wash.recycle()
+            crop to backdrop
         }
-        backdrop.recycle()
-        wash.recycle()
-        mixed?.recycle()
     }
 
     /**
