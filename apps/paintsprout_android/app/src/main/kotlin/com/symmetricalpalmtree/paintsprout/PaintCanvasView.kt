@@ -3082,7 +3082,14 @@ class PaintCanvasView @JvmOverloads constructor(
             // Paint is spent per unit of surface covered: how far the tip
             // travelled, times how wide a track it left.
             val areaMm2 = distMm * (width / mm)
-            if (areaMm2 > 0f) brushLoad = brushLoad.deposit(areaMm2 / BrushLoad.COVERAGE_MM2)
+            // A bigger brush is a bigger reservoir, not just a wider tip:
+            // capacity scales with the CHOSEN size (normalized to the tool's
+            // default, which keeps its long-tuned feel), so painted length is
+            // size-invariant. Pressure still drains faster — pressing harder
+            // covers more paper per mm with the same reservoir.
+            val capacity = BrushLoad.COVERAGE_MM2 *
+                ((sizeFor(tool) / mm) / tool.defaultSizeMm).coerceAtLeast(0.05f)
+            if (areaMm2 > 0f) brushLoad = brushLoad.deposit(areaMm2 / capacity)
 
             // A dirty brush takes on the paint it drags through. Swap a little of
             // the load for whatever colour is under the tip, scaled by how far it
