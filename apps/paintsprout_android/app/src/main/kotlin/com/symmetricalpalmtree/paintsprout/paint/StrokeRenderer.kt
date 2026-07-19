@@ -247,7 +247,9 @@ object StrokeRenderer {
     // cross-section starts necking (surface tension at a reversal), and how
     // many swept segments approximate each round end cap.
     private const val PINCH_START = 1.75f // ~100°
-    private const val FOLD_MIN_TURN = 0.15f // ~9° between adjacent samples
+    private const val FOLD_MIN_TURN = 0.02f // atan2 stability guard only
+    private const val RIM_FADE_FLOOR = 0.45f // rim is gone once clamped below this
+    private const val MIN_EMIT_PX = 1.5f // one cross-section per this much arc
     private const val PI_F = Math.PI.toFloat()
     private const val HALF_PI = (Math.PI / 2).toFloat()
     private const val CAP_SEGS = 5
@@ -318,20 +320,34 @@ object StrokeRenderer {
             while (k < n - 1 && arc[k + 1] - arc[i] <= win) k++
 
             val p = pts[i].position
-            // Windowed tangent; per-sample fallback at a true hairpin, where
-            // the window's ends meet and the difference degenerates.
+            // Windowed tangent. When the window DEGENERATES (its ends nearly
+            // meet — a slow cluster of samples at pen-down, or a true hairpin
+            // tip), do NOT fall back to an adjacent-sample difference: at that
+            // scale direction is sensor noise (the Phase-1 lesson), and one
+            // noisy normal cascades through the anti-fold clamps as a phantom
+            // reversal — the start slash, the jagged inner edges. Carry the
+            // previous direction instead; at the first point, look further
+            // ahead until the chord is meaningful.
             var dx = pts[k].position.x - pts[j].position.x
             var dy = pts[k].position.y - pts[j].position.y
             var len = kotlin.math.sqrt(dx * dx + dy * dy)
-            if (len < win * 0.25f) {
-                val a = if (i > 0) pts[i - 1].position else p
-                val b = if (i < n - 1) pts[i + 1].position else p
-                dx = b.x - a.x; dy = b.y - a.y
-                len = kotlin.math.sqrt(dx * dx + dy * dy)
+            if (len < win * 0.25f && i > 0) {
+                nx[i] = nx[i - 1]
+                ny[i] = ny[i - 1]
+            } else {
+                if (len < win * 0.25f) {
+                    var kk = k
+                    while (kk < n - 1 && len < win * 0.5f) {
+                        kk++
+                        dx = pts[kk].position.x - p.x
+                        dy = pts[kk].position.y - p.y
+                        len = kotlin.math.sqrt(dx * dx + dy * dy)
+                    }
+                }
+                if (len < 1e-4f) { dx = 1f; dy = 0f; len = 1f }
+                nx[i] = -dy / len
+                ny[i] = dx / len
             }
-            if (len < 1e-4f) { dx = 1f; dy = 0f; len = 1f }
-            nx[i] = -dy / len
-            ny[i] = dx / len
 
             // Windowed width envelope (surface tension smooths the boundary),
             // scaled by the drying creep: a young section sits tighter than
@@ -341,12 +357,20 @@ object StrokeRenderer {
                 spreadOf(drynessAt(dryness, i))
 
             // Windowed curvature -> radius; only the turn's inner side clamps.
+            // BOTH chords must be long enough to be geometry: inside a slow
+            // cluster of samples (a pen landing's pressure ramp, a lingering
+            // turn) a chord is a few px of position noise, and the radius it
+            // yields collapses one side of the mesh to the centerline for a
+            // sample or two — the hairline slash at stroke starts and the
+            // sharp-edged glops in tight turns. Real folds that a skipped
+            // clamp would have caught are handled by the per-sample anti-fold
+            // bound below, which works from noise-smoothed normals.
             if (j < i && k > i) {
                 val v1x = p.x - pts[j].position.x; val v1y = p.y - pts[j].position.y
                 val v2x = pts[k].position.x - p.x; val v2y = pts[k].position.y - p.y
                 val l1 = kotlin.math.sqrt(v1x * v1x + v1y * v1y)
                 val l2 = kotlin.math.sqrt(v2x * v2x + v2y * v2y)
-                if (l1 > 1e-4f && l2 > 1e-4f) {
+                if (l1 > win * 0.35f && l2 > win * 0.35f) {
                     val cross = v1x * v2y - v1y * v2x
                     val dot = v1x * v2x + v1y * v2y
                     val theta = kotlin.math.atan2(kotlin.math.abs(cross), dot)
@@ -380,9 +404,13 @@ object StrokeRenderer {
 
         // Pass 3 — per-sample anti-fold bound: whatever the smoothed window
         // estimates, an inner offset larger than THIS pair's turning radius
-        // makes these two cross-sections cross. Only genuinely large
-        // per-sample rotations activate it (sensor noise is tiny angles), so
-        // the windowed smoothing stays in charge everywhere else.
+        // makes these two cross-sections' edges cross — at slow, closely
+        // spaced samples even a few degrees of rotation crosses a wide
+        // section (rotation x half-width vs spacing), which is the hairline
+        // sliver at stroke starts and the needles in slow tight turns. The
+        // bound is self-limiting — tiny rotations yield huge, inactive
+        // bounds — so it applies at (almost) every angle; the normals are
+        // window-smoothed, so sensor noise never reaches it.
         for (i in 0 until n - 1) {
             val cross = nx[i] * ny[i + 1] - ny[i] * nx[i + 1]
             val dot = nx[i] * nx[i + 1] + ny[i] * ny[i + 1]
@@ -433,15 +461,42 @@ object StrokeRenderer {
                 edgeCol[i] = coreCol[i] and 0x00FFFFFF
                 // A pooled rim only exists at an OUTER boundary of the wet
                 // region. Where a side is curvature-clamped (the inside of a
-                // tight turn), that edge is interior wash — a full-strength
-                // rim riding it down to the centerline is a dark spike.
-                // Fade the rim with the clamping.
+                // tight turn), that edge is interior wash — a rim riding a
+                // clamped edge fans into sharp dark needles. Fade it out
+                // entirely once the clamp bites deep.
                 val rimA = 0.95f * a * rimOf(dry)
-                val fadeL = (pkL / hw).coerceAtMost(1f)
-                val fadeR = (pkR / hw).coerceAtMost(1f)
+                val fadeL = ((pkL / hw - RIM_FADE_FLOOR) / (1f - RIM_FADE_FLOOR)).coerceIn(0f, 1f)
+                val fadeR = ((pkR / hw - RIM_FADE_FLOOR) / (1f - RIM_FADE_FLOOR)).coerceIn(0f, 1f)
                 rimColL[i] = withAlpha(c, rimA * fadeL * fadeL)
                 rimColR[i] = withAlpha(c, rimA * fadeR * fadeR)
                 rimEdgeCol[i] = rimColL[i] and 0x00FFFFFF
+            }
+        }
+
+        // A cross-section is only emitted once the pen has ADVANCED past the
+        // previous one along its own tangent. A landing (or a lingering turn)
+        // zigzags near-stationary samples back and forth — the input
+        // decimator accepts them whenever pressure changes — and sections
+        // that step backward lay their quads over the forward ones: a stacked
+        // dark bar across the stroke. Arc length can't see the difference
+        // (it always accumulates); forward advance can. Widths and colours
+        // interpolate across the skipped samples.
+        val emit = BooleanArray(n)
+        var lastEmitX = 0f
+        var lastEmitY = 0f
+        for (i in 0 until n) {
+            if (i == 0 || i == n - 1) {
+                emit[i] = true
+                lastEmitX = pts[i].position.x
+                lastEmitY = pts[i].position.y
+                continue
+            }
+            val advance = (pts[i].position.x - lastEmitX) * ny[i] -
+                (pts[i].position.y - lastEmitY) * nx[i] // projection on tangent
+            if (advance >= MIN_EMIT_PX) {
+                emit[i] = true
+                lastEmitX = pts[i].position.x
+                lastEmitY = pts[i].position.y
             }
         }
 
@@ -482,7 +537,7 @@ object StrokeRenderer {
                 )
             }
             for (s in CAP_SEGS downTo 1) putSwung(0, -1f, s * HALF_PI / CAP_SEGS)
-            for (i in 0 until n) putSwung(i, 1f, 0f)
+            for (i in 0 until n) if (emit[i]) putSwung(i, 1f, 0f)
             for (s in 1..CAP_SEGS) putSwung(n - 1, 1f, s * HALF_PI / CAP_SEGS)
             canvas.drawVertices(
                 Canvas.VertexMode.TRIANGLE_STRIP, slot * 4, verts, 0,
@@ -490,9 +545,16 @@ object StrokeRenderer {
             )
         }
 
-        // Fill: left bleed band, solid core, right bleed band.
+        // Fill: bleed band, core half, core half, bleed band. The core is
+        // SPLIT AT THE SPINE so no strip crosses the stroke's centerline:
+        // an across-center strip swept around an end cap rotates full-width
+        // bars through the pivot, and every swept quad self-intersects there
+        // — a double-covered lens that reads as a dark bar across the start.
+        // One-sided strips sweep as clean fans instead.
+        val spine = FloatArray(n)
         strip(1f, outerL, edgeCol, 1f, coreL, coreCol)
-        strip(1f, coreL, coreCol, -1f, coreR, coreCol)
+        strip(1f, coreL, coreCol, 1f, spine, coreCol)
+        strip(-1f, spine, coreCol, -1f, coreR, coreCol)
         strip(-1f, coreR, coreCol, -1f, outerR, edgeCol)
         if (mask) return // the mask is fill only — water pools no pigment rim
         // Rim: a soft peak riding each edge, over the fill.
