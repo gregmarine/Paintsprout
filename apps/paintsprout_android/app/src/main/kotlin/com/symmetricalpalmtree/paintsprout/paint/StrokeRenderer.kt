@@ -243,6 +243,15 @@ object StrokeRenderer {
     /** A just-laid water section already acts at this fraction of full effect. */
     private const val MASK_FLOOR = 0.30f
 
+    // Wash mesh geometry: how sharp a windowed turn must be before the whole
+    // cross-section starts necking (surface tension at a reversal), and how
+    // many swept segments approximate each round end cap.
+    private const val PINCH_START = 1.75f // ~100°
+    private const val FOLD_MIN_TURN = 0.15f // ~9° between adjacent samples
+    private const val PI_F = Math.PI.toFloat()
+    private const val HALF_PI = (Math.PI / 2).toFloat()
+    private const val CAP_SEGS = 5
+
     /**
      * The whole wash as triangle strips sharing exact vertex lines: a solid
      * core flanked by soft bleed bands (the fill), and a thin peaked band
@@ -292,8 +301,15 @@ object StrokeRenderer {
         val rimOutL = FloatArray(n); val rimOutR = FloatArray(n)
         val rimInL = FloatArray(n); val rimInR = FloatArray(n)
         val coreCol = IntArray(n); val edgeCol = IntArray(n)
-        val rimCol = IntArray(n); val rimEdgeCol = IntArray(n)
+        val rimColL = IntArray(n); val rimColR = IntArray(n); val rimEdgeCol = IntArray(n)
 
+        val hwA = FloatArray(n)
+        val limL = FloatArray(n) { Float.MAX_VALUE }
+        val limR = FloatArray(n) { Float.MAX_VALUE }
+        val pinchA = FloatArray(n) { 1f }
+
+        // Pass 1 — windowed geometry: normals, width envelope, curvature
+        // limits, and the reversal pinch.
         var j = 0 // window start: farthest point within win behind i
         var k = 0 // window end: farthest point within win ahead of i
         for (i in 0 until n) {
@@ -321,12 +337,10 @@ object StrokeRenderer {
             // scaled by the drying creep: a young section sits tighter than
             // its final footprint. Dryness varies smoothly along the stroke
             // (points age in laid order), so the boundary stays smooth.
-            val dry = drynessAt(dryness, i)
-            val hw = max(0.5f, (prefW[k + 1] - prefW[j]) / (k - j + 1) / 2f) * spreadOf(dry)
+            hwA[i] = max(0.5f, (prefW[k + 1] - prefW[j]) / (k - j + 1) / 2f) *
+                spreadOf(drynessAt(dryness, i))
 
             // Windowed curvature -> radius; only the turn's inner side clamps.
-            var limitL = Float.MAX_VALUE
-            var limitR = Float.MAX_VALUE
             if (j < i && k > i) {
                 val v1x = p.x - pts[j].position.x; val v1y = p.y - pts[j].position.y
                 val v2x = pts[k].position.x - p.x; val v2y = pts[k].position.y - p.y
@@ -339,52 +353,109 @@ object StrokeRenderer {
                     if (theta > 1e-3f) {
                         // Chords underestimate the radius ~2x over this window.
                         val radius = 2f * min(l1, l2) / theta
-                        if (cross > 0f) limitL = radius else limitR = radius
+                        if (cross > 0f) limL[i] = radius else limR[i] = radius
+                    }
+                    // Past a sharp windowed turn the inner-side clamp isn't
+                    // enough: at a hairpin BOTH sides fold. Surface tension
+                    // necks the whole cross-section toward the tip instead.
+                    if (theta > PINCH_START) {
+                        pinchA[i] = ((PI_F - theta) / (PI_F - PINCH_START)).coerceIn(0.03f, 1f)
                     }
                 }
             }
-            coreL[i] = min(max(0.1f, hw - soft), limitL * 0.75f)
-            coreR[i] = min(max(0.1f, hw - soft), limitR * 0.75f)
-            outerL[i] = min(hw + soft, limitL * 0.95f)
-            outerR[i] = min(hw + soft, limitR * 0.95f)
-            rimPkL[i] = min(hw, limitL * 0.85f)
-            rimPkR[i] = min(hw, limitR * 0.85f)
-            rimOutL[i] = min(rimPkL[i] + rimHalf, limitL * 0.98f)
-            rimOutR[i] = min(rimPkR[i] + rimHalf, limitR * 0.98f)
-            rimInL[i] = max(0.05f, rimPkL[i] - rimHalf)
-            rimInR[i] = max(0.05f, rimPkR[i] - rimHalf)
+        }
+
+        // Pass 2 — normal-hemisphere continuity: at a reversal the windowed
+        // tangent can flip sign between neighbours, swapping which geometric
+        // side "left" lands on; cross-sections then cross into a bowtie that
+        // stacks the translucent mesh dark. Keep each normal in its
+        // predecessor's hemisphere (with its side limits). Ordinary curves
+        // never rotate 90°+ between adjacent samples, so this only acts there.
+        for (i in 1 until n) {
+            if (nx[i] * nx[i - 1] + ny[i] * ny[i - 1] < 0f) {
+                nx[i] = -nx[i]; ny[i] = -ny[i]
+                val t = limL[i]; limL[i] = limR[i]; limR[i] = t
+            }
+        }
+
+        // Pass 3 — per-sample anti-fold bound: whatever the smoothed window
+        // estimates, an inner offset larger than THIS pair's turning radius
+        // makes these two cross-sections cross. Only genuinely large
+        // per-sample rotations activate it (sensor noise is tiny angles), so
+        // the windowed smoothing stays in charge everywhere else.
+        for (i in 0 until n - 1) {
+            val cross = nx[i] * ny[i + 1] - ny[i] * nx[i + 1]
+            val dot = nx[i] * nx[i + 1] + ny[i] * ny[i + 1]
+            val phi = kotlin.math.atan2(kotlin.math.abs(cross), dot)
+            if (phi > FOLD_MIN_TURN) {
+                val d = (pts[i + 1].position - pts[i].position).distance
+                val bound = max(0.5f, d / (2f * kotlin.math.sin(phi / 2f)) * 0.9f)
+                if (cross > 0f) {
+                    limL[i] = min(limL[i], bound); limL[i + 1] = min(limL[i + 1], bound)
+                } else {
+                    limR[i] = min(limR[i], bound); limR[i + 1] = min(limR[i + 1], bound)
+                }
+            }
+        }
+
+        // Pass 4 — offsets and colours from the final limits.
+        for (i in 0 until n) {
+            val dry = drynessAt(dryness, i)
+            val hw = hwA[i]
+            val limitL = limL[i]
+            val limitR = limR[i]
+            val pinch = pinchA[i]
+            val pkL = min(hw, limitL * 0.85f)
+            val pkR = min(hw, limitR * 0.85f)
+            coreL[i] = min(max(0.1f, hw - soft), limitL * 0.75f) * pinch
+            coreR[i] = min(max(0.1f, hw - soft), limitR * 0.75f) * pinch
+            outerL[i] = min(hw + soft, limitL * 0.95f) * pinch
+            outerR[i] = min(hw + soft, limitR * 0.95f) * pinch
+            rimPkL[i] = pkL * pinch
+            rimPkR[i] = pkR * pinch
+            rimOutL[i] = min(pkL + rimHalf, limitL * 0.98f) * pinch
+            rimOutR[i] = min(pkR + rimHalf, limitR * 0.98f) * pinch
+            rimInL[i] = max(0.05f, pkL - rimHalf) * pinch
+            rimInR[i] = max(0.05f, pkR - rimHalf) * pinch
 
             if (mask) {
                 // The dilute mask: the punch is only as strong as the brush was
                 // wet here (load), deepening as a water section dries.
                 coreCol[i] = withAlpha(rgb, maskGrowthOf(dry) * loadAlpha(pts[i].load))
                 edgeCol[i] = coreCol[i] and 0x00FFFFFF
-                rimCol[i] = 0
+                rimColL[i] = 0
+                rimColR[i] = 0
                 rimEdgeCol[i] = 0
             } else {
                 val a = loadAlpha(pts[i].load)
                 val c = colorAt(pts[i], rgb)
                 coreCol[i] = withAlpha(c, (0.6f * a * wetDarkenOf(dry)).coerceAtMost(1f))
                 edgeCol[i] = coreCol[i] and 0x00FFFFFF
-                rimCol[i] = withAlpha(c, 0.95f * a * rimOf(dry))
-                rimEdgeCol[i] = rimCol[i] and 0x00FFFFFF
+                // A pooled rim only exists at an OUTER boundary of the wet
+                // region. Where a side is curvature-clamped (the inside of a
+                // tight turn), that edge is interior wash — a full-strength
+                // rim riding it down to the centerline is a dark spike.
+                // Fade the rim with the clamping.
+                val rimA = 0.95f * a * rimOf(dry)
+                val fadeL = (pkL / hw).coerceAtMost(1f)
+                val fadeR = (pkR / hw).coerceAtMost(1f)
+                rimColL[i] = withAlpha(c, rimA * fadeL * fadeL)
+                rimColR[i] = withAlpha(c, rimA * fadeR * fadeR)
+                rimEdgeCol[i] = rimColL[i] and 0x00FFFFFF
             }
         }
 
-        // End caps collapse to a point just past each end — short, so the cap
-        // reads as a soft blunt end rather than a pointed beak past the rim.
-        val headT = Vec2(ny[0], -nx[0]) // tangent = perp of normal
-        val tailT = Vec2(ny[n - 1], -nx[n - 1])
-        val head = pts[0].position - headT * (soft + coreL[0] * 0.35f)
-        val tail = pts[n - 1].position + tailT * (soft + coreL[n - 1] * 0.35f)
-        val verts = FloatArray((n + 2) * 4)
-        val colors = IntArray((n + 2) * 2)
+        // Both ends close with a ROUND cap: the last cross-section swept
+        // around the endpoint toward the outward tangent, so every band —
+        // soft bleed, fill, and the pooled rim — wraps the tip the way a wet
+        // stroke's end actually pools, instead of collapsing to a beak.
+        val verts = FloatArray((n + 2 * CAP_SEGS) * 4)
+        val colors = IntArray((n + 2 * CAP_SEGS) * 2)
         val paint = Paint()
 
         fun strip(
             sideA: Float, offA: FloatArray, colA: IntArray,
             sideB: Float, offB: FloatArray, colB: IntArray,
-            capCol: IntArray,
         ) {
             var slot = 0
             fun put(ax: Float, ay: Float, bx: Float, by: Float, ca: Int, cb: Int) {
@@ -393,16 +464,26 @@ object StrokeRenderer {
                 colors[slot * 2] = ca; colors[slot * 2 + 1] = cb
                 slot++
             }
-            put(head.x, head.y, head.x, head.y, capCol[0], capCol[0])
-            for (i in 0 until n) {
+            // The cross-section at [i] rotated by [swing] radians from the
+            // normal toward the outward tangent direction ([back] = -1 at the
+            // head, +1 at the tail).
+            fun putSwung(i: Int, back: Float, swing: Float) {
                 val p = pts[i].position
+                val tx = ny[i] * back
+                val ty = -nx[i] * back
+                val ca = kotlin.math.cos(swing)
+                val sa = kotlin.math.sin(swing)
                 put(
-                    p.x + nx[i] * sideA * offA[i], p.y + ny[i] * sideA * offA[i],
-                    p.x + nx[i] * sideB * offB[i], p.y + ny[i] * sideB * offB[i],
+                    p.x + (nx[i] * sideA * ca + tx * sa) * offA[i],
+                    p.y + (ny[i] * sideA * ca + ty * sa) * offA[i],
+                    p.x + (nx[i] * sideB * ca + tx * sa) * offB[i],
+                    p.y + (ny[i] * sideB * ca + ty * sa) * offB[i],
                     colA[i], colB[i],
                 )
             }
-            put(tail.x, tail.y, tail.x, tail.y, capCol[n - 1], capCol[n - 1])
+            for (s in CAP_SEGS downTo 1) putSwung(0, -1f, s * HALF_PI / CAP_SEGS)
+            for (i in 0 until n) putSwung(i, 1f, 0f)
+            for (s in 1..CAP_SEGS) putSwung(n - 1, 1f, s * HALF_PI / CAP_SEGS)
             canvas.drawVertices(
                 Canvas.VertexMode.TRIANGLE_STRIP, slot * 4, verts, 0,
                 null, 0, colors, 0, null, 0, 0, paint,
@@ -410,15 +491,15 @@ object StrokeRenderer {
         }
 
         // Fill: left bleed band, solid core, right bleed band.
-        strip(1f, outerL, edgeCol, 1f, coreL, coreCol, edgeCol)
-        strip(1f, coreL, coreCol, -1f, coreR, coreCol, edgeCol)
-        strip(-1f, coreR, coreCol, -1f, outerR, edgeCol, edgeCol)
+        strip(1f, outerL, edgeCol, 1f, coreL, coreCol)
+        strip(1f, coreL, coreCol, -1f, coreR, coreCol)
+        strip(-1f, coreR, coreCol, -1f, outerR, edgeCol)
         if (mask) return // the mask is fill only — water pools no pigment rim
         // Rim: a soft peak riding each edge, over the fill.
-        strip(1f, rimOutL, rimEdgeCol, 1f, rimPkL, rimCol, rimEdgeCol)
-        strip(1f, rimPkL, rimCol, 1f, rimInL, rimEdgeCol, rimEdgeCol)
-        strip(-1f, rimInR, rimEdgeCol, -1f, rimPkR, rimCol, rimEdgeCol)
-        strip(-1f, rimPkR, rimCol, -1f, rimOutR, rimEdgeCol, rimEdgeCol)
+        strip(1f, rimOutL, rimEdgeCol, 1f, rimPkL, rimColL)
+        strip(1f, rimPkL, rimColL, 1f, rimInL, rimEdgeCol)
+        strip(-1f, rimInR, rimEdgeCol, -1f, rimPkR, rimColR)
+        strip(-1f, rimPkR, rimColR, -1f, rimOutR, rimEdgeCol)
     }
 
     // --- Bristle (brush) ----------------------------------------------------
