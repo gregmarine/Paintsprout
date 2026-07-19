@@ -1531,16 +1531,11 @@ class PaintCanvasView @JvmOverloads constructor(
         // further and leaves less of it standing where it flooded.
         val spread = max(4f, avgW * 0.30f) * if (stroke.water) WATER_SPREAD_SCALE else 1f
         val dilute = if (stroke.water) WATER_DILUTE_ALPHA else WET_DILUTE_ALPHA
-        val drawMask: (Canvas) -> Unit = if (stroke.water) {
-            val wetness = liveWetness(stroke)
-            ;
-            { c -> StrokeRenderer.paintWetMask(c, stroke, wetness) }
-        } else {
-            val region = strokeRegionPath(stroke)
-            val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
-            ;
-            { c -> c.drawPath(region, white) }
-        }
+        // The mask carries the brush's wetness per cross-section (load-weighted
+        // for pigmented strokes — a spent brush barely re-wets; age-weighted on
+        // top of that for water strokes, whose wash-out grows as it dries).
+        val wetness = if (stroke.water) liveWetness(stroke) else null
+        val drawMask: (Canvas) -> Unit = { c -> StrokeRenderer.paintWetMask(c, stroke, wetness) }
         val hw = cw / 2
         val hh = ch / 2
         wetLiveFlip = wetLiveFlip xor 1
@@ -3757,15 +3752,10 @@ class PaintCanvasView @JvmOverloads constructor(
         val clearFeather = max(2f, avgW * 0.10f)
         val spread = max(4f, avgW * 0.30f) * if (stroke.water) WATER_SPREAD_SCALE else 1f
         val dilute = if (stroke.water) WATER_DILUTE_ALPHA else WET_DILUTE_ALPHA
-        val drawMask: (Canvas) -> Unit = if (stroke.water) {
-            // Fully developed unless the stroke froze mid-dry (interrupted).
-            { c -> StrokeRenderer.paintWetMask(c, stroke, stroke.dryFreeze) }
-        } else {
-            val region = strokeRegionPath(stroke)
-            val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
-            ;
-            { c -> c.drawPath(region, white) }
-        }
+        // Load-weighted for pigmented strokes; for water, fully developed
+        // unless the stroke froze mid-dry (interrupted).
+        val maskDryness = if (stroke.water) stroke.dryFreeze else null
+        val drawMask: (Canvas) -> Unit = { c -> StrokeRenderer.paintWetMask(c, stroke, maskDryness) }
         val nodes = mutableListOf<RenderNode>()
         val backdrop = GpuRender.renderToBitmap(cw, ch) { canvas ->
             nodes += recordWetBackdrop(

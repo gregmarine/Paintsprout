@@ -169,12 +169,13 @@ object StrokeRenderer {
     }
 
     /**
-     * The wet MASK of a clean-water stroke, for the backdrop's dilute and push
-     * nodes: the stroke's fill mesh in white, each cross-section's alpha set by
-     * how far its re-wetting has DEVELOPED — a just-laid section acts gently,
-     * and the wash-out deepens as it dries, the same progression the pigmented
-     * wash shows. Null [dryness] (the bake) is fully developed, which is what
-     * the live growth converges to.
+     * The wet MASK of a watercolor stroke, for the backdrop's dilute and push
+     * nodes: the stroke's fill mesh in white, each cross-section's alpha the
+     * WETNESS the brush had there — the load it carried (a soaked brush
+     * re-wets hard, a spent one is barely damp and barely disturbs anything;
+     * clean water never drains), times how far a water stroke's wash-out has
+     * DEVELOPED under the drying progression. Null [dryness] (the bake, and
+     * pigmented strokes' static interaction) is fully developed.
      */
     fun paintWetMask(canvas: Canvas, stroke: Stroke, dryness: FloatArray?) {
         val pts = stroke.points
@@ -190,7 +191,9 @@ object StrokeRenderer {
             val d = drynessAt(dryness, 0)
             canvas.drawCircle(
                 pts[0].position.x, pts[0].position.y, max(1f, pts[0].width / 2f) * spreadOf(d),
-                Paint(Paint.ANTI_ALIAS_FLAG).apply { color = withAlpha(Color.WHITE, maskGrowthOf(d)) },
+                Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = withAlpha(Color.WHITE, maskGrowthOf(d) * loadAlpha(pts[0].load))
+                },
             )
         } else {
             drawWashMesh(canvas, pts, Color.WHITE, bleed, maxWidth, dryness, mask = true)
@@ -352,8 +355,9 @@ object StrokeRenderer {
             rimInR[i] = max(0.05f, rimPkR[i] - rimHalf)
 
             if (mask) {
-                // Water's dilute mask: each section's punch deepens as it dries.
-                coreCol[i] = withAlpha(rgb, maskGrowthOf(dry))
+                // The dilute mask: the punch is only as strong as the brush was
+                // wet here (load), deepening as a water section dries.
+                coreCol[i] = withAlpha(rgb, maskGrowthOf(dry) * loadAlpha(pts[i].load))
                 edgeCol[i] = coreCol[i] and 0x00FFFFFF
                 rimCol[i] = 0
                 rimEdgeCol[i] = 0
