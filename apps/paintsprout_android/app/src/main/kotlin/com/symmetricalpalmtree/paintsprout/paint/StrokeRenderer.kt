@@ -132,17 +132,10 @@ object StrokeRenderer {
         minX: Float, minY: Float, maxX: Float, maxY: Float,
         dryness: FloatArray? = null,
     ) {
-        // A clean-water stroke leaves no pigment of its own: its lasting effect
-        // (diluting and pushing the paint underneath) is composited by the
-        // canvas view, not painted here. All this path draws is the transient
-        // wet-paper sheen while the stroke is drying — and nothing at all for
-        // the bake (null dryness), which is exactly what the sheen dries to.
-        if (stroke.water) {
-            if (dryness != null) {
-                paintWaterSheen(canvas, stroke, tooth, toothScale, maxWidth, bleed, minX, minY, maxX, maxY, dryness)
-            }
-            return
-        }
+        // A clean-water stroke paints nothing of its own — like the eraser, it
+        // only acts on what is already there. Its dilute-and-push effect is
+        // composited by the canvas view through [paintWetMask].
+        if (stroke.water) return
         val halo = bleed * 3f + 2f
         val pad = maxWidth / 2f + halo
         val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
@@ -176,34 +169,32 @@ object StrokeRenderer {
     }
 
     /**
-     * The wet-paper sheen of a clean-water stroke: paper reads slightly darker
-     * where it is wet, fading out as each section dries — the only visible
-     * trace the water itself leaves. Same fill mesh as the wash, no rim.
+     * The wet MASK of a clean-water stroke, for the backdrop's dilute and push
+     * nodes: the stroke's fill mesh in white, each cross-section's alpha set by
+     * how far its re-wetting has DEVELOPED — a just-laid section acts gently,
+     * and the wash-out deepens as it dries, the same progression the pigmented
+     * wash shows. Null [dryness] (the bake) is fully developed, which is what
+     * the live growth converges to.
      */
-    private fun paintWaterSheen(
-        canvas: Canvas, stroke: Stroke, tooth: android.graphics.Bitmap?,
-        toothScale: Float, maxWidth: Float, bleed: Float,
-        minX: Float, minY: Float, maxX: Float, maxY: Float,
-        dryness: FloatArray,
-    ) {
-        val pad = maxWidth / 2f + bleed * 3f + 2f
-        val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
-        val layer = canvas.saveLayer(bounds, null)
+    fun paintWetMask(canvas: Canvas, stroke: Stroke, dryness: FloatArray?) {
         val pts = stroke.points
+        if (pts.isEmpty()) return
+        var maxWidth = 0f
+        var sumWidth = 0f
+        for (p in pts) {
+            maxWidth = max(maxWidth, p.width)
+            sumWidth += p.width
+        }
+        val bleed = ToolProfile.of(stroke.tool).blurFactor * (sumWidth / pts.size)
         if (pts.size == 1) {
             val d = drynessAt(dryness, 0)
             canvas.drawCircle(
                 pts[0].position.x, pts[0].position.y, max(1f, pts[0].width / 2f) * spreadOf(d),
-                Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = withAlpha(SHEEN_RGB, WATER_SHEEN * (1f - d))
-                    if (bleed > 0.3f) maskFilter = BlurMaskFilter(bleed, BlurMaskFilter.Blur.NORMAL)
-                },
+                Paint(Paint.ANTI_ALIAS_FLAG).apply { color = withAlpha(Color.WHITE, maskGrowthOf(d)) },
             )
         } else {
-            drawWashMesh(canvas, pts, SHEEN_RGB, bleed, maxWidth, dryness, water = true)
+            drawWashMesh(canvas, pts, Color.WHITE, bleed, maxWidth, dryness, mask = true)
         }
-        if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
-        canvas.restoreToCount(layer)
     }
 
     // --- The drying progression (live-only; dry == the baked look) ----------
@@ -236,13 +227,18 @@ object StrokeRenderer {
     /** Wet fill reads slightly denser; dries lighter to the final strength. */
     private fun wetDarkenOf(d: Float): Float = 1f + WET_DARKEN * (1f - d)
 
+    /** How far a water section's wash-out has developed: gentle at first touch. */
+    private fun maskGrowthOf(d: Float): Float {
+        val ease = 1f - (1f - d) * (1f - d)
+        return MASK_FLOOR + (1f - MASK_FLOOR) * ease
+    }
+
     private const val WET_SPREAD = 0.86f
     private const val WET_RIM = 0.18f
     private const val WET_DARKEN = 0.12f
 
-    /** Wet-paper sheen: peak alpha of a just-laid water stroke, and its tint. */
-    private const val WATER_SHEEN = 0.10f
-    private const val SHEEN_RGB = 0xFF453F38.toInt()
+    /** A just-laid water section already acts at this fraction of full effect. */
+    private const val MASK_FLOOR = 0.30f
 
     /**
      * The whole wash as triangle strips sharing exact vertex lines: a solid
@@ -271,7 +267,7 @@ object StrokeRenderer {
         bleed: Float,
         maxWidth: Float,
         dryness: FloatArray? = null,
-        water: Boolean = false,
+        mask: Boolean = false,
     ) {
         val n = pts.size
         val soft = max(1f, bleed)
@@ -355,9 +351,9 @@ object StrokeRenderer {
             rimInL[i] = max(0.05f, rimPkL[i] - rimHalf)
             rimInR[i] = max(0.05f, rimPkR[i] - rimHalf)
 
-            if (water) {
-                // Wet-paper sheen: fades out entirely as this section dries.
-                coreCol[i] = withAlpha(rgb, WATER_SHEEN * (1f - dry))
+            if (mask) {
+                // Water's dilute mask: each section's punch deepens as it dries.
+                coreCol[i] = withAlpha(rgb, maskGrowthOf(dry))
                 edgeCol[i] = coreCol[i] and 0x00FFFFFF
                 rimCol[i] = 0
                 rimEdgeCol[i] = 0
@@ -413,7 +409,7 @@ object StrokeRenderer {
         strip(1f, outerL, edgeCol, 1f, coreL, coreCol, edgeCol)
         strip(1f, coreL, coreCol, -1f, coreR, coreCol, edgeCol)
         strip(-1f, coreR, coreCol, -1f, outerR, edgeCol, edgeCol)
-        if (water) return // sheen only — water pools no pigment rim
+        if (mask) return // the mask is fill only — water pools no pigment rim
         // Rim: a soft peak riding each edge, over the fill.
         strip(1f, rimOutL, rimEdgeCol, 1f, rimPkL, rimCol, rimEdgeCol)
         strip(1f, rimPkL, rimCol, 1f, rimInL, rimEdgeCol, rimEdgeCol)

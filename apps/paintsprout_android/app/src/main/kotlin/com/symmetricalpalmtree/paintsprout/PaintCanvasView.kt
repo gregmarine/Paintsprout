@@ -316,6 +316,7 @@ class PaintCanvasView @JvmOverloads constructor(
     // Cached live backdrop shader between rebuilds (see drawWetLive). Reset per stroke.
     private var wetBackdropShader: Shader? = null
     private var wetBackdropAtPoints = 0
+    private var wetBackdropAtMs = 0L
     private var wetBackdropKey = 0L
 
     /**
@@ -1448,13 +1449,12 @@ class PaintCanvasView @JvmOverloads constructor(
 
         if (washShader == null) {
             // Water mode: the diluted-and-pushed paint replaces the crop region
-            // directly (no wash to mix), then the transient wet-paper sheen —
-            // which dries to nothing, converging on exactly what bakes.
+            // directly — the stroke draws nothing of its own (eraser-like); its
+            // age-weighted mask inside the backdrop grows toward what bakes.
             canvas.drawRect(b.left, b.top, b.right, b.bottom, Paint().apply {
                 shader = backdropShader
                 xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SRC)
             })
-            StrokeRenderer.paintStroke(canvas, stroke, surface, liveWetness(stroke))
             return
         }
 
@@ -1485,9 +1485,18 @@ class PaintCanvasView @JvmOverloads constructor(
         val cropKey = (crop.left.toLong() shl 42) xor (crop.top.toLong() shl 21) xor
             (cw.toLong() shl 11) xor ch.toLong()
         val cached = wetBackdropShader
-        if (cached != null && cropKey == wetBackdropKey &&
+        // Pigmented washes rebuild on a point stride (blurred context, brief
+        // staleness invisible). Water strokes ARE the backdrop, and their mask
+        // ages continuously — rebuild on a finer point stride and on TIME, so
+        // the wash-out grows smoothly instead of popping in steps.
+        val now = android.os.SystemClock.uptimeMillis()
+        val fresh = if (stroke.water) {
+            stroke.points.size - wetBackdropAtPoints < WATER_BACKDROP_STRIDE &&
+                now - wetBackdropAtMs < WATER_BACKDROP_STRIDE_MS
+        } else {
             stroke.points.size - wetBackdropAtPoints < WET_BACKDROP_STRIDE
-        ) {
+        }
+        if (cached != null && cropKey == wetBackdropKey && fresh) {
             return cached
         }
         val l = crop.left.toFloat()
@@ -1499,7 +1508,16 @@ class PaintCanvasView @JvmOverloads constructor(
         // further and leaves less of it standing where it flooded.
         val spread = max(4f, avgW * 0.30f) * if (stroke.water) WATER_SPREAD_SCALE else 1f
         val dilute = if (stroke.water) WATER_DILUTE_ALPHA else WET_DILUTE_ALPHA
-        val region = strokeRegionPath(stroke)
+        val drawMask: (Canvas) -> Unit = if (stroke.water) {
+            val wetness = liveWetness(stroke)
+            ;
+            { c -> StrokeRenderer.paintWetMask(c, stroke, wetness) }
+        } else {
+            val region = strokeRegionPath(stroke)
+            val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+            ;
+            { c -> c.drawPath(region, white) }
+        }
         val hw = cw / 2
         val hh = ch / 2
         wetLiveFlip = wetLiveFlip xor 1
@@ -1508,7 +1526,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val shader = runCatching {
             GpuRender.renderInto(wetHalf) { rc ->
                 nodes += recordWetBackdrop(
-                    rc as android.graphics.RecordingCanvas, paintLayer, region, hw, hh,
+                    rc as android.graphics.RecordingCanvas, paintLayer, drawMask, hw, hh,
                     0.5f, clearFeather * 0.5f, spread * 0.5f, soften * 0.5f, l, t, dilute,
                 )
             }
@@ -1521,6 +1539,7 @@ class PaintCanvasView @JvmOverloads constructor(
         nodes.forEach { it.discardDisplayList() }
         wetBackdropShader = shader
         wetBackdropAtPoints = stroke.points.size
+        wetBackdropAtMs = now
         wetBackdropKey = cropKey
         return shader
     }
@@ -3676,16 +3695,24 @@ class PaintCanvasView @JvmOverloads constructor(
         if (cw <= 0 || ch <= 0) return
         val l = crop.left.toFloat()
         val t = crop.top.toFloat()
-        val region = strokeRegionPath(stroke)
         val avgW = avgWidth(stroke) * SUPER_SAMPLE
         val soften = max(2f, avgW * 0.14f)
         val clearFeather = max(2f, avgW * 0.10f)
         val spread = max(4f, avgW * 0.30f) * if (stroke.water) WATER_SPREAD_SCALE else 1f
         val dilute = if (stroke.water) WATER_DILUTE_ALPHA else WET_DILUTE_ALPHA
+        val drawMask: (Canvas) -> Unit = if (stroke.water) {
+            // Fully developed (null dryness): what the live growth converged to.
+            { c -> StrokeRenderer.paintWetMask(c, stroke, null) }
+        } else {
+            val region = strokeRegionPath(stroke)
+            val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+            ;
+            { c -> c.drawPath(region, white) }
+        }
         val nodes = mutableListOf<RenderNode>()
         val backdrop = GpuRender.renderToBitmap(cw, ch) { canvas ->
             nodes += recordWetBackdrop(
-                canvas as android.graphics.RecordingCanvas, base, region, cw, ch,
+                canvas as android.graphics.RecordingCanvas, base, drawMask, cw, ch,
                 SUPER_SAMPLE, clearFeather, spread, soften, l, t, dilute,
             )
         }
@@ -3761,16 +3788,19 @@ class PaintCanvasView @JvmOverloads constructor(
         val l = crop.left.toFloat()
         val t = crop.top.toFloat()
         val region = strokeRegionPath(stroke)
+        val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
         val avgW = avgWidth(stroke) * SUPER_SAMPLE
         val soften = max(2f, avgW * 0.14f)
         val clearFeather = max(2f, avgW * 0.10f)
         val spread = max(4f, avgW * 0.30f)
+        val nodes = mutableListOf<RenderNode>()
         val backdrop = GpuRender.renderToBitmap(cw, ch) { canvas ->
-            recordWetBackdrop(
-                canvas as android.graphics.RecordingCanvas, base, region, cw, ch,
-                SUPER_SAMPLE, clearFeather, spread, soften, l, t,
+            nodes += recordWetBackdrop(
+                canvas as android.graphics.RecordingCanvas, base, { c -> c.drawPath(region, white) },
+                cw, ch, SUPER_SAMPLE, clearFeather, spread, soften, l, t,
             )
         }
+        nodes.forEach { it.discardDisplayList() }
         val mixAgsl = pigmentAgsl
         val mixed = mixAgsl?.let { runCatching { PigmentMixer.mix(it, backdrop, wash) }.getOrNull() }
         Canvas(base).apply {
@@ -3842,11 +3872,10 @@ class PaintCanvasView @JvmOverloads constructor(
      * is done with blur-[RenderEffect] child [RenderNode]s in a single pass.
      */
     private fun recordWetBackdrop(
-        rc: android.graphics.RecordingCanvas, base: Bitmap, region: android.graphics.Path,
+        rc: android.graphics.RecordingCanvas, base: Bitmap, drawMask: (Canvas) -> Unit,
         w: Int, h: Int, sc: Float, clearFeather: Float, spread: Float, soften: Float,
         ox: Float, oy: Float, diluteAlpha: Int = WET_DILUTE_ALPHA,
     ): List<RenderNode> {
-        val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
         val fw = w.toFloat()
         val fh = h.toFloat()
         fun blurNode(radius: Float, record: (Canvas) -> Unit) = RenderNode("wet").apply {
@@ -3858,9 +3887,10 @@ class PaintCanvasView @JvmOverloads constructor(
             record(c)
             endRecording()
         }
-        // White stroke region, feathered two ways (tight clear + wide bloom).
-        val clearNode = blurNode(clearFeather) { it.drawPath(region, white) }
-        val spreadNode = blurNode(spread) { it.drawPath(region, white) }
+        // The white wet mask (a path for pigmented washes; an age-weighted mesh
+        // for water strokes), feathered two ways (tight clear + wide bloom).
+        val clearNode = blurNode(clearFeather) { drawMask(it) }
+        val spreadNode = blurNode(spread) { drawMask(it) }
         val baseBlurNode = blurNode(soften) { it.drawBitmap(base, 0f, 0f, null) }
         // 1. base
         rc.save(); rc.scale(sc, sc); rc.translate(-ox, -oy); rc.drawBitmap(base, 0f, 0f, null); rc.restore()
@@ -4032,6 +4062,12 @@ class PaintCanvasView @JvmOverloads constructor(
         // pigmented stroke — less of the paint re-laid, pushed further.
         const val WATER_DILUTE_ALPHA = 72
         const val WATER_SPREAD_SCALE = 1.35f
+
+        // Water's backdrop rebuild cadence: finer than the pigmented stride
+        // (the backdrop IS the stroke's whole appearance) plus a time stride,
+        // so the mask keeps growing under a resting or lifted pen.
+        const val WATER_BACKDROP_STRIDE = 4
+        const val WATER_BACKDROP_STRIDE_MS = 100L
         const val SUPER_SAMPLE = 1.0f
 
         // Input conditioning: EMA weight per raw sample (~10 ms time constant at
