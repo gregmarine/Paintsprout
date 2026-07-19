@@ -745,10 +745,48 @@ class PaintCanvasView @JvmOverloads constructor(
         dryingSettling = false
         dryingBorn.clear()
         wetClip = null
+        // A water stroke draws nothing itself, so between this commit and the
+        // bake landing its whole effect would vanish for a few frames — the
+        // end-of-drying flicker. Bridge the gap with a snapshot of what the
+        // bake will produce (same recipe, same inputs), pruned once it lands.
+        if (stroke.water) {
+            runCatching { renderWaterSnapshot(stroke) }.getOrNull()?.let {
+                wetPending.add(WetPending(stroke, it.second, it.first))
+            }
+        }
         unbaked.add(stroke)
         unbakedClips.add(clip)
         kickBake()
         invalidate()
+    }
+
+    /**
+     * The fully-developed water effect over its crop — pixel-for-pixel what
+     * [compositeWatercolorInto]'s water branch will bake, rendered against the
+     * same committed paint (bakes are serialized, so the base cannot move
+     * between this snapshot and that bake).
+     */
+    private fun renderWaterSnapshot(stroke: Stroke): Pair<Rect, Bitmap> {
+        val paintLayer = paintBmp ?: error("no paint layer")
+        val crop = watercolorCrop(stroke)
+        val cw = crop.width()
+        val ch = crop.height()
+        val l = crop.left.toFloat()
+        val t = crop.top.toFloat()
+        val avgW = avgWidth(stroke) * SUPER_SAMPLE
+        val soften = max(2f, avgW * 0.14f)
+        val clearFeather = max(2f, avgW * 0.10f)
+        val spread = max(4f, avgW * 0.30f) * WATER_SPREAD_SCALE
+        val nodes = mutableListOf<RenderNode>()
+        val bmp = GpuRender.renderToBitmap(cw, ch) { c ->
+            nodes += recordWetBackdrop(
+                c as android.graphics.RecordingCanvas, paintLayer,
+                { m -> StrokeRenderer.paintWetMask(m, stroke, null) },
+                cw, ch, SUPER_SAMPLE, clearFeather, spread, soften, l, t, WATER_DILUTE_ALPHA,
+            )
+        }
+        nodes.forEach { it.discardDisplayList() }
+        return crop to bmp
     }
 
     /** Marching-ants overlay shader (res/raw/selection_overlay.agsl). */
