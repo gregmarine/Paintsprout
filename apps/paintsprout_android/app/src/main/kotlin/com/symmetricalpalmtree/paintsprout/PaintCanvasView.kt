@@ -736,10 +736,16 @@ class PaintCanvasView @JvmOverloads constructor(
         }
     }
 
-    /** Commits the dried (or interrupted — snaps dry) wash to the bake. */
-    private fun finalizeDrying() {
+    /**
+     * Commits the wash to the bake. A naturally-calm wash commits fully dried
+     * (the canonical state); an [interrupted] one records its current drying
+     * progress into the stroke and commits FROZEN exactly as shown — cutting a
+     * wash short must never visibly change it.
+     */
+    private fun finalizeDrying(interrupted: Boolean = false) {
         removeCallbacks(dryingPulse)
         val stroke = dryingStroke ?: return
+        if (interrupted && !dryingAllDry()) stroke.dryFreeze = liveWetness(stroke)
         val clip = wetClip
         dryingStroke = null
         dryingSettling = false
@@ -753,7 +759,11 @@ class PaintCanvasView @JvmOverloads constructor(
         // will produce (same recipe, same committed paint — bakes are
         // serialized, so the base cannot move in between), pruned once it lands.
         paintBmp?.let { paintLayer ->
-            runCatching { renderWatercolorCrop(paintLayer, stroke) }.getOrNull()?.let { (crop, bmp) ->
+            // Older pendings layer over the base here for the same reason they
+            // do in the bake: their ops fold in before this stroke's.
+            runCatching {
+                renderWatercolorCrop(paintLayer, stroke, wetPendingOverBase())
+            }.getOrNull()?.let { (crop, bmp) ->
                 wetPending.add(WetPending(stroke, bmp, crop))
             }
         }
@@ -1348,7 +1358,8 @@ class PaintCanvasView @JvmOverloads constructor(
         if (isActive) {
             withTransientPoint(s, predictedTailPoint()) { StrokeRenderer.paintStroke(canvas, s, surface) }
         } else {
-            StrokeRenderer.paintStroke(canvas, s, surface)
+            // A frozen wash (drying cut short) keeps its as-shown state here too.
+            StrokeRenderer.paintStroke(canvas, s, surface, s.dryFreeze)
         }
     }
 
@@ -1540,6 +1551,7 @@ class PaintCanvasView @JvmOverloads constructor(
                 nodes += recordWetBackdrop(
                     rc as android.graphics.RecordingCanvas, paintLayer, drawMask, hw, hh,
                     0.5f, clearFeather * 0.5f, spread * 0.5f, soften * 0.5f, l, t, dilute,
+                    wetPendingOverBase(),
                 )
             }
             BitmapShader(wetHalf, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
@@ -1571,6 +1583,21 @@ class PaintCanvasView @JvmOverloads constructor(
                 p.crop.right / SUPER_SAMPLE, p.crop.bottom / SUPER_SAMPLE,
             )
             canvas.drawBitmap(p.snapshot, null, dst, wetPendingPaint)
+        }
+    }
+
+    /**
+     * The pending snapshots as a buffer-space overlay for the wet backdrop's
+     * base, or null when there are none — so a live wash's mixer rect sees
+     * (and dilutes) a still-pending wash under it instead of blinking it away.
+     */
+    private fun wetPendingOverBase(): ((Canvas) -> Unit)? {
+        if (wetPending.isEmpty()) return null
+        val pendings = wetPending.toList()
+        return { c ->
+            for (p in pendings) {
+                c.drawBitmap(p.snapshot, p.crop.left.toFloat(), p.crop.top.toFloat(), wetPendingPaint)
+            }
         }
     }
 
@@ -1636,7 +1663,7 @@ class PaintCanvasView @JvmOverloads constructor(
      */
     private fun interruptWet() {
         if (wetSettling) finalizeWet()
-        if (dryingSettling) finalizeDrying()
+        if (dryingSettling) finalizeDrying(interrupted = true)
     }
 
     /** Discards the live sim AND the pending snapshots (canvas is being reset). */
@@ -3714,7 +3741,11 @@ class PaintCanvasView @JvmOverloads constructor(
      * snapshot, so the two can never diverge. Water strokes' lasting effect is
      * the backdrop alone. Returns null for a degenerate crop.
      */
-    private fun renderWatercolorCrop(base: Bitmap, stroke: Stroke): Pair<Rect, Bitmap>? {
+    private fun renderWatercolorCrop(
+        base: Bitmap,
+        stroke: Stroke,
+        drawOverBase: ((Canvas) -> Unit)? = null,
+    ): Pair<Rect, Bitmap>? {
         val crop = watercolorCrop(stroke)
         val cw = crop.width()
         val ch = crop.height()
@@ -3727,8 +3758,8 @@ class PaintCanvasView @JvmOverloads constructor(
         val spread = max(4f, avgW * 0.30f) * if (stroke.water) WATER_SPREAD_SCALE else 1f
         val dilute = if (stroke.water) WATER_DILUTE_ALPHA else WET_DILUTE_ALPHA
         val drawMask: (Canvas) -> Unit = if (stroke.water) {
-            // Fully developed (null dryness): what the live growth converged to.
-            { c -> StrokeRenderer.paintWetMask(c, stroke, null) }
+            // Fully developed unless the stroke froze mid-dry (interrupted).
+            { c -> StrokeRenderer.paintWetMask(c, stroke, stroke.dryFreeze) }
         } else {
             val region = strokeRegionPath(stroke)
             val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
@@ -3739,7 +3770,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val backdrop = GpuRender.renderToBitmap(cw, ch) { canvas ->
             nodes += recordWetBackdrop(
                 canvas as android.graphics.RecordingCanvas, base, drawMask, cw, ch,
-                SUPER_SAMPLE, clearFeather, spread, soften, l, t, dilute,
+                SUPER_SAMPLE, clearFeather, spread, soften, l, t, dilute, drawOverBase,
             )
         }
         nodes.forEach { it.discardDisplayList() }
@@ -3752,7 +3783,7 @@ class PaintCanvasView @JvmOverloads constructor(
         Canvas(wash).apply {
             translate(-l, -t)
             scale(SUPER_SAMPLE, SUPER_SAMPLE)
-            StrokeRenderer.paintStroke(this, stroke, surface)
+            StrokeRenderer.paintStroke(this, stroke, surface, stroke.dryFreeze)
         }
         val agsl = pigmentAgsl
         val mixed = if (agsl == null) {
@@ -3897,6 +3928,7 @@ class PaintCanvasView @JvmOverloads constructor(
         rc: android.graphics.RecordingCanvas, base: Bitmap, drawMask: (Canvas) -> Unit,
         w: Int, h: Int, sc: Float, clearFeather: Float, spread: Float, soften: Float,
         ox: Float, oy: Float, diluteAlpha: Int = WET_DILUTE_ALPHA,
+        drawOverBase: ((Canvas) -> Unit)? = null,
     ): List<RenderNode> {
         val fw = w.toFloat()
         val fh = h.toFloat()
@@ -3913,9 +3945,17 @@ class PaintCanvasView @JvmOverloads constructor(
         // for water strokes), feathered two ways (tight clear + wide bloom).
         val clearNode = blurNode(clearFeather) { drawMask(it) }
         val spreadNode = blurNode(spread) { drawMask(it) }
-        val baseBlurNode = blurNode(soften) { it.drawBitmap(base, 0f, 0f, null) }
-        // 1. base
-        rc.save(); rc.scale(sc, sc); rc.translate(-ox, -oy); rc.drawBitmap(base, 0f, 0f, null); rc.restore()
+        val baseBlurNode = blurNode(soften) {
+            it.drawBitmap(base, 0f, 0f, null)
+            drawOverBase?.invoke(it)
+        }
+        // 1. base — plus anything committed-but-unbaked layered over it (the
+        //    pending snapshots), so a wash drawn over a still-pending one
+        //    dilutes IT too instead of blinking it away inside this crop.
+        rc.save(); rc.scale(sc, sc); rc.translate(-ox, -oy)
+        rc.drawBitmap(base, 0f, 0f, null)
+        drawOverBase?.invoke(rc)
+        rc.restore()
         // 2. dilute: punch a feathered hole where the stroke floods with water
         val l1 = rc.saveLayer(0f, 0f, fw, fh, Paint().apply { blendMode = BlendMode.DST_OUT })
         rc.drawRenderNode(clearNode)

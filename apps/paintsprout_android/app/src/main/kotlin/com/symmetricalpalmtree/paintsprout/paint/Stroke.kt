@@ -82,6 +82,16 @@ class Stroke(
      */
     var wetCrop: android.graphics.Rect? = null
 
+    /**
+     * Watercolor only: the per-point drying progress this stroke was FROZEN at
+     * when something cut its drying short (a new stroke, undo, a surface
+     * change). Null — the normal case — means it dried fully. The bake renders
+     * whatever is recorded here, so an interrupted wash commits exactly as the
+     * screen showed it (soft rim and all) instead of snapping crisp — and undo
+     * replays the same frozen state.
+     */
+    var dryFreeze: FloatArray? = null
+
     fun add(p: StrokePoint) {
         points.add(p)
     }
