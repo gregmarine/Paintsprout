@@ -132,6 +132,17 @@ object StrokeRenderer {
         minX: Float, minY: Float, maxX: Float, maxY: Float,
         dryness: FloatArray? = null,
     ) {
+        // A clean-water stroke leaves no pigment of its own: its lasting effect
+        // (diluting and pushing the paint underneath) is composited by the
+        // canvas view, not painted here. All this path draws is the transient
+        // wet-paper sheen while the stroke is drying — and nothing at all for
+        // the bake (null dryness), which is exactly what the sheen dries to.
+        if (stroke.water) {
+            if (dryness != null) {
+                paintWaterSheen(canvas, stroke, tooth, toothScale, maxWidth, bleed, minX, minY, maxX, maxY, dryness)
+            }
+            return
+        }
         val halo = bleed * 3f + 2f
         val pad = maxWidth / 2f + halo
         val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
@@ -159,6 +170,37 @@ object StrokeRenderer {
             // radius of curvature so cross-sections never fold over themselves
             // on tight curves (the starburst artifact blur used to smear).
             drawWashMesh(canvas, pts, rgb, bleed, maxWidth, dryness)
+        }
+        if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
+        canvas.restoreToCount(layer)
+    }
+
+    /**
+     * The wet-paper sheen of a clean-water stroke: paper reads slightly darker
+     * where it is wet, fading out as each section dries — the only visible
+     * trace the water itself leaves. Same fill mesh as the wash, no rim.
+     */
+    private fun paintWaterSheen(
+        canvas: Canvas, stroke: Stroke, tooth: android.graphics.Bitmap?,
+        toothScale: Float, maxWidth: Float, bleed: Float,
+        minX: Float, minY: Float, maxX: Float, maxY: Float,
+        dryness: FloatArray,
+    ) {
+        val pad = maxWidth / 2f + bleed * 3f + 2f
+        val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
+        val layer = canvas.saveLayer(bounds, null)
+        val pts = stroke.points
+        if (pts.size == 1) {
+            val d = drynessAt(dryness, 0)
+            canvas.drawCircle(
+                pts[0].position.x, pts[0].position.y, max(1f, pts[0].width / 2f) * spreadOf(d),
+                Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = withAlpha(SHEEN_RGB, WATER_SHEEN * (1f - d))
+                    if (bleed > 0.3f) maskFilter = BlurMaskFilter(bleed, BlurMaskFilter.Blur.NORMAL)
+                },
+            )
+        } else {
+            drawWashMesh(canvas, pts, SHEEN_RGB, bleed, maxWidth, dryness, water = true)
         }
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         canvas.restoreToCount(layer)
@@ -198,6 +240,10 @@ object StrokeRenderer {
     private const val WET_RIM = 0.18f
     private const val WET_DARKEN = 0.12f
 
+    /** Wet-paper sheen: peak alpha of a just-laid water stroke, and its tint. */
+    private const val WATER_SHEEN = 0.10f
+    private const val SHEEN_RGB = 0xFF453F38.toInt()
+
     /**
      * The whole wash as triangle strips sharing exact vertex lines: a solid
      * core flanked by soft bleed bands (the fill), and a thin peaked band
@@ -225,6 +271,7 @@ object StrokeRenderer {
         bleed: Float,
         maxWidth: Float,
         dryness: FloatArray? = null,
+        water: Boolean = false,
     ) {
         val n = pts.size
         val soft = max(1f, bleed)
@@ -308,12 +355,20 @@ object StrokeRenderer {
             rimInL[i] = max(0.05f, rimPkL[i] - rimHalf)
             rimInR[i] = max(0.05f, rimPkR[i] - rimHalf)
 
-            val a = loadAlpha(pts[i].load)
-            val c = colorAt(pts[i], rgb)
-            coreCol[i] = withAlpha(c, (0.6f * a * wetDarkenOf(dry)).coerceAtMost(1f))
-            edgeCol[i] = coreCol[i] and 0x00FFFFFF
-            rimCol[i] = withAlpha(c, 0.95f * a * rimOf(dry))
-            rimEdgeCol[i] = rimCol[i] and 0x00FFFFFF
+            if (water) {
+                // Wet-paper sheen: fades out entirely as this section dries.
+                coreCol[i] = withAlpha(rgb, WATER_SHEEN * (1f - dry))
+                edgeCol[i] = coreCol[i] and 0x00FFFFFF
+                rimCol[i] = 0
+                rimEdgeCol[i] = 0
+            } else {
+                val a = loadAlpha(pts[i].load)
+                val c = colorAt(pts[i], rgb)
+                coreCol[i] = withAlpha(c, (0.6f * a * wetDarkenOf(dry)).coerceAtMost(1f))
+                edgeCol[i] = coreCol[i] and 0x00FFFFFF
+                rimCol[i] = withAlpha(c, 0.95f * a * rimOf(dry))
+                rimEdgeCol[i] = rimCol[i] and 0x00FFFFFF
+            }
         }
 
         // End caps collapse to a point just past each end — short, so the cap
@@ -358,6 +413,7 @@ object StrokeRenderer {
         strip(1f, outerL, edgeCol, 1f, coreL, coreCol, edgeCol)
         strip(1f, coreL, coreCol, -1f, coreR, coreCol, edgeCol)
         strip(-1f, coreR, coreCol, -1f, outerR, edgeCol, edgeCol)
+        if (water) return // sheen only — water pools no pigment rim
         // Rim: a soft peak riding each edge, over the fill.
         strip(1f, rimOutL, rimEdgeCol, 1f, rimPkL, rimCol, rimEdgeCol)
         strip(1f, rimPkL, rimCol, 1f, rimInL, rimEdgeCol, rimEdgeCol)

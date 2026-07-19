@@ -54,6 +54,13 @@ class Stroke(
      * 0 falls back to the observed stroke width (legacy strokes, tests).
      */
     val baseWidth: Float = 0f,
+    /**
+     * A clean-water stroke (watercolor's water mode): deposits no pigment,
+     * only re-wets — the paint underneath is diluted and pushed, harder than
+     * a pigmented wash does it. Captured at pen-down so undo/redo replays
+     * the stroke as what it was.
+     */
+    val water: Boolean = false,
 ) {
     val points: MutableList<StrokePoint> = mutableListOf()
 

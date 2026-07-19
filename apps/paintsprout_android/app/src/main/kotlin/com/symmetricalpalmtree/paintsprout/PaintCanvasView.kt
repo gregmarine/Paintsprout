@@ -112,6 +112,13 @@ class PaintCanvasView @JvmOverloads constructor(
         }
 
     /**
+     * Watercolor's water mode: strokes carry clean water instead of pigment —
+     * they deposit nothing, only re-wet and wash out the paint they cross.
+     * Captured into each stroke at pen-down (see [Stroke.water]).
+     */
+    var waterMode = false
+
+    /**
      * Deposit color (ARGB). Ignored by the eraser.
      *
      * Setting it recharges the brush with that colour, so picking a colour off
@@ -1397,29 +1404,33 @@ class PaintCanvasView @JvmOverloads constructor(
         val l = crop.left.toFloat()
         val t = crop.top.toFloat()
 
-        val washShader: Shader
+        val washShader: Shader?
         val b: RectF
         if (simLive) {
             washShader = sim!!.presentShader()
             // The wash can have bloomed anywhere the field covers.
             b = RectF(crop)
         } else {
-            washFlip = washFlip xor 1
-            val wash = scratchFor(washScratch, washFlip, cw, ch)
-            Canvas(wash).apply {
-                drawColor(Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
-                save()
-                translate(-l, -t)
-                scale(SUPER_SAMPLE, SUPER_SAMPLE)
-                StrokeRenderer.paintStroke(this, stroke, surface, liveWetness(stroke))
-                restore()
-            }
-            washShader = BitmapShader(wash, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
-                setLocalMatrix(Matrix().apply { setTranslate(l, t) })
+            washShader = if (stroke.water) {
+                null // clean water lays no wash; the backdrop IS the effect
+            } else {
+                washFlip = washFlip xor 1
+                val wash = scratchFor(washScratch, washFlip, cw, ch)
+                Canvas(wash).apply {
+                    drawColor(Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+                    save()
+                    translate(-l, -t)
+                    scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                    StrokeRenderer.paintStroke(this, stroke, surface, liveWetness(stroke))
+                    restore()
+                }
+                BitmapShader(wash, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+                    setLocalMatrix(Matrix().apply { setTranslate(l, t) })
+                }
             }
             val avgW = avgWidth(stroke) * SUPER_SAMPLE
             val soften = max(2f, avgW * 0.14f)
-            val spread = max(4f, avgW * 0.30f)
+            val spread = max(4f, avgW * 0.30f) * if (stroke.water) WATER_SPREAD_SCALE else 1f
             b = RectF()
             strokeRegionPath(stroke).computeBounds(b, true)
             // Pad past the stroke to include the bloom that spreads beyond the
@@ -1434,6 +1445,19 @@ class PaintCanvasView @JvmOverloads constructor(
 
         canvas.drawBitmap(paintLayer, srcRect, dstRect, null)
         drawWetPending(canvas)
+
+        if (washShader == null) {
+            // Water mode: the diluted-and-pushed paint replaces the crop region
+            // directly (no wash to mix), then the transient wet-paper sheen —
+            // which dries to nothing, converging on exactly what bakes.
+            canvas.drawRect(b.left, b.top, b.right, b.bottom, Paint().apply {
+                shader = backdropShader
+                xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SRC)
+            })
+            StrokeRenderer.paintStroke(canvas, stroke, surface, liveWetness(stroke))
+            return
+        }
+
         mixer.setInputShader("uBackdrop", backdropShader)
         mixer.setInputShader("uWash", washShader)
         mixer.setFloatUniform("uWashGain", 1f)
@@ -1471,17 +1495,21 @@ class PaintCanvasView @JvmOverloads constructor(
         val avgW = avgWidth(stroke) * SUPER_SAMPLE
         val soften = max(2f, avgW * 0.14f)
         val clearFeather = max(2f, avgW * 0.10f)
-        val spread = max(4f, avgW * 0.30f)
+        // Clean water re-wets harder than a pigmented wash: it pushes the paint
+        // further and leaves less of it standing where it flooded.
+        val spread = max(4f, avgW * 0.30f) * if (stroke.water) WATER_SPREAD_SCALE else 1f
+        val dilute = if (stroke.water) WATER_DILUTE_ALPHA else WET_DILUTE_ALPHA
         val region = strokeRegionPath(stroke)
         val hw = cw / 2
         val hh = ch / 2
         wetLiveFlip = wetLiveFlip xor 1
         val wetHalf = scratchFor(wetLiveScratch, wetLiveFlip, hw, hh)
+        val nodes = mutableListOf<RenderNode>()
         val shader = runCatching {
             GpuRender.renderInto(wetHalf) { rc ->
-                recordWetBackdrop(
+                nodes += recordWetBackdrop(
                     rc as android.graphics.RecordingCanvas, paintLayer, region, hw, hh,
-                    0.5f, clearFeather * 0.5f, spread * 0.5f, soften * 0.5f, l, t,
+                    0.5f, clearFeather * 0.5f, spread * 0.5f, soften * 0.5f, l, t, dilute,
                 )
             }
             BitmapShader(wetHalf, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
@@ -1490,6 +1518,7 @@ class PaintCanvasView @JvmOverloads constructor(
         }.getOrElse {
             BitmapShader(paintLayer, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
         }
+        nodes.forEach { it.discardDisplayList() }
         wetBackdropShader = shader
         wetBackdropAtPoints = stroke.points.size
         wetBackdropKey = cropKey
@@ -1762,7 +1791,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     event.getPressure(actionIndex),
                     event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
                 )
-                val stroke = Stroke(tool, color, seed = Random.nextInt(), baseWidth = sizeFor(tool))
+                val stroke = Stroke(
+                    tool, color, seed = Random.nextInt(), baseWidth = sizeFor(tool),
+                    water = tool == Tool.WATERCOLOR && waterMode,
+                )
                 active = stroke
                 if (tool == Tool.WATERCOLOR) {
                     startWetSim(stroke)
@@ -2985,6 +3017,9 @@ class PaintCanvasView @JvmOverloads constructor(
         val density = resolveDensity(tool, pressure)
 
         if (!tool.usesLoad) return StrokePoint(pos, width, density)
+        // Clean water: an infinite, pigmentless charge — nothing spends, nothing
+        // contaminates, and the stroke lays no trail a later pass could pick up.
+        if (active?.water == true) return StrokePoint(pos, width, density)
 
         val last = lastDepositPos
         lastDepositPos = pos
@@ -3645,12 +3680,22 @@ class PaintCanvasView @JvmOverloads constructor(
         val avgW = avgWidth(stroke) * SUPER_SAMPLE
         val soften = max(2f, avgW * 0.14f)
         val clearFeather = max(2f, avgW * 0.10f)
-        val spread = max(4f, avgW * 0.30f)
+        val spread = max(4f, avgW * 0.30f) * if (stroke.water) WATER_SPREAD_SCALE else 1f
+        val dilute = if (stroke.water) WATER_DILUTE_ALPHA else WET_DILUTE_ALPHA
+        val nodes = mutableListOf<RenderNode>()
         val backdrop = GpuRender.renderToBitmap(cw, ch) { canvas ->
-            recordWetBackdrop(
+            nodes += recordWetBackdrop(
                 canvas as android.graphics.RecordingCanvas, base, region, cw, ch,
-                SUPER_SAMPLE, clearFeather, spread, soften, l, t,
+                SUPER_SAMPLE, clearFeather, spread, soften, l, t, dilute,
             )
+        }
+        nodes.forEach { it.discardDisplayList() }
+        if (stroke.water) {
+            // Clean water bakes as its lasting effect alone: the paint under
+            // the stroke diluted and pushed. No wash, nothing to mix.
+            Canvas(base).drawBitmap(backdrop, l, t, srcPaint)
+            backdrop.recycle()
+            return
         }
         val wash = createBitmap(cw, ch)
         Canvas(wash).apply {
@@ -3799,8 +3844,8 @@ class PaintCanvasView @JvmOverloads constructor(
     private fun recordWetBackdrop(
         rc: android.graphics.RecordingCanvas, base: Bitmap, region: android.graphics.Path,
         w: Int, h: Int, sc: Float, clearFeather: Float, spread: Float, soften: Float,
-        ox: Float, oy: Float,
-    ) {
+        ox: Float, oy: Float, diluteAlpha: Int = WET_DILUTE_ALPHA,
+    ): List<RenderNode> {
         val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
         val fw = w.toFloat()
         val fh = h.toFloat()
@@ -3817,26 +3862,27 @@ class PaintCanvasView @JvmOverloads constructor(
         val clearNode = blurNode(clearFeather) { it.drawPath(region, white) }
         val spreadNode = blurNode(spread) { it.drawPath(region, white) }
         val baseBlurNode = blurNode(soften) { it.drawBitmap(base, 0f, 0f, null) }
-        try {
-            // 1. base
-            rc.save(); rc.scale(sc, sc); rc.translate(-ox, -oy); rc.drawBitmap(base, 0f, 0f, null); rc.restore()
-            // 2. dilute: punch a feathered hole where the stroke floods with water
-            val l1 = rc.saveLayer(0f, 0f, fw, fh, Paint().apply { blendMode = BlendMode.DST_OUT })
-            rc.drawRenderNode(clearNode)
-            rc.restoreToCount(l1)
-            // 3. push: blurred base kept only inside the wider spread region, laid
-            //    back on at reduced alpha so displaced pigment blooms past the edge
-            val l2 = rc.saveLayer(0f, 0f, fw, fh, Paint().apply { alpha = WET_DILUTE_ALPHA })
-            rc.drawRenderNode(baseBlurNode)
-            val l3 = rc.saveLayer(0f, 0f, fw, fh, Paint().apply { blendMode = BlendMode.DST_IN })
-            rc.drawRenderNode(spreadNode)
-            rc.restoreToCount(l3)
-            rc.restoreToCount(l2)
-        } finally {
-            clearNode.discardDisplayList()
-            spreadNode.discardDisplayList()
-            baseBlurNode.discardDisplayList()
-        }
+        // 1. base
+        rc.save(); rc.scale(sc, sc); rc.translate(-ox, -oy); rc.drawBitmap(base, 0f, 0f, null); rc.restore()
+        // 2. dilute: punch a feathered hole where the stroke floods with water
+        val l1 = rc.saveLayer(0f, 0f, fw, fh, Paint().apply { blendMode = BlendMode.DST_OUT })
+        rc.drawRenderNode(clearNode)
+        rc.restoreToCount(l1)
+        // 3. push: blurred base kept only inside the wider spread region, laid
+        //    back on at reduced alpha so displaced pigment blooms past the edge
+        val l2 = rc.saveLayer(0f, 0f, fw, fh, Paint().apply { alpha = diluteAlpha })
+        rc.drawRenderNode(baseBlurNode)
+        val l3 = rc.saveLayer(0f, 0f, fw, fh, Paint().apply { blendMode = BlendMode.DST_IN })
+        rc.drawRenderNode(spreadNode)
+        rc.restoreToCount(l3)
+        rc.restoreToCount(l2)
+        // The recording holds REFERENCES to these nodes; HWUI resolves them at
+        // sync time, after this function returns. Discarding their display
+        // lists here (as this code once did in a finally) hands the renderer
+        // three EMPTY nodes — the dilute and push silently vanish and the
+        // backdrop degenerates to the untouched base. The caller discards
+        // them once the GPU render has actually completed.
+        return listOf(clearNode, spreadNode, baseBlurNode)
     }
 
     private fun avgWidth(stroke: Stroke): Float {
@@ -3981,6 +4027,11 @@ class PaintCanvasView @JvmOverloads constructor(
     private companion object {
         const val INVALID_POINTER = -1
         const val WET_DILUTE_ALPHA = 128
+
+        // Water mode: clean water washes existing paint out harder than a
+        // pigmented stroke — less of the paint re-laid, pushed further.
+        const val WATER_DILUTE_ALPHA = 72
+        const val WATER_SPREAD_SCALE = 1.35f
         const val SUPER_SAMPLE = 1.0f
 
         // Input conditioning: EMA weight per raw sample (~10 ms time constant at

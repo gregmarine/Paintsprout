@@ -113,6 +113,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var colorBtn: ImageButton
     private lateinit var sizeBtn: TextView
     private lateinit var toleranceBtn: TextView
+    private lateinit var waterBtn: ImageButton
+    private var waterMode = false
     private lateinit var surfaceBtn: ImageButton
     private lateinit var fillBtn: ImageButton
     private lateinit var eraseBtn: ImageButton
@@ -195,6 +197,13 @@ class MainActivity : AppCompatActivity() {
 
         sizeBtn = textButton("Size") { pickSize() }
         rail.addView(sizeBtn)
+
+        waterBtn = iconButton(R.drawable.ic_water_mode, "Clean water") {
+            waterMode = !waterMode
+            binding.canvas.waterMode = waterMode
+            updateRail()
+        }
+        rail.addView(waterBtn)
         toleranceBtn = textButton("Wand tolerance") { pickWand() }
         rail.addView(toleranceBtn)
 
@@ -228,11 +237,16 @@ class MainActivity : AppCompatActivity() {
     private fun updateRail() {
         for ((t, b) in toolButtons) b.background = if (t == tool) selectedBg() else rippleBg()
 
-        colorBtn.visibility = if (tool == Tool.ERASER) View.GONE else View.VISIBLE
+        // The colour is moot while the brush carries clean water.
+        colorBtn.visibility =
+            if (tool == Tool.ERASER || (tool == Tool.WATERCOLOR && waterMode)) View.GONE else View.VISIBLE
         colorBtn.setImageDrawable(swatchDrawable(color))
         // iconButton tints every icon slate so the tool glyphs match; the swatch
         // *is* the colour, so it must not be tinted or it always reads dark.
         colorBtn.imageTintList = null
+
+        waterBtn.visibility = if (tool == Tool.WATERCOLOR) View.VISIBLE else View.GONE
+        waterBtn.background = if (waterMode) selectedBg() else rippleBg()
 
         sizeBtn.visibility = if (tool == Tool.WAND) View.GONE else View.VISIBLE
         sizeBtn.text = formatMm(sizes[tool] ?: tool.defaultSizeMm)
