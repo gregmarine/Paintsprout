@@ -588,7 +588,7 @@ object StrokeRenderer {
         } else {
             // The landing pool: pressed at pen-down, before travel — and it
             // seats the fan's birth, which has no direction to speak of yet.
-            drawBristleDab(canvas, stroke, pts.first(), rgb, layout)
+            drawBristleDab(canvas, stroke, pts.first(), rgb, layout, withCrown = false)
             val normals = strokeNormals(pts).toMutableList()
             windowedTailNormal(pts, bristleTailWindow(layout, pts))?.let {
                 normals[normals.size - 1] = it
@@ -628,12 +628,17 @@ object StrokeRenderer {
      * identity (thickness, strength, supply, engagement), so a light touch
      * is a soft pool with a few hairs and a spent brush leaves almost
      * nothing. Deterministic from the stroke seed, so the live preview and
-     * the bake agree. Also drawn under every stroke's first point (see
-     * [paintBristle]/[appendBristleSegments]): the landing pool is real, and
-     * it seats the fan while the stroke is still too short to know its
-     * direction.
+     * the bake agree. Also drawn — [withCrown] false, core only — under
+     * every stroke's first point (see [paintBristle] /
+     * [appendBristleSegments]): the landing pool is real, and it seats the
+     * fan while the stroke is still too short to know its direction. The
+     * crown stays off there because travel drags those hairs into the
+     * stroke; left on, it reads as a sunburst poking out of the start.
      */
-    private fun drawBristleDab(canvas: Canvas, stroke: Stroke, p: StrokePoint, rgb: Int, layout: BristleLayout) {
+    private fun drawBristleDab(
+        canvas: Canvas, stroke: Stroke, p: StrokePoint, rgb: Int, layout: BristleLayout,
+        withCrown: Boolean = true,
+    ) {
         val ink = withAlpha(colorAt(p, rgb), brushLoadAlpha(p.load))
         val blur = if (layout.smear > 0.3f) BlurMaskFilter(layout.smear, BlurMaskFilter.Blur.NORMAL) else null
         canvas.drawCircle(
@@ -642,6 +647,7 @@ object StrokeRenderer {
                 color = scaleAlpha(ink, DAB_CORE_ALPHA); maskFilter = blur
             },
         )
+        if (!withCrown) return
         val theta = bristleHash(0, stroke.seed) * (2.0 * PI).toFloat()
         val arcs = stroke.arcLengths()
         val alphaS = FloatArray(1)
@@ -689,7 +695,7 @@ object StrokeRenderer {
         // First append: lay the landing pool under the fan, exactly as the
         // bake will (drawn once — the accumulator persists it).
         if (accumPts == 0) {
-            drawBristleDab(canvas, stroke, pts.first(), rgb, layout)
+            drawBristleDab(canvas, stroke, pts.first(), rgb, layout, withCrown = false)
         }
         // Range-local normals: all of [from..to] have both neighbours, so they
         // are final and identical to a whole-stroke computation.
@@ -1008,13 +1014,13 @@ object StrokeRenderer {
     private const val ENGAGE_FULL = 0.62f
     private const val ENGAGE_SOFT = 0.3f
 
-    /** Pressed-dab look: pooled core + radial crown of short hair marks. */
-    private const val DAB_CORE_RADIUS = 0.42f
-    private const val DAB_CORE_ALPHA = 0.55f
-    private const val DAB_CROWN_START = 0.26f
-    private const val DAB_CROWN_ALPHA = 0.8f
-    private const val DAB_LEN_LO = 0.10f
-    private const val DAB_LEN_HI = 0.32f
+    /** Pressed-dab look: pooled core, crown hairs just breaking its rim. */
+    private const val DAB_CORE_RADIUS = 0.45f
+    private const val DAB_CORE_ALPHA = 0.8f
+    private const val DAB_CROWN_START = 0.34f
+    private const val DAB_CROWN_ALPHA = 0.6f
+    private const val DAB_LEN_LO = 0.05f
+    private const val DAB_LEN_HI = 0.16f
 
     private fun brushLoadAlpha(load: Float): Float =
         if (load >= 1f) 1f else load.coerceAtLeast(0f).pow(BRUSH_LOAD_FADE_EXP)
