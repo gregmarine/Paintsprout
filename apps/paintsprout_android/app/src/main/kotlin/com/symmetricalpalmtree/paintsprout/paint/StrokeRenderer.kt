@@ -160,7 +160,7 @@ object StrokeRenderer {
      * without storing it per point. 0 when the stroke has no base width.
      */
     private fun grainSide(stroke: Stroke, p: StrokePoint, profile: ToolProfile): Float {
-        if (profile.tiltGain <= 0f || stroke.baseWidth <= 0f) return 0f
+        if (!profile.grainSideRegime || profile.tiltGain <= 0f || stroke.baseWidth <= 0f) return 0f
         val t = ((p.width / stroke.baseWidth - 1f) / profile.tiltGain).coerceIn(0f, 1f)
         return smooth01((t - 0.1f) / 0.6f)
     }

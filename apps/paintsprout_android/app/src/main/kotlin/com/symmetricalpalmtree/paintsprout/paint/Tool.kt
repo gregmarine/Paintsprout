@@ -162,18 +162,23 @@ data class ToolProfile(
     val wetMs: Long = 0L,
 
     /**
-     * Grain-mesh graphite structure (pencil; the marker keeps the flat
-     * legacy mesh with all three at 0). [grainFalloff] is how much lighter
-     * the mark's edge deposits than its core; [grainStreak] the depth of the
-     * along-stroke micro-streaks the dragging lead leaves; [grainChunkPx]
-     * the mesh chunk length in buffer px of ARC LENGTH (not points — point
-     * spacing varies with pen speed) — chunks composite SRC_OVER, so a
-     * stroke crossing itself DARKENS there like layered graphite (0 = one
-     * union mesh, overlaps don't build).
+     * Grain-mesh structure (pencil graphite, marker dye; all zeros = the
+     * flat legacy mesh). [grainFalloff] is how much lighter the mark's edge
+     * deposits than its core — NEGATIVE runs it backwards, edges denser
+     * than the core: the marker's pooled wet edge. [grainStreak] the depth
+     * of the along-stroke micro-streaks the dragging tip leaves;
+     * [grainChunkPx] the mesh chunk length in buffer px of ARC LENGTH (not
+     * points — point spacing varies with pen speed) — chunks composite
+     * SRC_OVER, so a stroke crossing itself DARKENS there like layered
+     * graphite or dye (0 = one union mesh, overlaps don't build).
+     * [grainSideRegime] enables the side-of-lead response (lighter, deeper
+     * falloff, streakier as tilt grows) — graphite physics; a tilted marker
+     * still lays solid ink, so only the pencil sets it.
      */
     val grainFalloff: Float = 0f,
     val grainStreak: Float = 0f,
     val grainChunkPx: Float = 0f,
+    val grainSideRegime: Boolean = false,
 ) {
     /** Whether this tool's mark is broken up by the surface tooth at all. */
     val reactsToTooth: Boolean get() = toothFloor < 1.0f
@@ -196,6 +201,7 @@ data class ToolProfile(
             grainFalloff = 0.45f, // graphite thins from core to edge
             grainStreak = 0.30f, // the lead drags fine streaks over the tooth
             grainChunkPx = 48f, // crossings layer up like real graphite
+            grainSideRegime = true, // laid-over lead deposits lighter + streakier
         )
 
         // Marker: same feel as the pencil, but a soft/even grain -> chunky marker.
@@ -206,13 +212,15 @@ data class ToolProfile(
             tiltGain = 5.5f,
             pressureAffectsDensity = true,
             minDensity = 0.1f,
-            maxDensity = 0.95f,
+            maxDensity = 0.82f, // translucent dye: every pass must have headroom to layer
             opacity = 1.0f,
             blurFactor = 0.0f,
             toothFloor = 0.62f, // even: soft, near-solid ink
             toothBias = 1.0f,
             renderStyle = RenderStyle.GRAIN,
             wetMs = 4000, // fresh dye ink smears briefly
+            grainFalloff = -0.18f, // wet edge: ink pools denser at the mark's rim
+            grainChunkPx = 48f, // dye layering: overlaps darken
         )
 
         private val PEN = ToolProfile(
