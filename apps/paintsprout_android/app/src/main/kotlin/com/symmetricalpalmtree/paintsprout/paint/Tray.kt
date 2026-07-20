@@ -197,6 +197,20 @@ data class BrushLoad(val recipe: Recipe, val capacity: Float = DEFAULT_CAPACITY)
         return copy(recipe = kept.withoutTraces())
     }
 
+    /**
+     * Takes on [amount] of [color] — wet paint lifted off the canvas. Unlike
+     * [contaminate], this ADDS volume: dragging even a bone-dry brush through
+     * fresh paint loads it with that paint (which is what makes smearing
+     * possible — the brush carries the wet paint away and lays it back down
+     * ahead), up to the brush's capacity.
+     */
+    fun take(@ColorInt color: Int, amount: Float): BrushLoad {
+        val room = capacity - volume
+        if (amount <= 0f || room <= 0f) return this
+        val a = amount.coerceAtMost(room)
+        return copy(recipe = recipe.plus(color, a).withoutTraces())
+    }
+
     companion object {
         /**
          * A full brush, in abstract paint units. Only ratios against this

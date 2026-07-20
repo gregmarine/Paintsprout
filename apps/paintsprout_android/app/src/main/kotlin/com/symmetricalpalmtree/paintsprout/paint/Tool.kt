@@ -152,6 +152,14 @@ data class ToolProfile(
 
     /** How the stroke is rendered. */
     val renderStyle: RenderStyle,
+
+    /**
+     * How long this tool's laid paint stays WET on the canvas, in ms — the
+     * window in which a brush dragged through it smears it (picks it up fast
+     * and carries it). 0 = dry media: pencil graphite never liquid-smears.
+     * Fresher = more smearable; see the wet-trace ledger in PaintCanvasView.
+     */
+    val wetMs: Long = 0L,
 ) {
     /** Whether this tool's mark is broken up by the surface tooth at all. */
     val reactsToTooth: Boolean get() = toothFloor < 1.0f
@@ -187,6 +195,7 @@ data class ToolProfile(
             toothFloor = 0.62f, // even: soft, near-solid ink
             toothBias = 1.0f,
             renderStyle = RenderStyle.GRAIN,
+            wetMs = 4000, // fresh dye ink smears briefly
         )
 
         private val PEN = ToolProfile(
@@ -202,6 +211,7 @@ data class ToolProfile(
             toothFloor = 0.85f, // gel pen: mostly fills, faint tooth on rough surfaces
             toothBias = 1.0f,
             renderStyle = RenderStyle.SOLID,
+            wetMs = 4000, // wet ink line, briefly smearable
         )
 
         // Line: a straight, clean, constant-width solid mark — the pen's feel, drawn
@@ -219,6 +229,7 @@ data class ToolProfile(
             toothFloor = 0.85f, // like the pen: mostly fills, faint tooth on rough surfaces
             toothBias = 1.0f,
             renderStyle = RenderStyle.SOLID,
+            wetMs = 4000, // same ink as the pen
         )
 
         // Paint brush: bristle streaks that follow the path, spreading with pressure.
@@ -236,6 +247,7 @@ data class ToolProfile(
             toothFloor = 0.7f, // medium: dry-brush skips over the tooth
             toothBias = 1.0f,
             renderStyle = RenderStyle.BRISTLE,
+            wetMs = 15000, // laid paint stays workable
         )
 
         // Watercolor: a translucent pigment wash.
@@ -252,6 +264,7 @@ data class ToolProfile(
             toothFloor = 0.6f, // granulation: pigment settles into the tooth
             toothBias = 1.0f,
             renderStyle = RenderStyle.WASH,
+            wetMs = 20000, // a wash stays wet longest
         )
 
         // Spray can: soft, translucent, builds up on overlap.
@@ -268,6 +281,7 @@ data class ToolProfile(
             toothFloor = 0.78f, // droplets settle a touch more on the crests
             toothBias = 1.0f,
             renderStyle = RenderStyle.SOFT,
+            wetMs = 6000, // a wet droplet field
         )
 
         private val ERASER = ToolProfile(

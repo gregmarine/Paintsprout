@@ -19,6 +19,7 @@ import android.graphics.RenderEffect
 import android.graphics.RenderNode
 import android.graphics.RuntimeShader
 import android.graphics.Shader
+import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
@@ -3098,8 +3099,32 @@ class PaintCanvasView @JvmOverloads constructor(
             val picked = pickupColorAt(pos)
             if (picked != 0) {
                 val coverage = (picked ushr 24) / 255f
-                val fraction = (distMm * PICKUP_PER_MM * coverage).coerceIn(0f, PICKUP_MAX_FRACTION)
-                brushLoad = brushLoad.contaminate(picked or 0xFF000000.toInt(), fraction)
+                val opaque = picked or 0xFF000000.toInt()
+                var fraction = (distMm * PICKUP_PER_MM * coverage).coerceIn(0f, PICKUP_MAX_FRACTION)
+                if (tool == Tool.BRUSH) {
+                    // Smearing: WET paint doesn't just tint the brush — it
+                    // comes along with it. The colour swap accelerates with
+                    // wetness, and volume transfers ([BrushLoad.take]), so
+                    // even a dry brush dragged through a fresh stroke loads
+                    // up with its paint and drags it out past the edge. The
+                    // brush's own live trail is wet by definition.
+                    val wet = if (pickupWasTrail) 1f else wetnessAt(pos)
+                    if (wet > 0f) {
+                        fraction = (fraction + distMm * PICKUP_WET_PER_MM * coverage * wet)
+                            .coerceIn(0f, PICKUP_WET_MAX_FRACTION)
+                        // Volume only ever transfers from COMMITTED wet paint.
+                        // The live trail must not feed the brush that is laying
+                        // it — the tip always overlaps its own last stamp, and
+                        // lifting there is a perpetual-motion refill.
+                        if (!pickupWasTrail) {
+                            brushLoad = brushLoad.take(
+                                opaque,
+                                (areaMm2 / capacity) * SMEAR_LIFT_FACTOR * coverage * wet,
+                            )
+                        }
+                    }
+                }
+                brushLoad = brushLoad.contaminate(opaque, fraction)
             }
             onBrushLoadChanged?.invoke(brushLoad)
         }
@@ -3125,13 +3150,23 @@ class PaintCanvasView @JvmOverloads constructor(
      * speaks where there is no committed paint — a later part of the stroke
      * crossing back over an earlier part on bare ground.
      */
+    /** Whether [pickupColorAt]'s last answer came from the live trail (always
+     *  wet) rather than committed paint (wet per the trace ledger). */
+    private var pickupWasTrail = false
+
     private fun pickupColorAt(pos: Vec2): Int {
+        pickupWasTrail = false
         val bx = (pos.x * SUPER_SAMPLE).toInt()
         val by = (pos.y * SUPER_SAMPLE).toInt()
         if (bx < 0 || by < 0 || bx >= bufW || by >= bufH) return 0
 
         paintBmp?.getPixel(bx, by)?.let { if ((it ushr 24) > PICKUP_ALPHA_FLOOR) return it }
-        pickupBuf?.getPixel(bx, by)?.let { if ((it ushr 24) > PICKUP_ALPHA_FLOOR) return it }
+        pickupBuf?.getPixel(bx, by)?.let {
+            if ((it ushr 24) > PICKUP_ALPHA_FLOOR) {
+                pickupWasTrail = true
+                return it
+            }
+        }
         return 0
     }
 
@@ -3140,6 +3175,71 @@ class PaintCanvasView @JvmOverloads constructor(
         val c = pickupCanvas ?: return
         pickupStampPaint.color = color or 0xFF000000.toInt()
         c.drawCircle(pos.x * SUPER_SAMPLE, pos.y * SUPER_SAMPLE, (width * SUPER_SAMPLE) / 2f, pickupStampPaint)
+    }
+
+    // --- Wet-trace ledger (smearing) ------------------------------------------
+
+    /**
+     * One recently finished stroke: while its tool's wet window lasts, the
+     * paint under its footprint is still wet, and a brush dragged through it
+     * smears it. Geometry is the stroke's own spine (hit-tested per point
+     * width), so wetness follows the mark, not its bounding box.
+     */
+    private class WetTrace(val stroke: Stroke, val bounds: RectF, val windowMs: Long, val bornAt: Long)
+
+    private val wetTraces = ArrayDeque<WetTrace>()
+
+    /** Starts [stroke]'s wet window (called as it heads into the bake). */
+    private fun recordWetTrace(stroke: Stroke) {
+        val win = com.symmetricalpalmtree.paintsprout.paint.ToolProfile.of(stroke.tool).wetMs
+        if (win <= 0L || stroke.isEmpty) return
+        var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE
+        var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+        var maxW = 0f
+        for (p in stroke.points) {
+            minX = minOf(minX, p.position.x); maxX = maxOf(maxX, p.position.x)
+            minY = minOf(minY, p.position.y); maxY = maxOf(maxY, p.position.y)
+            maxW = maxOf(maxW, p.width)
+        }
+        val pad = maxW / 2f + WET_TRACE_SLACK_PX
+        val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
+        wetTraces.addLast(WetTrace(stroke, bounds, win, SystemClock.uptimeMillis()))
+        while (wetTraces.size > WET_TRACE_MAX) wetTraces.removeFirst()
+    }
+
+    /**
+     * How wet the canvas is under [pos]: 1 fresh, fading to 0 as the newest
+     * covering stroke's window expires. Only modulates pickup — where there
+     * is no paint, wetness is moot.
+     */
+    private fun wetnessAt(pos: Vec2): Float {
+        if (wetTraces.isEmpty()) return 0f
+        val now = SystemClock.uptimeMillis()
+        wetTraces.removeAll { now - it.bornAt >= it.windowMs }
+        var best = 0f
+        for (t in wetTraces) {
+            val fresh = 1f - (now - t.bornAt).toFloat() / t.windowMs
+            if (fresh <= best) continue
+            if (!t.bounds.contains(pos.x, pos.y)) continue
+            if (strokeCovers(t.stroke, pos)) best = fresh
+        }
+        return best
+    }
+
+    /** Whether [pos] lies on [stroke]'s painted footprint (spine ± half width). */
+    private fun strokeCovers(stroke: Stroke, pos: Vec2): Boolean {
+        val pts = stroke.points
+        var i = 0
+        while (i < pts.size) {
+            val p = pts[i]
+            val r = p.width / 2f + WET_TRACE_SLACK_PX
+            val dx = pos.x - p.position.x
+            val dy = pos.y - p.position.y
+            if (dx * dx + dy * dy <= r * r) return true
+            // Never skip the last point: the stroke's end must stay wet.
+            i += if (i + WET_TRACE_STRIDE >= pts.size && i < pts.size - 1) pts.size - 1 - i else WET_TRACE_STRIDE
+        }
+        return false
     }
 
     /** Sets up per-stroke live-preview scratch (accumulator / wet backdrop). */
@@ -3189,6 +3289,11 @@ class PaintCanvasView @JvmOverloads constructor(
         val batch = unbaked.toList()
         val clips = unbakedClips.toList()
         val ops = batch.indices.map { StrokeOp(batch[it], clips[it]) }
+        // The paint these strokes laid starts its wet window now (≈ pen-up):
+        // while it lasts, a brush dragged through them smears them. Undo
+        // rebuilds don't come through here, so replayed history never
+        // re-wets.
+        batch.forEach(::recordWetTrace)
         scope.launch {
             val next = withContext(Dispatchers.Default) {
                 foldOps(base.copy(Bitmap.Config.ARGB_8888, true), ops)
@@ -4145,6 +4250,20 @@ class PaintCanvasView @JvmOverloads constructor(
         const val PICKUP_PER_MM = 0.05f
         const val PICKUP_MAX_FRACTION = 0.35f
         const val PICKUP_ALPHA_FLOOR = 12
+
+        // Smearing: through WET paint (inside the laying stroke's wetMs
+        // window) the colour swap runs at WET_PER_MM instead, and the brush
+        // LIFTS volume — SMEAR_LIFT_FACTOR times what the same travel
+        // deposits — so it carries the paint away and lays it down ahead.
+        // Wet traces are hit-tested against stroke spines every STRIDE
+        // points, SLACK_PX beyond the half width; at most TRACE_MAX strokes
+        // stay on the ledger. Tuned by eye on-device.
+        const val PICKUP_WET_PER_MM = 0.30f
+        const val PICKUP_WET_MAX_FRACTION = 0.65f
+        const val SMEAR_LIFT_FACTOR = 6f
+        const val WET_TRACE_STRIDE = 2
+        const val WET_TRACE_SLACK_PX = 4f
+        const val WET_TRACE_MAX = 48
 
         // Undo/redo: keep a paint snapshot every STRIDE ops, at most MAX of them
         // (most-recent), so an undo replays at most STRIDE ops from a checkpoint.
