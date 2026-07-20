@@ -91,18 +91,27 @@ object StrokeRenderer {
         canvas: Canvas, stroke: Stroke, rgb: Int, tooth: android.graphics.Bitmap?,
         toothScale: Float, maxWidth: Float, minX: Float, minY: Float, maxX: Float, maxY: Float,
     ) {
+        val profile = ToolProfile.of(stroke.tool)
         val pad = maxWidth / 2f + 1f
         val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
         val layer = canvas.saveLayer(bounds, null)
         val pts = stroke.points
+        val structured = profile.grainFalloff > 0f || profile.grainStreak > 0f ||
+            profile.grainChunkPx > 0f
         if (pts.size == 1) {
             val p = pts.first()
+            val side = if (structured) grainSide(stroke, p, profile) else 0f
             canvas.drawCircle(
                 p.position.x, p.position.y, p.width / 2f,
                 Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = withAlpha(colorAt(p, rgb), p.density * loadAlpha(p.load))
+                    color = withAlpha(
+                        colorAt(p, rgb),
+                        p.density * loadAlpha(p.load) * (1f - GRAIN_SIDE_DENSITY_DROP * side),
+                    )
                 },
             )
+        } else if (structured) {
+            paintGrainStructured(canvas, stroke, rgb, profile)
         } else {
             val normals = strokeNormals(pts)
             val verts = FloatArray(pts.size * 4) // 2 vertices/point, 2 floats each
@@ -128,6 +137,112 @@ object StrokeRenderer {
         }
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         canvas.restoreToCount(layer)
+    }
+
+    // --- Structured grain (graphite) ----------------------------------------
+
+    /** Cross-section lane positions for the structured grain mesh. */
+    private val GRAIN_FRACS = floatArrayOf(-1f, -0.5f, 0f, 0.5f, 1f)
+
+    /** Along-stroke micro-streak wavelength, buffer px. */
+    private const val GRAIN_STREAK_LEN_PX = 7f
+
+    /** Side-of-lead: how much lighter the laid-over lead deposits per area,
+     *  and how much it deepens falloff and streaking. */
+    private const val GRAIN_SIDE_DENSITY_DROP = 0.45f
+    private const val GRAIN_SIDE_FALLOFF_BOOST = 0.6f
+    private const val GRAIN_SIDE_STREAK_BOOST = 1.4f
+
+    /**
+     * How far into the side-of-lead regime this point is, in [0,1]. Derived
+     * from the stored width against the stroke's nominal base — for the
+     * pencil, width is (almost) purely tilt, so the ratio recovers tilt
+     * without storing it per point. 0 when the stroke has no base width.
+     */
+    private fun grainSide(stroke: Stroke, p: StrokePoint, profile: ToolProfile): Float {
+        if (profile.tiltGain <= 0f || stroke.baseWidth <= 0f) return 0f
+        val t = ((p.width / stroke.baseWidth - 1f) / profile.tiltGain).coerceIn(0f, 1f)
+        return smooth01((t - 0.1f) / 0.6f)
+    }
+
+    /**
+     * The graphite mesh: [GRAIN_FRACS] lanes across the width instead of a
+     * flat two-vertex ribbon, per-vertex —
+     *
+     *  - CORE-TO-EDGE FALLOFF: deposit thins toward the mark's edge (the
+     *    lead bears hardest under its core), deepening as the pencil lays
+     *    over onto its side;
+     *  - MICRO-STREAKS: seeded value noise along arc length, per lane, the
+     *    fine lines a dragging lead leaves; deeper on the side of the lead;
+     *  - SIDE-OF-LEAD: the wide tilted mark deposits lighter per area.
+     *
+     * Emitted in chunks of [ToolProfile.grainChunkPx] of arc length that
+     * composite SRC_OVER: a stroke crossing itself darkens there, like
+     * layered graphite. Arc length, not points — point spacing varies with
+     * pen speed, and a fast loop must build up the same as a slow one.
+     * Adjacent chunks share their boundary cross-section exactly (same
+     * positions, same colours — pure functions of stored data), so the
+     * seams have zero area. Within one chunk overlaps still union; only
+     * loops longer than a chunk build up, which is every real crossing.
+     * (Note: buildup saturates at high density — two near-black layers
+     * barely darken, which is also what graphite does.)
+     */
+    private fun paintGrainStructured(canvas: Canvas, stroke: Stroke, rgb: Int, profile: ToolProfile) {
+        val pts = stroke.points
+        val n = pts.size
+        val normals = strokeNormals(pts)
+        val arcs = stroke.arcLengths()
+        val chunkPx = if (profile.grainChunkPx > 0f) profile.grainChunkPx else Float.MAX_VALUE
+        val verts = FloatArray(n * 4)
+        val colors = IntArray(n * 2)
+        val paint = Paint()
+
+        // Every (point, lane) colour exactly once — interior lanes feed two
+        // strips, and the side/noise math is the live path's real cost (the
+        // whole mesh re-renders per frame).
+        val lanes = GRAIN_FRACS.size
+        val laneCols = IntArray(n * lanes)
+        for (i in 0 until n) {
+            val p = pts[i]
+            val side = grainSide(stroke, p, profile)
+            val densBase = p.density * loadAlpha(p.load) * (1f - GRAIN_SIDE_DENSITY_DROP * side)
+            val fall = (profile.grainFalloff * (1f + GRAIN_SIDE_FALLOFF_BOOST * side))
+                .coerceAtMost(0.85f)
+            val depth = profile.grainStreak * (0.6f + GRAIN_SIDE_STREAK_BOOST * side)
+            val base = colorAt(p, rgb)
+            for (lane in 0 until lanes) {
+                val frac = GRAIN_FRACS[lane]
+                val nz = streakNoise(arcs[i] / GRAIN_STREAK_LEN_PX, stroke.seed xor (lane * 0x3779))
+                val a = densBase * (1f - fall * frac * frac) * (1f - depth * nz)
+                laneCols[i * lanes + lane] = withAlpha(base, a.coerceIn(0f, 1f))
+            }
+        }
+        fun laneColor(i: Int, lane: Int): Int = laneCols[i * lanes + lane]
+
+        var start = 0
+        while (start < n - 1) {
+            var end = start + 1
+            while (end < n - 1 && arcs[end] - arcs[start] < chunkPx) end++
+            for (lane in 0 until GRAIN_FRACS.size - 1) {
+                var slot = 0
+                for (i in start..end) {
+                    val p = pts[i]
+                    val hw = max(0.25f, p.width / 2f)
+                    val a = p.position + normals[i] * (GRAIN_FRACS[lane] * hw)
+                    val b = p.position + normals[i] * (GRAIN_FRACS[lane + 1] * hw)
+                    verts[slot * 4] = a.x; verts[slot * 4 + 1] = a.y
+                    verts[slot * 4 + 2] = b.x; verts[slot * 4 + 3] = b.y
+                    colors[slot * 2] = laneColor(i, lane)
+                    colors[slot * 2 + 1] = laneColor(i, lane + 1)
+                    slot++
+                }
+                canvas.drawVertices(
+                    Canvas.VertexMode.TRIANGLE_STRIP, slot * 4, verts, 0,
+                    null, 0, colors, 0, null, 0, 0, paint,
+                )
+            }
+            start = end
+        }
     }
 
     // --- Wash (watercolor look; wet/spectral is Stage 4) --------------------

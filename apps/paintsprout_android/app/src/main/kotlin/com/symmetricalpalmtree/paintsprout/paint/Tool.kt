@@ -160,6 +160,20 @@ data class ToolProfile(
      * Fresher = more smearable; see the wet-trace ledger in PaintCanvasView.
      */
     val wetMs: Long = 0L,
+
+    /**
+     * Grain-mesh graphite structure (pencil; the marker keeps the flat
+     * legacy mesh with all three at 0). [grainFalloff] is how much lighter
+     * the mark's edge deposits than its core; [grainStreak] the depth of the
+     * along-stroke micro-streaks the dragging lead leaves; [grainChunkPx]
+     * the mesh chunk length in buffer px of ARC LENGTH (not points — point
+     * spacing varies with pen speed) — chunks composite SRC_OVER, so a
+     * stroke crossing itself DARKENS there like layered graphite (0 = one
+     * union mesh, overlaps don't build).
+     */
+    val grainFalloff: Float = 0f,
+    val grainStreak: Float = 0f,
+    val grainChunkPx: Float = 0f,
 ) {
     /** Whether this tool's mark is broken up by the surface tooth at all. */
     val reactsToTooth: Boolean get() = toothFloor < 1.0f
@@ -167,9 +181,9 @@ data class ToolProfile(
     companion object {
         // Pencil: pressure -> darkness, tilt -> width, gritty graphite grain.
         private val PENCIL = ToolProfile(
-            minPressureFactor = 1.0f,
-            maxPressureFactor = 1.0f,
-            pressureAffectsWidth = false,
+            minPressureFactor = 0.9f, // bearing down flattens the tip a touch
+            maxPressureFactor = 1.12f,
+            pressureAffectsWidth = true,
             tiltGain = 16.0f,
             pressureAffectsDensity = true,
             minDensity = 0.1f,
@@ -179,6 +193,9 @@ data class ToolProfile(
             toothFloor = 0.0f, // gritty: grooves show bare surface
             toothBias = 1.4f,
             renderStyle = RenderStyle.GRAIN,
+            grainFalloff = 0.45f, // graphite thins from core to edge
+            grainStreak = 0.30f, // the lead drags fine streaks over the tooth
+            grainChunkPx = 48f, // crossings layer up like real graphite
         )
 
         // Marker: same feel as the pencil, but a soft/even grain -> chunky marker.

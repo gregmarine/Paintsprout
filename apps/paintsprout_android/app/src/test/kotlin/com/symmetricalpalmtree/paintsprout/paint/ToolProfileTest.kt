@@ -71,7 +71,11 @@ class ToolProfileTest {
 
         val pencil = ToolProfile.of(Tool.PENCIL)
         assertTrue(pencil.pressureAffectsDensity)
-        assertFalse(pencil.pressureAffectsWidth)
+        // Feel phase diverges from the Flutter reference here: a pressed tip
+        // flattens slightly, so pressure nudges width 0.9x..1.12x.
+        assertTrue(pencil.pressureAffectsWidth)
+        assertEquals(0.9f, pencil.minPressureFactor, 0f)
+        assertEquals(1.12f, pencil.maxPressureFactor, 0f)
         assertEquals(0.1f, pencil.minDensity, 0f)
         assertEquals(0.95f, pencil.maxDensity, 0f)
         assertEquals(16.0f, pencil.tiltGain, 0f)

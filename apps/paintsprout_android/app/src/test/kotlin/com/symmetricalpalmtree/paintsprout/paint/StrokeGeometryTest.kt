@@ -35,15 +35,15 @@ class StrokeGeometryTest {
     }
 
     @Test
-    fun pencilWidthDrivenByTiltNotPressure() {
-        // Pencil width ignores pressure (drives density instead); below the lo
-        // tilt cutoff it stays at base size.
+    fun pencilWidthMostlyTiltSlightPressure() {
+        // Feel phase: pressure now nudges pencil width a little (a pressed
+        // tip flattens), 0.9x..1.12x, while tilt stays the dominant axis.
         val base = 4f
-        assertEquals(base, resolveWidth(Tool.PENCIL, base, pressureNorm = 0f, tiltRadians = 0f), eps)
-        assertEquals(base, resolveWidth(Tool.PENCIL, base, pressureNorm = 1f, tiltRadians = 0f), eps)
+        assertEquals(base * 0.9f, resolveWidth(Tool.PENCIL, base, pressureNorm = 0f, tiltRadians = 0f), eps)
+        assertEquals(base * 1.12f, resolveWidth(Tool.PENCIL, base, pressureNorm = 1f, tiltRadians = 0f), eps)
 
-        // Full tilt: tiltFactor = 1 + tiltGain(16) * 1 = 17.
-        assertEquals(base * 17f, resolveWidth(Tool.PENCIL, base, 0f, TILT_HI_RAD), eps)
+        // Full tilt: tiltFactor = 1 + tiltGain(16) * 1 = 17, times pressure.
+        assertEquals(base * 0.9f * 17f, resolveWidth(Tool.PENCIL, base, 0f, TILT_HI_RAD), eps)
     }
 
     @Test
