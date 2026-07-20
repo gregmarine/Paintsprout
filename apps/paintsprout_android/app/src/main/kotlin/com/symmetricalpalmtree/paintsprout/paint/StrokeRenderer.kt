@@ -1130,9 +1130,12 @@ object StrokeRenderer {
     }
 
     /** How long a resting nib takes to reach its full pool, and how much
-     *  wider than the line that pool gets. */
-    private const val PEN_POOL_FULL_MS = 700f
-    private const val PEN_POOL_GAIN = 0.55f
+     *  wider than the line that pool gets. The first cut (700ms, 0.55) was
+     *  measurable and invisible — a ~2px swell on a 4px line; a pool must
+     *  read at a glance (~2x the line) while natural quick pauses stay
+     *  subtle. */
+    private const val PEN_POOL_FULL_MS = 900f
+    private const val PEN_POOL_GAIN = 1.1f
 
     // --- Droplet field (spray) ----------------------------------------------
 

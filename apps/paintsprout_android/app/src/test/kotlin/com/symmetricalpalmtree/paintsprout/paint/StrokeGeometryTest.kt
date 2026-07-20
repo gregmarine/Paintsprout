@@ -222,4 +222,13 @@ class StrokeGeometryTest {
             chiselNibWidth(base, TILT_HI_RAD, across), 0.01f,
         )
     }
+
+    @Test
+    fun eraserLiftSaturatesAtModeratePressure() {
+        // A normal erasing hand removes fully; only a graze lifts partially.
+        assertEquals(1.0f, resolveDensity(Tool.ERASER, 0.5f), eps) // p'=0.65 >= FULL_AT
+        assertEquals(0.35f, resolveDensity(Tool.ERASER, 0f), eps)
+        val graze = resolveDensity(Tool.ERASER, 0.15f)
+        assertTrue("graze should lift partially, was $graze", graze in 0.4f..0.9f)
+    }
 }

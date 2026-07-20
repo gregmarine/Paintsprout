@@ -95,8 +95,18 @@ fun resolveDensity(tool: Tool, pressureNorm: Float): Float {
     // Real strokes rarely exceed ~0.8 raw pressure, so scale up to use the full
     // density range without the artist having to bear down to the stops.
     val p = (pressureNorm * 1.3f).coerceIn(0.0f, 1.0f)
+    if (tool == Tool.ERASER) {
+        // The eraser's ramp saturates early: a normal erasing hand must
+        // remove paint FULLY (a linear ramp left ghosts on every ordinary
+        // pass) — only a genuine graze lifts partially.
+        val t = (p / ERASER_FULL_AT).coerceIn(0.0f, 1.0f)
+        return lerp(profile.minDensity, profile.maxDensity, t)
+    }
     return lerp(profile.minDensity, profile.maxDensity, p)
 }
+
+/** Scaled pressure at which the eraser reaches full lift. */
+const val ERASER_FULL_AT = 0.55f
 
 /**
  * Per-point unit normals (perpendicular to the local tangent) for a stroke.
