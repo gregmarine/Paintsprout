@@ -171,6 +171,18 @@ class PaintCanvasView @JvmOverloads constructor(
     /** Where the tip last laid paint, for measuring how much the next step spends. */
     private var lastDepositPos: Vec2? = null
 
+    // --- Felt-tip saturation (marker) ---------------------------------------
+    // The chamber is infinite, but the felt tip holds only a little ink:
+    // continuous drawing outruns the wick and the tip goes streaky/dry;
+    // any time not spent drawing — a mid-stroke dwell, hovering, pen up —
+    // re-saturates it. Recovery is elapsed wall-clock AT CAPTURE, so a
+    // pause and a hover are the same thing physically and no hover events
+    // are needed; the value is baked into each point's load, so replay is
+    // honest without re-simulating time.
+    private var markerSat = 1f
+    private var markerSatMs = 0L
+    private var markerLastPos: Vec2? = null
+
     /**
      * The active wet stroke's own trail, so a dirty brush can pick up paint it
      * laid moments ago (crossing back over itself), not just committed paint.
@@ -378,10 +390,13 @@ class PaintCanvasView @JvmOverloads constructor(
             val tilt = e.getAxisValue(MotionEvent.AXIS_TILT)
             val width = resolveWidth(tool, sizeFor(tool), pressure, tilt)
             val density = resolveDensity(tool, pressure)
-            return if (tool.usesLoad) {
-                StrokePoint(Vec2(e.x, e.y), width, density, color = brushLoad.color, load = brushLoad.fill)
-            } else {
-                StrokePoint(Vec2(e.x, e.y), width, density)
+            return when {
+                tool.usesLoad ->
+                    StrokePoint(Vec2(e.x, e.y), width, density, color = brushLoad.color, load = brushLoad.fill)
+                // The preview tail carries the tip's current saturation —
+                // transient only, nothing recorded.
+                tool == Tool.MARKER -> StrokePoint(Vec2(e.x, e.y), width, density, load = markerSat)
+                else -> StrokePoint(Vec2(e.x, e.y), width, density)
             }
         } finally {
             e.recycle()
@@ -1841,6 +1856,7 @@ class PaintCanvasView @JvmOverloads constructor(
                 // Paint is spent over distance travelled; a new stroke starts
                 // from its own first point, not wherever the last one ended.
                 lastDepositPos = null
+                markerLastPos = null
                 beginConditioning(
                     event.getPressure(actionIndex),
                     event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
@@ -3070,6 +3086,30 @@ class PaintCanvasView @JvmOverloads constructor(
         val width = resolveWidth(tool, sizeFor(tool), pressure, tilt)
         val density = resolveDensity(tool, pressure)
 
+        if (tool == Tool.MARKER) {
+            val now = SystemClock.uptimeMillis()
+            if (markerSatMs != 0L) {
+                // The wick never stops: saturation recovers toward full with
+                // every elapsed moment, drawing or not — capped so a return
+                // after hours doesn't compute a huge exponent.
+                val dt = (now - markerSatMs).coerceAtMost(60_000L)
+                markerSat += (1f - markerSat) *
+                    (1f - kotlin.math.exp(-dt / MARKER_RESAT_TAU_MS))
+            }
+            markerSatMs = now
+            val lastM = markerLastPos
+            markerLastPos = pos
+            if (lastM != null) {
+                // Drawing spends the tip: drain by area covered, against a
+                // tip sized to the chosen marker (bigger nib, bigger felt).
+                val mm = pxPerMm.coerceAtLeast(0.0001f)
+                val areaMm2 = ((pos - lastM).distance / mm) * (width / mm)
+                val tipMm2 = MARKER_TIP_MM2 *
+                    ((sizeFor(tool) / mm) / tool.defaultSizeMm).coerceAtLeast(0.05f)
+                markerSat = (markerSat - areaMm2 / tipMm2).coerceAtLeast(MARKER_SAT_FLOOR)
+            }
+            return StrokePoint(pos, width, density, load = markerSat)
+        }
         if (!tool.usesLoad) return StrokePoint(pos, width, density)
         // Clean water: an infinite, pigmentless charge — nothing spends, nothing
         // contaminates, and the stroke lays no trail a later pass could pick up.
@@ -4250,6 +4290,15 @@ class PaintCanvasView @JvmOverloads constructor(
         const val PICKUP_PER_MM = 0.05f
         const val PICKUP_MAX_FRACTION = 0.35f
         const val PICKUP_ALPHA_FLOOR = 12
+
+        // Felt-tip saturation: TIP_MM2 is the area a fully wet tip covers
+        // before going dry at the default size (drain scales with the chosen
+        // size); RESAT_TAU is the wick's recovery time constant (~2s pause
+        // feels fresh again); SAT_FLOOR is how dry an infinite-chamber tip
+        // can ever get — always some ink arrives. Tuned by eye on-device.
+        const val MARKER_TIP_MM2 = 600f
+        const val MARKER_RESAT_TAU_MS = 800f
+        const val MARKER_SAT_FLOOR = 0.25f
 
         // Smearing: through WET paint (inside the laying stroke's wetMs
         // window) the colour swap runs at WET_PER_MM instead, and the brush

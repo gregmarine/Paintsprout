@@ -153,6 +153,9 @@ object StrokeRenderer {
     private const val GRAIN_SIDE_FALLOFF_BOOST = 0.6f
     private const val GRAIN_SIDE_STREAK_BOOST = 1.4f
 
+    /** Streak depth a fully dry tip adds (marker felt saturation; load-driven). */
+    private const val GRAIN_DRY_STREAK = 0.5f
+
     /**
      * How far into the side-of-lead regime this point is, in [0,1]. Derived
      * from the stored width against the stroke's nominal base — for the
@@ -209,9 +212,16 @@ object StrokeRenderer {
             val p = pts[i]
             val side = grainSide(stroke, p, profile)
             val densBase = p.density * loadAlpha(p.load) * (1f - GRAIN_SIDE_DENSITY_DROP * side)
-            val fall = (profile.grainFalloff * (1f + GRAIN_SIDE_FALLOFF_BOOST * side))
-                .coerceAtMost(0.85f)
-            val depth = profile.grainStreak * (0.6f + GRAIN_SIDE_STREAK_BOOST * side)
+            // A drying felt tip goes streaky before it goes faint, and its
+            // pooled wet edge thins away — no ink to pool. Load is 1 for
+            // dry media (pencil), so neither term moves there.
+            val fall = if (profile.grainFalloff < 0f) {
+                profile.grainFalloff * p.load
+            } else {
+                (profile.grainFalloff * (1f + GRAIN_SIDE_FALLOFF_BOOST * side)).coerceAtMost(0.85f)
+            }
+            val depth = profile.grainStreak * (0.6f + GRAIN_SIDE_STREAK_BOOST * side) +
+                GRAIN_DRY_STREAK * (1f - p.load)
             val base = colorAt(p, rgb)
             for (lane in 0 until lanes) {
                 val frac = GRAIN_FRACS[lane]
