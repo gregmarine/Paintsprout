@@ -83,6 +83,15 @@ class Stroke(
     var wetCrop: android.graphics.Rect? = null
 
     /**
+     * Pen only: how long the nib rested at pen-down before travelling, and
+     * at the stroke's end before lifting, in ms. Ink pools while a nib
+     * rests; the dwell is captured here so the bake and any replay pool
+     * exactly as the screen showed.
+     */
+    var startDwellMs = 0L
+    var endDwellMs = 0L
+
+    /**
      * Watercolor only: the per-point drying progress this stroke was FROZEN at
      * when something cut its drying short (a new stroke, undo, a surface
      * change). Null — the normal case — means it dried fully. The bake renders

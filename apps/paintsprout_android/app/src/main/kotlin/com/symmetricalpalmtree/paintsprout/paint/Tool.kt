@@ -323,8 +323,8 @@ data class ToolProfile(
             maxPressureFactor = 1.0f,
             pressureAffectsWidth = false,
             tiltGain = 0.0f,
-            pressureAffectsDensity = false,
-            minDensity = 1.0f,
+            pressureAffectsDensity = true, // pressure -> partial lift: light touch thins, hard press removes
+            minDensity = 0.35f,
             maxDensity = 1.0f,
             opacity = 1.0f,
             blurFactor = 0.0f,

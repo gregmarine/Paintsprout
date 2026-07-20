@@ -1023,7 +1023,10 @@ object StrokeRenderer {
         minX: Float, minY: Float, maxX: Float, maxY: Float,
     ) {
         val isEraser = stroke.tool == Tool.ERASER
-        val needsLayer = profile.opacity < 1f || blurSigma > 0f || tooth != null
+        // The eraser always works through a DST_OUT layer so its per-point
+        // density can LIFT partially — a light touch thins the paint, a hard
+        // press removes it (with tooth, residue survives in the valleys).
+        val needsLayer = isEraser || profile.opacity < 1f || blurSigma > 0f || tooth != null
         val pad = maxWidth / 2f + blurSigma * 3f + 1f
         val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
 
@@ -1031,50 +1034,105 @@ object StrokeRenderer {
         if (needsLayer) {
             val lp = Paint()
             if (profile.opacity < 1f) lp.alpha = alpha255(profile.opacity)
-            // Eraser with tooth: subtract a tooth-masked stamp (dstOut) on restore,
-            // so it erases on the crests but leaves residue in the valleys.
-            if (isEraser && tooth != null) lp.blendMode = BlendMode.DST_OUT
+            if (isEraser) lp.blendMode = BlendMode.DST_OUT
             layer = canvas.saveLayer(bounds, lp)
         }
 
-        val useClear = isEraser && tooth == null
         val drawColor = if (isEraser) Color.WHITE else rgb
         val blur = if (blurSigma > 0f) BlurMaskFilter(blurSigma, BlurMaskFilter.Blur.NORMAL) else null
         val pts = stroke.points
 
         fun basePaint() = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = drawColor
-            if (useClear) blendMode = BlendMode.CLEAR
             maskFilter = blur
+        }
+
+        // Constant-width, constant-density strokes keep the fitted smooth
+        // path; anything that varies (pen speed thinning, eraser pressure)
+        // renders per span. Data-driven, so tools that don't vary lose nothing.
+        var varies = false
+        for (p in pts) {
+            if (kotlin.math.abs(p.width - pts[0].width) > 0.01f ||
+                kotlin.math.abs(p.density - pts[0].density) > 0.01f
+            ) {
+                varies = true
+                break
+            }
         }
 
         when {
             pts.size == 1 -> {
                 val p = pts.first()
-                canvas.drawCircle(p.position.x, p.position.y, p.width / 2f, basePaint())
+                canvas.drawCircle(
+                    p.position.x, p.position.y,
+                    p.width / 2f * penPoolScale(stroke, stroke.startDwellMs),
+                    basePaint().apply { alpha = (alpha * p.density).toInt() },
+                )
             }
-            !stroke.tool.isDynamic -> {
+            !varies -> {
                 canvas.drawPath(smoothPath(pts), basePaint().apply {
                     style = Paint.Style.STROKE; strokeWidth = pts.first().width
                     strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+                    alpha = (alpha * pts.first().density).toInt()
                 })
             }
             else -> {
+                // Spans of near-constant density, one stroked path each —
+                // per-segment caps under translucent lift would dot every
+                // joint; spans overlap caps only where the density steps.
                 val paint = basePaint().apply {
                     style = Paint.Style.STROKE
                     strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
                 }
-                for (i in 1 until pts.size) {
-                    val a = pts[i - 1]; val b = pts[i]
-                    paint.strokeWidth = (a.width + b.width) / 2f
-                    canvas.drawLine(a.position.x, a.position.y, b.position.x, b.position.y, paint)
+                var from = 0
+                while (from < pts.size - 1) {
+                    val runDensity = pts[from].density
+                    var to = from + 1
+                    while (to < pts.size - 1 &&
+                        kotlin.math.abs(pts[to].density - runDensity) < ALPHA_STEP
+                    ) {
+                        to++
+                    }
+                    paint.alpha = alpha255(runDensity)
+                    for (i in from + 1..to) {
+                        val a = pts[i - 1]; val b = pts[i]
+                        paint.strokeWidth = (a.width + b.width) / 2f
+                        canvas.drawLine(a.position.x, a.position.y, b.position.x, b.position.y, paint)
+                    }
+                    from = to
                 }
+            }
+        }
+
+        // A resting nib pools: soft discs at the stroke's true ends, sized
+        // by the captured dwell. Pen only — an eraser has no ink to pool.
+        if (stroke.tool == Tool.PEN && pts.isNotEmpty()) {
+            val startScale = penPoolScale(stroke, stroke.startDwellMs)
+            if (startScale > 1.02f) {
+                val p = pts.first()
+                canvas.drawCircle(p.position.x, p.position.y, p.width / 2f * startScale, basePaint())
+            }
+            val endScale = penPoolScale(stroke, stroke.endDwellMs)
+            if (endScale > 1.02f && pts.size > 1) {
+                val p = pts.last()
+                canvas.drawCircle(p.position.x, p.position.y, p.width / 2f * endScale, basePaint())
             }
         }
 
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         if (needsLayer) canvas.restoreToCount(layer)
     }
+
+    /** Ink-pool radius multiplier for a nib that rested [dwellMs]. */
+    private fun penPoolScale(stroke: Stroke, dwellMs: Long): Float {
+        if (stroke.tool != Tool.PEN || dwellMs <= 0L) return 1f
+        return 1f + PEN_POOL_GAIN * smooth01(dwellMs.toFloat() / PEN_POOL_FULL_MS)
+    }
+
+    /** How long a resting nib takes to reach its full pool, and how much
+     *  wider than the line that pool gets. */
+    private const val PEN_POOL_FULL_MS = 700f
+    private const val PEN_POOL_GAIN = 0.55f
 
     // --- Droplet field (spray) ----------------------------------------------
 

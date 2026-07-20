@@ -1384,6 +1384,9 @@ class PaintCanvasView @JvmOverloads constructor(
             }
         }
         if (isActive) {
+            // A resting pen's end pool grows on screen as it grows on paper;
+            // the UP handler freezes the final value for the bake.
+            if (s.tool == Tool.PEN) s.endDwellMs = SystemClock.uptimeMillis() - lastAcceptAtMs
             withTransientPoint(s, predictedTailPoint()) { StrokeRenderer.paintStroke(canvas, s, surface) }
         } else {
             // A frozen wash (drying cut short) keeps its as-shown state here too.
@@ -1876,6 +1879,8 @@ class PaintCanvasView @JvmOverloads constructor(
                 lastDepositPos = null
                 markerLastPos = null
                 markerDir = null
+                penDownMs = SystemClock.uptimeMillis()
+                penSpeedEma = 0f
                 beginConditioning(
                     event.getPressure(actionIndex),
                     event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
@@ -1966,6 +1971,14 @@ class PaintCanvasView @JvmOverloads constructor(
                 }
                 val stroke = active
                 if (stroke != null && event.getPointerId(actionIndex) == activePointerId) {
+                    if (stroke.tool == Tool.PEN) {
+                        // The nib rested here from the last travel until this
+                        // lift: the end pool. A stroke that never travelled
+                        // pools for the whole hold.
+                        val now = SystemClock.uptimeMillis()
+                        stroke.endDwellMs = now - lastAcceptAtMs
+                        if (stroke.points.size == 1) stroke.startDwellMs = now - penDownMs
+                    }
                     if (stroke === wetStroke) {
                         // The wash stays live past pen-up: it keeps spreading and
                         // drying under the ticker, and commits once it calms (or
@@ -3046,6 +3059,12 @@ class PaintCanvasView @JvmOverloads constructor(
 
     private var lastAcceptAtMs = 0L
 
+    // Pen feel: when this stroke's pointer went down (start-pool dwell is
+    // measured from here to the first travel), and the EMA'd accepted-point
+    // spacing that drives the subtle speed→width thinning.
+    private var penDownMs = 0L
+    private var penSpeedEma = 0f
+
     /**
      * Keeps the spray alive under a resting pen — a real can doesn't stop
      * when your hand does. Every tick with no fresh accepted point appends
@@ -3102,8 +3121,14 @@ class PaintCanvasView @JvmOverloads constructor(
         lastAcceptPos = pos
         lastAcceptPressure = smoothPressure
         lastAcceptAtMs = SystemClock.uptimeMillis()
-        val point = buildPoint(pos, smoothPressure, smoothTilt)
+        val spacing = if (last == null) 0f else (pos - last).distance
+        val point = buildPoint(pos, smoothPressure, smoothTilt, spacing)
         stroke.add(point)
+        // The nib rested from pen-down until this first travel: that dwell
+        // is the start pool.
+        if (stroke.tool == Tool.PEN && stroke.points.size == 2 && stroke.startDwellMs == 0L) {
+            stroke.startDwellMs = lastAcceptAtMs - penDownMs
+        }
         // Grow the live-blit bounds (padded when used; see blit helpers).
         activeMaxWidth = max(activeMaxWidth, point.width)
         if (stroke.points.size == 1) {
@@ -3135,9 +3160,20 @@ class PaintCanvasView @JvmOverloads constructor(
      * get here. Every live point funnels through this, so it's the one place the
      * brush drains.
      */
-    private fun buildPoint(pos: Vec2, pressure: Float, tilt: Float): StrokePoint {
-        val width = resolveWidth(tool, sizeFor(tool), pressure, tilt)
+    private fun buildPoint(pos: Vec2, pressure: Float, tilt: Float, spacing: Float = 0f): StrokePoint {
+        var width = resolveWidth(tool, sizeFor(tool), pressure, tilt)
         val density = resolveDensity(tool, pressure)
+
+        // A hurried pen lays a hair less ink per length: subtle speed→width
+        // thinning from the EMA'd spacing between accepted points — seeded
+        // with the first real spacing, never zero.
+        if (tool == Tool.PEN && spacing > 0f) {
+            penSpeedEma = if (penSpeedEma == 0f) spacing else
+                penSpeedEma + 0.25f * (spacing - penSpeedEma)
+            val speed = ((penSpeedEma - PEN_SPEED_LO_PX) / (PEN_SPEED_HI_PX - PEN_SPEED_LO_PX))
+                .coerceIn(0f, 1f)
+            width *= 1f - PEN_SPEED_THIN * speed
+        }
 
         if (tool == Tool.MARKER) {
             val now = SystemClock.uptimeMillis()
@@ -4385,6 +4421,12 @@ class PaintCanvasView @JvmOverloads constructor(
         /** Spray dwell: a resting pen keeps spraying — one in-place point per
          *  tick builds the field (and, heavy enough, sheds drips). */
         const val SPRAY_DWELL_MS = 45L
+
+        /** Pen speed→width: EMA'd accepted-point spacing over [LO, HI] px
+         *  thins the line by up to THIN — a hurried pen lays a hair less. */
+        const val PEN_SPEED_THIN = 0.12f
+        const val PEN_SPEED_LO_PX = 4f
+        const val PEN_SPEED_HI_PX = 30f
 
         /** Chisel-nib travel-direction smoothing (sensor-noise cleanup only). */
         const val MARKER_DIR_EMA = 0.3f
