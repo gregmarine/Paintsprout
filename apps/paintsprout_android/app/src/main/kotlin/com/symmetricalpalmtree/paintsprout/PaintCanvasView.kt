@@ -1359,7 +1359,7 @@ class PaintCanvasView @JvmOverloads constructor(
                     withTransientPoint(s, predictedTailPoint()) {
                         blitAccum(canvas, s) { c ->
                             if (s.points.size > accumDrawn) {
-                                StrokeRenderer.appendSoftSegments(c, s, accumDrawn)
+                                StrokeRenderer.appendDropletSegments(c, s, accumDrawn)
                             }
                         }
                     }
@@ -1395,7 +1395,7 @@ class PaintCanvasView @JvmOverloads constructor(
     private fun ensureSprayAccum(stroke: Stroke) {
         val accum = activeAccum ?: return
         if (stroke.points.size <= accumDrawn && accumDrawn > 0) return
-        StrokeRenderer.appendSoftSegments(Canvas(accum), stroke, accumDrawn)
+        StrokeRenderer.appendDropletSegments(Canvas(accum), stroke, accumDrawn)
         accumDrawn = stroke.points.size
     }
 
@@ -1409,7 +1409,12 @@ class PaintCanvasView @JvmOverloads constructor(
         val accum = activeAccum ?: return
         val profile = com.symmetricalpalmtree.paintsprout.paint.ToolProfile.of(stroke.tool)
         val tooth = ToothCache.toothFor(surface, stroke.tool)
-        val pad = activeMaxWidth / 2f + activeMaxWidth * profile.blurFactor * 3f + 8f
+        // The droplet cone overshoots the nominal width; blur pads the rest.
+        val pad = if (profile.renderStyle == com.symmetricalpalmtree.paintsprout.paint.RenderStyle.DROPLET) {
+            activeMaxWidth / 2f * StrokeRenderer.DROP_SCATTER + 10f
+        } else {
+            activeMaxWidth / 2f + activeMaxWidth * profile.blurFactor * 3f + 8f
+        }
         val bounds = RectF(activeBounds).apply {
             inset(-pad, -pad)
             intersect(0f, 0f, logicalW.toFloat(), logicalH.toFloat())

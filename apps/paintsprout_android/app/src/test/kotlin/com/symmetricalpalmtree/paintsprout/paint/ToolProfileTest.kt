@@ -44,7 +44,8 @@ class ToolProfileTest {
         assertEquals(RenderStyle.SOLID, ToolProfile.of(Tool.ERASER).renderStyle)
         assertEquals(RenderStyle.BRISTLE, ToolProfile.of(Tool.BRUSH).renderStyle)
         assertEquals(RenderStyle.WASH, ToolProfile.of(Tool.WATERCOLOR).renderStyle)
-        assertEquals(RenderStyle.SOFT, ToolProfile.of(Tool.SPRAY).renderStyle)
+        // Feel phase: the spray is a stochastic droplet field, not a blur.
+        assertEquals(RenderStyle.DROPLET, ToolProfile.of(Tool.SPRAY).renderStyle)
     }
 
     @Test

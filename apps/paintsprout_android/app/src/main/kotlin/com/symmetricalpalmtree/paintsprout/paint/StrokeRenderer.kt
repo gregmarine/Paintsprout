@@ -80,6 +80,8 @@ object StrokeRenderer {
                 paintWash(canvas, stroke, rgb, tooth, toothScale, maxWidth, blurSigma, minX, minY, maxX, maxY, dryness)
             RenderStyle.BRISTLE ->
                 paintBristle(canvas, stroke, rgb, tooth, toothScale, maxWidth, avgWidth, minX, minY, maxX, maxY)
+            RenderStyle.DROPLET ->
+                paintDroplets(canvas, stroke, profile, tooth, toothScale, maxWidth, minX, minY, maxX, maxY)
             RenderStyle.SOLID, RenderStyle.SOFT ->
                 paintSolid(canvas, stroke, profile, rgb, tooth, toothScale, maxWidth, blurSigma, minX, minY, maxX, maxY)
         }
@@ -1074,46 +1076,122 @@ object StrokeRenderer {
         if (needsLayer) canvas.restoreToCount(layer)
     }
 
+    // --- Droplet field (spray) ----------------------------------------------
+
     /**
-     * Appends the soft (spray) stroke's segments from point [fromIndex] onward to
-     * [canvas], WITHOUT the outer opacity/tooth layer (the caller applies those
-     * once when blitting). Lets the live preview accumulate a long spray stroke
-     * incrementally instead of re-rendering the whole thing every frame. Blur is
-     * per-segment (local width) rather than the whole-stroke average [paintSolid]
-     * uses — imperceptible for spray's soft, noisy look, and the bake stays the
-     * source of truth.
+     * Droplets emitted per accepted point. Decimation spaces points by
+     * travel, so a slow pass lays more points per mm of path — dwell density
+     * for free, deterministic from stored points.
      */
-    fun appendSoftSegments(canvas: Canvas, stroke: Stroke, fromIndex: Int) {
-        val profile = ToolProfile.of(stroke.tool)
-        val rgb = stroke.color or OPAQUE_ALPHA
+    private const val DROPS_PER_POINT = 26
+
+    /** Scatter radius as a fraction of the half-width — the cone overshoots
+     *  the nominal width a touch, as a real can does. */
+    const val DROP_SCATTER = 1.15f
+
+    /** r = R·u^pow: density thins toward the rim — the soft edge is
+     *  statistics, not blur. */
+    private const val DROP_EDGE_POW = 0.7f
+
+    /** Fine-droplet diameter range (px), and the rare fat spatter. */
+    private const val DROP_SIZE_LO = 0.8f
+    private const val DROP_SIZE_HI = 1.9f
+    private const val SPATTER_CHANCE = 0.055f
+    private const val SPATTER_SIZE_LO = 2.6f
+    private const val SPATTER_SIZE_HI = 5.2f
+
+    /** Droplets are batched into one drawPoints per size bucket. */
+    private const val DROP_BUCKETS = 8
+
+    /**
+     * The bake: the whole droplet field inside one opacity layer, tooth on
+     * top — identical droplets to what the live accumulator laid, because
+     * both run [appendDropletSegments] over the same seeded hashes. That
+     * identity is what retired the old soft path's pen-up size snap.
+     */
+    private fun paintDroplets(
+        canvas: Canvas, stroke: Stroke, profile: ToolProfile, tooth: android.graphics.Bitmap?,
+        toothScale: Float, maxWidth: Float, minX: Float, minY: Float, maxX: Float, maxY: Float,
+    ) {
+        val pad = maxWidth / 2f * DROP_SCATTER + SPATTER_SIZE_HI + 1f
+        val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
+        val layer = canvas.saveLayer(bounds, Paint().apply { alpha = alpha255(profile.opacity) })
+        appendDropletSegments(canvas, stroke, 0)
+        if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
+        canvas.restoreToCount(layer)
+    }
+
+    /**
+     * Appends the droplets for points [fromIndex] onward, RAW (no opacity
+     * layer, no tooth — the caller's blit or bake layer applies those once).
+     * Every droplet is a pure function of (stroke seed, point index, droplet
+     * index), so the live accumulator, the transient predicted tail and the
+     * bake all lay exactly the same field.
+     */
+    fun appendDropletSegments(canvas: Canvas, stroke: Stroke, fromIndex: Int) {
         val pts = stroke.points
-        if (pts.isEmpty()) return
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = rgb
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
+        if (pts.isEmpty() || fromIndex >= pts.size) return
+        val rgb = stroke.color or OPAQUE_ALPHA
+        val seed = stroke.seed
+
+        // Two passes: count per size bucket, then fill — one allocation and
+        // one drawPoints per bucket.
+        val counts = IntArray(DROP_BUCKETS)
+        forEachDroplet(pts, fromIndex, seed) { _, _, bucket -> counts[bucket]++ }
+        val buckets = Array(DROP_BUCKETS) { FloatArray(counts[it] * 2) }
+        val fill = IntArray(DROP_BUCKETS)
+        forEachDroplet(pts, fromIndex, seed) { x, y, bucket ->
+            val k = fill[bucket]
+            buckets[bucket][k] = x
+            buckets[bucket][k + 1] = y
+            fill[bucket] = k + 2
         }
-        fun blurFor(w: Float): BlurMaskFilter? {
-            val sigma = profile.blurFactor * w
-            return if (sigma > 0.3f) BlurMaskFilter(sigma, BlurMaskFilter.Blur.NORMAL) else null
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        for (b in 0 until DROP_BUCKETS) {
+            if (counts[b] == 0) continue
+            paint.color = rgb
+            paint.strokeCap = Paint.Cap.ROUND
+            paint.strokeWidth = bucketSize(b)
+            canvas.drawPoints(buckets[b], 0, counts[b] * 2, paint)
         }
-        if (fromIndex == 0) {
-            val p = pts.first()
-            paint.maskFilter = blurFor(p.width)
-            canvas.drawPoint(p.position.x, p.position.y, paint.apply {
-                strokeCap = Paint.Cap.ROUND; strokeWidth = p.width
-            })
-        }
-        var i = max(1, fromIndex)
-        while (i < pts.size) {
-            val a = pts[i - 1]
-            val b = pts[i]
-            val w = (a.width + b.width) / 2f
-            paint.strokeWidth = w
-            paint.maskFilter = blurFor(w)
-            canvas.drawLine(a.position.x, a.position.y, b.position.x, b.position.y, paint)
-            i++
+    }
+
+    /** The droplet diameter bucket [b] renders at (bucket midpoints). */
+    private fun bucketSize(b: Int): Float {
+        val t = (b + 0.5f) / DROP_BUCKETS
+        return DROP_SIZE_LO + (SPATTER_SIZE_HI - DROP_SIZE_LO) * t
+    }
+
+    private inline fun forEachDroplet(
+        pts: List<StrokePoint>,
+        fromIndex: Int,
+        seed: Int,
+        emit: (x: Float, y: Float, bucket: Int) -> Unit,
+    ) {
+        for (i in fromIndex until pts.size) {
+            val p = pts[i]
+            val r0 = p.width / 2f * DROP_SCATTER
+            for (d in 0 until DROPS_PER_POINT) {
+                val cell = i * DROPS_PER_POINT + d
+                val ang = bristleHash(cell, seed) * (2.0 * PI).toFloat()
+                val ru = bristleHash(cell, seed xor 0x51ed270b)
+                val su = bristleHash(cell, seed xor 0x2c9277b5)
+                val r = r0 * ru.pow(DROP_EDGE_POW)
+                val size = if (su < SPATTER_CHANCE) {
+                    SPATTER_SIZE_LO + (SPATTER_SIZE_HI - SPATTER_SIZE_LO) * (su / SPATTER_CHANCE)
+                } else {
+                    DROP_SIZE_LO + (DROP_SIZE_HI - DROP_SIZE_LO) *
+                        ((su - SPATTER_CHANCE) / (1f - SPATTER_CHANCE))
+                }
+                val t = ((size - DROP_SIZE_LO) / (SPATTER_SIZE_HI - DROP_SIZE_LO))
+                    .coerceIn(0f, 0.999f)
+                val bucket = (t * DROP_BUCKETS).toInt()
+                emit(
+                    p.position.x + cos(ang) * r,
+                    p.position.y + sin(ang) * r,
+                    bucket,
+                )
+            }
         }
     }
 

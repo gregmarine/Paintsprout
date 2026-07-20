@@ -93,8 +93,15 @@ enum class RenderStyle {
     /** Crisp constant-color ribbon (pen, eraser). */
     SOLID,
 
-    /** Soft blurred, translucent, builds up on overlap (spray can). */
+    /** Soft blurred, translucent, builds up on overlap. */
     SOFT,
+
+    /**
+     * A stochastic droplet field (spray can): seeded dots scattered around
+     * the spine, density thinning radially — the soft edge is statistics,
+     * not blur — with occasional larger spatter.
+     */
+    DROPLET,
 
     /** Variable-width ribbon multiplied by a grain texture (pencil, marker). */
     GRAIN,
@@ -304,10 +311,10 @@ data class ToolProfile(
             minDensity = 1.0f,
             maxDensity = 1.0f,
             opacity = 0.92f,
-            blurFactor = 0.25f,
+            blurFactor = 0.0f, // the droplet field's soft edge is statistics, not blur
             toothFloor = 0.78f, // droplets settle a touch more on the crests
             toothBias = 1.0f,
-            renderStyle = RenderStyle.SOFT,
+            renderStyle = RenderStyle.DROPLET,
             wetMs = 6000, // a wet droplet field
         )
 
