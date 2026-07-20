@@ -170,4 +170,38 @@ class StrokeGeometryTest {
         val outline = ribbonOutline(pts, normals)
         assertEquals(0.5f, outline.first().y, eps)
     }
+
+    @Test
+    fun windowedNormalsSteadyThroughLandingClusterNoise() {
+        // A horizontal line whose points carry ~±1px of irregular vertical
+        // sensor noise at ~1.3px spacing — a pen landing. The windowed
+        // chord bounds the residual tilt at noise/window (here 2/16), so
+        // every normal stays near vertical — and strictly steadier than the
+        // raw central-difference normals, which swing with each sample.
+        val noise = floatArrayOf(1f, -0.7f, 0.3f, -1f, 0.8f, -0.2f, 0.6f, -0.9f)
+        val pts = ArrayList<StrokePoint>()
+        var x = 0f
+        var i = 0
+        while (x <= 40f) {
+            pts.add(StrokePoint(Vec2(x, 100f + noise[i % noise.size]), width = 16f))
+            i++
+            x += 1.3f
+        }
+        val stroke = Stroke(Tool.MARKER, 0xFF000000.toInt(), baseWidth = 16f)
+        pts.forEach(stroke::add)
+        val windowed = windowedNormals(stroke.points, stroke.arcLengths())
+        val raw = strokeNormals(stroke.points)
+        for ((k, nrm) in windowed.withIndex()) {
+            assertTrue(
+                "normal $k should be near vertical, was (${nrm.x}, ${nrm.y})",
+                kotlin.math.abs(nrm.y) > 0.95f,
+            )
+        }
+        val worstWindowed = windowed.minOf { kotlin.math.abs(it.y) }
+        val worstRaw = raw.minOf { kotlin.math.abs(it.y) }
+        assertTrue(
+            "windowed ($worstWindowed) must beat raw ($worstRaw)",
+            worstWindowed > worstRaw,
+        )
+    }
 }

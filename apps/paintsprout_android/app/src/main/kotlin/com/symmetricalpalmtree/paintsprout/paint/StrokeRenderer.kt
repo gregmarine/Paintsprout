@@ -190,8 +190,11 @@ object StrokeRenderer {
     private fun paintGrainStructured(canvas: Canvas, stroke: Stroke, rgb: Int, profile: ToolProfile) {
         val pts = stroke.points
         val n = pts.size
-        val normals = strokeNormals(pts)
         val arcs = stroke.arcLengths()
+        // Windowed, not central-difference: landing clusters are pure sensor
+        // noise at sample spacing, and the dense wet-edge rim lanes make
+        // every normal swing visible at the stroke start.
+        val normals = windowedNormals(pts, arcs)
         val chunkPx = if (profile.grainChunkPx > 0f) profile.grainChunkPx else Float.MAX_VALUE
         val verts = FloatArray(n * 4)
         val colors = IntArray(n * 2)

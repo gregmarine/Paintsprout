@@ -118,6 +118,42 @@ fun strokeNormalsRange(pts: List<StrokePoint>, from: Int, to: Int): List<Vec2> {
 }
 
 /**
+ * Per-point unit normals measured over an arc-length window instead of
+ * adjacent samples. A slow pen landing lays a cluster of points whose
+ * spacing is the size of the sensor noise, and central-difference normals
+ * swing wildly through it — the visible jag at stroke starts. At the scale
+ * of its own footprint the tool is rigid (the wash geometry's
+ * surface-tension lesson), so each tangent is the chord across [window] of
+ * arc length centred on the point; a collapsed window carries the previous
+ * direction rather than inventing one from noise. [arcs] is
+ * `Stroke.arcLengths()` (entries valid for `pts.indices`).
+ */
+fun windowedNormals(pts: List<StrokePoint>, arcs: FloatArray, minWindow: Float = 4f): List<Vec2> {
+    require(pts.size >= 2) { "windowedNormals needs at least 2 points" }
+    val n = pts.size
+    val out = ArrayList<Vec2>(n)
+    var j = 0
+    var k = 0
+    var prevDir = Vec2(1f, 0f)
+    for (i in 0 until n) {
+        // Window = the LOCAL footprint: a thin pencil stays near-raw, a
+        // broad tilted marker steadies hard. The pointers stay monotone
+        // under a varying window; the mild chord asymmetry that allows is
+        // harmless for a smoothing measurement.
+        val half = maxOf(minWindow, pts[i].width) / 2f
+        while (j < i && arcs[j + 1] <= arcs[i] - half) j++
+        if (k < i) k = i
+        while (k < n - 1 && arcs[k] < arcs[i] + half) k++
+        val chord = pts[k].position - pts[j].position
+        val len = chord.distance
+        val dir = if (len < 1e-3f) prevDir else chord / len
+        prevDir = dir
+        out.add(Vec2(-dir.y, dir.x))
+    }
+    return out
+}
+
+/**
  * The unit normal at a stroke's last point, measured over an arc-length
  * [window] instead of the final segment. The raw tail normal follows every
  * sensor wobble of the newest sample, and a bristle fan pivots laterally
