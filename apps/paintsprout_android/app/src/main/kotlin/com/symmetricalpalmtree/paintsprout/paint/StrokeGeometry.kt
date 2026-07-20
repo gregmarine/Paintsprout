@@ -58,6 +58,33 @@ fun resolveWidth(
     return max(0.5f, baseSize * pressureFactor * tiltFactor)
 }
 
+// The marker's chisel nib: a flat edge held at a fixed angle in hand space.
+// Dragging ALONG the edge lays only its thickness; dragging ACROSS it lays
+// the full engaged edge. Tilt engages more edge (pressing the face down)
+// instead of multiplying an isotropic ribbon — the old tiltGain look the
+// user rejected.
+const val NIB_ANGLE_RAD = 0.6f // ~34°, the classic right-hand chisel hold
+const val NIB_FLOOR = 0.3f // the edge's own thickness, as a fraction
+const val NIB_TILT_ENGAGE = 2.5f // full tilt engages 3.5x the upright edge
+const val NIB_DEFAULT_CROSS = 0.7f // no direction yet (first point): mid engagement
+
+/**
+ * The chisel-nib mark width for a marker travelling at [travelAngle]
+ * (radians, canvas space; null = direction unknown), holding [tiltRadians]
+ * of tilt over a [base] px edge.
+ */
+fun chiselNibWidth(base: Float, tiltRadians: Float, travelAngle: Float?): Float {
+    val rawTilt = ((tiltRadians - TILT_LO_RAD) / (TILT_HI_RAD - TILT_LO_RAD))
+        .coerceIn(0.0f, 1.0f)
+    val engaged = base * (1f + NIB_TILT_ENGAGE * rawTilt.pow(TILT_EASE))
+    val cross = if (travelAngle == null) {
+        NIB_DEFAULT_CROSS
+    } else {
+        kotlin.math.abs(kotlin.math.sin(travelAngle - NIB_ANGLE_RAD))
+    }
+    return max(0.5f, engaged * (NIB_FLOOR + (1f - NIB_FLOOR) * cross))
+}
+
 /**
  * Resolves per-point density (darkness) from pressure. Pencil maps light
  * pressure to faint marks; other tools stay fully dense.

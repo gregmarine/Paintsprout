@@ -56,6 +56,7 @@ import com.symmetricalpalmtree.paintsprout.paint.WetSim
 import com.symmetricalpalmtree.paintsprout.paint.WoodParams
 import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
 import com.symmetricalpalmtree.paintsprout.paint.resolveDensity
+import com.symmetricalpalmtree.paintsprout.paint.chiselNibWidth
 import com.symmetricalpalmtree.paintsprout.paint.resolveWidth
 import com.symmetricalpalmtree.paintsprout.paint.strokeRegionPath
 import kotlinx.coroutines.CoroutineScope
@@ -182,6 +183,13 @@ class PaintCanvasView @JvmOverloads constructor(
     private var markerSat = 1f
     private var markerSatMs = 0L
     private var markerLastPos: Vec2? = null
+
+    /**
+     * EMA'd unit travel direction for the chisel nib — seeded with the FIRST
+     * real travel vector, never zero (a zero-seeded EMA funnels the stroke
+     * start; the Phase-1 tilt lesson). Null until the stroke has moved.
+     */
+    private var markerDir: Vec2? = null
 
     /**
      * The active wet stroke's own trail, so a dirty brush can pick up paint it
@@ -393,9 +401,13 @@ class PaintCanvasView @JvmOverloads constructor(
             return when {
                 tool.usesLoad ->
                     StrokePoint(Vec2(e.x, e.y), width, density, color = brushLoad.color, load = brushLoad.fill)
-                // The preview tail carries the tip's current saturation —
-                // transient only, nothing recorded.
-                tool == Tool.MARKER -> StrokePoint(Vec2(e.x, e.y), width, density, load = markerSat)
+                // The preview tail carries the tip's current saturation and
+                // nib width — transient only, nothing recorded.
+                tool == Tool.MARKER -> StrokePoint(
+                    Vec2(e.x, e.y),
+                    chiselNibWidth(sizeFor(tool), tilt, markerDir?.let { kotlin.math.atan2(it.y, it.x) }),
+                    density, load = markerSat,
+                )
                 else -> StrokePoint(Vec2(e.x, e.y), width, density)
             }
         } finally {
@@ -1857,6 +1869,7 @@ class PaintCanvasView @JvmOverloads constructor(
                 // from its own first point, not wherever the last one ended.
                 lastDepositPos = null
                 markerLastPos = null
+                markerDir = null
                 beginConditioning(
                     event.getPressure(actionIndex),
                     event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
@@ -3100,15 +3113,39 @@ class PaintCanvasView @JvmOverloads constructor(
             val lastM = markerLastPos
             markerLastPos = pos
             if (lastM != null) {
+                val step = pos - lastM
+                val len = step.distance
+                if (len > 1e-3f) {
+                    val dir = step / len
+                    val prev = markerDir
+                    markerDir = if (prev == null) {
+                        dir
+                    } else {
+                        val mx = prev.x * (1f - MARKER_DIR_EMA) + dir.x * MARKER_DIR_EMA
+                        val my = prev.y * (1f - MARKER_DIR_EMA) + dir.y * MARKER_DIR_EMA
+                        val ml = Vec2(mx, my).distance
+                        // A hard reversal passes the EMA through zero; jump
+                        // to the new direction rather than inventing one.
+                        if (ml < 1e-3f) dir else Vec2(mx / ml, my / ml)
+                    }
+                }
+            }
+            // The chisel edge, not an isotropic ribbon: width follows the
+            // angle between travel and the nib, tilt engages more edge.
+            val nibWidth = chiselNibWidth(
+                sizeFor(tool), tilt,
+                markerDir?.let { kotlin.math.atan2(it.y, it.x) },
+            )
+            if (lastM != null) {
                 // Drawing spends the tip: drain by area covered, against a
                 // tip sized to the chosen marker (bigger nib, bigger felt).
                 val mm = pxPerMm.coerceAtLeast(0.0001f)
-                val areaMm2 = ((pos - lastM).distance / mm) * (width / mm)
+                val areaMm2 = ((pos - lastM).distance / mm) * (nibWidth / mm)
                 val tipMm2 = MARKER_TIP_MM2 *
                     ((sizeFor(tool) / mm) / tool.defaultSizeMm).coerceAtLeast(0.05f)
                 markerSat = (markerSat - areaMm2 / tipMm2).coerceAtLeast(MARKER_SAT_FLOOR)
             }
-            return StrokePoint(pos, width, density, load = markerSat)
+            return StrokePoint(pos, nibWidth, density, load = markerSat)
         }
         if (!tool.usesLoad) return StrokePoint(pos, width, density)
         // Clean water: an infinite, pigmentless charge — nothing spends, nothing
@@ -4304,6 +4341,9 @@ class PaintCanvasView @JvmOverloads constructor(
         const val MARKER_TIP_MM2 = 500f
         const val MARKER_RESAT_TAU_MS = 2500f
         const val MARKER_SAT_FLOOR = 0.25f
+
+        /** Chisel-nib travel-direction smoothing (sensor-noise cleanup only). */
+        const val MARKER_DIR_EMA = 0.3f
 
         // Smearing: through WET paint (inside the laying stroke's wetMs
         // window) the colour swap runs at WET_PER_MM instead, and the brush

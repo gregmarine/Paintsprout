@@ -156,6 +156,10 @@ object StrokeRenderer {
     /** Streak depth a fully dry tip adds (marker felt saturation; load-driven). */
     private const val GRAIN_DRY_STREAK = 0.65f
 
+    /** Turn angle below which the anti-fold bound is skipped (degenerate-math
+     *  guard only — the bound itself self-limits at small angles). */
+    private const val GRAIN_FOLD_MIN_TURN = 0.02f
+
     /**
      * How far into the side-of-lead regime this point is, in [0,1]. Derived
      * from the stored width against the stroke's nominal base — for the
@@ -198,6 +202,24 @@ object StrokeRenderer {
         // noise at sample spacing, and the dense wet-edge rim lanes make
         // every normal swing visible at the stroke start.
         val normals = windowedNormals(pts, arcs)
+
+        // Anti-fold (the wash's per-sample bound): on a tight inner curve a
+        // lane offset past the local centre of curvature crosses its
+        // neighbour's cross-section — the fold glob. Bound each point's
+        // half-width by d/(2·sin(φ/2)) against both neighbours; the tiny-φ
+        // guard only skips degenerate math, the formula self-limits.
+        val hwClamp = FloatArray(n) { max(0.25f, pts[it].width / 2f) }
+        for (i in 1 until n) {
+            val d = (pts[i].position - pts[i - 1].position).distance
+            val dot = (normals[i - 1].x * normals[i].x + normals[i - 1].y * normals[i].y)
+                .coerceIn(-1f, 1f)
+            val phi = kotlin.math.acos(dot)
+            if (phi > GRAIN_FOLD_MIN_TURN) {
+                val bound = d / (2f * sin(phi / 2f)) * 0.9f
+                if (bound < hwClamp[i - 1]) hwClamp[i - 1] = bound
+                if (bound < hwClamp[i]) hwClamp[i] = bound
+            }
+        }
         val chunkPx = if (profile.grainChunkPx > 0f) profile.grainChunkPx else Float.MAX_VALUE
         val verts = FloatArray(n * 4)
         val colors = IntArray(n * 2)
@@ -212,10 +234,14 @@ object StrokeRenderer {
             val p = pts[i]
             val side = grainSide(stroke, p, profile)
             val densBase = p.density * loadAlpha(p.load) * (1f - GRAIN_SIDE_DENSITY_DROP * side)
+            // Where the anti-fold clamp bites, the cross-lane structure fades
+            // toward the core: the inside of a tight turn is interior ink,
+            // not an edge — a pinched wet-edge lane must not read as a rim.
+            val clampRatio = (hwClamp[i] / max(0.25f, p.width / 2f)).coerceIn(0f, 1f)
             // A drying felt tip goes streaky before it goes faint, and its
             // pooled wet edge thins away — no ink to pool. Load is 1 for
             // dry media (pencil), so neither term moves there.
-            val fall = if (profile.grainFalloff < 0f) {
+            val fall = clampRatio * if (profile.grainFalloff < 0f) {
                 profile.grainFalloff * p.load
             } else {
                 (profile.grainFalloff * (1f + GRAIN_SIDE_FALLOFF_BOOST * side)).coerceAtMost(0.85f)
@@ -240,7 +266,7 @@ object StrokeRenderer {
                 var slot = 0
                 for (i in start..end) {
                     val p = pts[i]
-                    val hw = max(0.25f, p.width / 2f)
+                    val hw = hwClamp[i]
                     val a = p.position + normals[i] * (GRAIN_FRACS[lane] * hw)
                     val b = p.position + normals[i] * (GRAIN_FRACS[lane + 1] * hw)
                     verts[slot * 4] = a.x; verts[slot * 4 + 1] = a.y

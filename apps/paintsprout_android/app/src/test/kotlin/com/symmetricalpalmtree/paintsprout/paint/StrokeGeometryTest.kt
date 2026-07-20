@@ -204,4 +204,22 @@ class StrokeGeometryTest {
             worstWindowed > worstRaw,
         )
     }
+
+    @Test
+    fun chiselNibWidthFollowsTravelDirection() {
+        val base = 16f
+        // Across the edge (travel perpendicular to the nib angle): full width.
+        val across = NIB_ANGLE_RAD + (Math.PI / 2).toFloat()
+        assertEquals(base, chiselNibWidth(base, 0f, across), 0.01f)
+        // Along the edge: only the nib's own thickness.
+        assertEquals(base * NIB_FLOOR, chiselNibWidth(base, 0f, NIB_ANGLE_RAD), 0.01f)
+        // Unknown direction (first point): mid engagement, between the two.
+        val unknown = chiselNibWidth(base, 0f, null)
+        assertTrue(unknown > base * NIB_FLOOR && unknown < base)
+        // Full tilt engages more edge.
+        assertEquals(
+            base * (1f + NIB_TILT_ENGAGE),
+            chiselNibWidth(base, TILT_HI_RAD, across), 0.01f,
+        )
+    }
 }

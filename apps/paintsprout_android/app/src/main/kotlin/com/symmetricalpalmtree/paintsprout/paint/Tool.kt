@@ -204,12 +204,14 @@ data class ToolProfile(
             grainSideRegime = true, // laid-over lead deposits lighter + streakier
         )
 
-        // Marker: same feel as the pencil, but a soft/even grain -> chunky marker.
+        // Marker: soft/even dye grain with a chisel nib — width comes from
+        // chiselNibWidth (travel direction + tilt engagement), not from the
+        // profile's isotropic width factors.
         private val MARKER = ToolProfile(
             minPressureFactor = 1.0f,
             maxPressureFactor = 1.0f,
             pressureAffectsWidth = false,
-            tiltGain = 5.5f,
+            tiltGain = 0.0f, // the nib model owns tilt (see chiselNibWidth)
             pressureAffectsDensity = true,
             minDensity = 0.1f,
             maxDensity = 0.82f, // translucent dye: every pass must have headroom to layer
