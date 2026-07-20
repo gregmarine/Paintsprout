@@ -4293,11 +4293,16 @@ class PaintCanvasView @JvmOverloads constructor(
 
         // Felt-tip saturation: TIP_MM2 is the area a fully wet tip covers
         // before going dry at the default size (drain scales with the chosen
-        // size); RESAT_TAU is the wick's recovery time constant (~2s pause
+        // size); RESAT_TAU is the wick's recovery time constant (a ~3s rest
         // feels fresh again); SAT_FLOOR is how dry an infinite-chamber tip
-        // can ever get — always some ink arrives. Tuned by eye on-device.
-        const val MARKER_TIP_MM2 = 600f
-        const val MARKER_RESAT_TAU_MS = 800f
+        // can ever get — always some ink arrives. BALANCE: the wick must NOT
+        // outrun a human hand — at these values slow deliberate strokes
+        // (~30mm/s) stay mostly wet while a sustained moderate scribble
+        // (~80mm/s+) dries to the floor in a few seconds. The first cut
+        // (600/800ms) was tuned against injected strokes, which draw at
+        // superhuman speed — the user felt nothing.
+        const val MARKER_TIP_MM2 = 500f
+        const val MARKER_RESAT_TAU_MS = 2500f
         const val MARKER_SAT_FLOOR = 0.25f
 
         // Smearing: through WET paint (inside the laying stroke's wetMs

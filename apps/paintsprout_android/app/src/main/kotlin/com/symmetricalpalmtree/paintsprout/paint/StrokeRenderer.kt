@@ -154,7 +154,7 @@ object StrokeRenderer {
     private const val GRAIN_SIDE_STREAK_BOOST = 1.4f
 
     /** Streak depth a fully dry tip adds (marker felt saturation; load-driven). */
-    private const val GRAIN_DRY_STREAK = 0.5f
+    private const val GRAIN_DRY_STREAK = 0.65f
 
     /**
      * How far into the side-of-lead regime this point is, in [0,1]. Derived
