@@ -1386,7 +1386,9 @@ class PaintCanvasView @JvmOverloads constructor(
         if (isActive) {
             // A resting pen's end pool grows on screen as it grows on paper;
             // the UP handler freezes the final value for the bake.
-            if (s.tool == Tool.PEN) s.endDwellMs = SystemClock.uptimeMillis() - lastAcceptAtMs
+            if (s.tool == Tool.PEN && s.startDwellMs != 0L) {
+                s.endDwellMs = SystemClock.uptimeMillis() - penMovedAtMs
+            }
             withTransientPoint(s, predictedTailPoint()) { StrokeRenderer.paintStroke(canvas, s, surface) }
         } else {
             // A frozen wash (drying cut short) keeps its as-shown state here too.
@@ -1880,6 +1882,8 @@ class PaintCanvasView @JvmOverloads constructor(
                 markerLastPos = null
                 markerDir = null
                 penDownMs = SystemClock.uptimeMillis()
+                penMovedAtMs = penDownMs
+                penLastRawPos = null
                 penSpeedEma = 0f
                 beginConditioning(
                     event.getPressure(actionIndex),
@@ -1972,12 +1976,15 @@ class PaintCanvasView @JvmOverloads constructor(
                 val stroke = active
                 if (stroke != null && event.getPointerId(actionIndex) == activePointerId) {
                     if (stroke.tool == Tool.PEN) {
-                        // The nib rested here from the last travel until this
-                        // lift: the end pool. A stroke that never travelled
-                        // pools for the whole hold.
+                        // The nib rested here from its last actual MOVEMENT
+                        // until this lift: the end pool. A stroke that never
+                        // travelled pools for the whole hold.
                         val now = SystemClock.uptimeMillis()
-                        stroke.endDwellMs = now - lastAcceptAtMs
-                        if (stroke.points.size == 1) stroke.startDwellMs = now - penDownMs
+                        stroke.endDwellMs = now - penMovedAtMs
+                        if (stroke.startDwellMs == 0L) {
+                            stroke.startDwellMs = now - penDownMs
+                            stroke.endDwellMs = 0L
+                        }
                     }
                     if (stroke === wetStroke) {
                         // The wash stays live past pen-up: it keeps spreading and
@@ -3059,10 +3066,17 @@ class PaintCanvasView @JvmOverloads constructor(
 
     private var lastAcceptAtMs = 0L
 
-    // Pen feel: when this stroke's pointer went down (start-pool dwell is
-    // measured from here to the first travel), and the EMA'd accepted-point
-    // spacing that drives the subtle speed→width thinning.
+    // Pen feel: when this stroke's pointer went down, when its POSITION last
+    // actually moved, and the EMA'd accepted-point spacing that drives the
+    // subtle speed→width thinning. Dwell is measured by position movement,
+    // NOT by accepted points — a resting hand's pressure jitter force-
+    // accepts points continuously (by design, so bearing down in place
+    // grows the dab), and a point-based dwell clock never gets past ~50ms
+    // on a real pen. (Injected strokes have constant pressure and sailed
+    // through — the injected-vs-real trap, third edition.)
     private var penDownMs = 0L
+    private var penMovedAtMs = 0L
+    private var penLastRawPos: Vec2? = null
     private var penSpeedEma = 0f
 
     /**
@@ -3111,6 +3125,19 @@ class PaintCanvasView @JvmOverloads constructor(
         smoothPressure += SMOOTH_ALPHA * (normPressure(rawPressure) - smoothPressure)
         smoothTilt += SMOOTH_ALPHA * (tilt - smoothTilt)
         val pos = Vec2(x, y)
+        // Movement tracking for the pen's dwell pools (see penMovedAtMs).
+        if (stroke.tool == Tool.PEN) {
+            val raw = penLastRawPos
+            if (raw == null) {
+                penLastRawPos = pos
+            } else if ((pos - raw).distance > PEN_MOVE_EPS_PX) {
+                if (stroke.startDwellMs == 0L) {
+                    stroke.startDwellMs = SystemClock.uptimeMillis() - penDownMs
+                }
+                penMovedAtMs = SystemClock.uptimeMillis()
+                penLastRawPos = pos
+            }
+        }
         val last = lastAcceptPos
         if (last != null &&
             (pos - last).distance < MIN_SAMPLE_PX &&
@@ -3124,11 +3151,6 @@ class PaintCanvasView @JvmOverloads constructor(
         val spacing = if (last == null) 0f else (pos - last).distance
         val point = buildPoint(pos, smoothPressure, smoothTilt, spacing)
         stroke.add(point)
-        // The nib rested from pen-down until this first travel: that dwell
-        // is the start pool.
-        if (stroke.tool == Tool.PEN && stroke.points.size == 2 && stroke.startDwellMs == 0L) {
-            stroke.startDwellMs = lastAcceptAtMs - penDownMs
-        }
         // Grow the live-blit bounds (padded when used; see blit helpers).
         activeMaxWidth = max(activeMaxWidth, point.width)
         if (stroke.points.size == 1) {
@@ -4427,6 +4449,10 @@ class PaintCanvasView @JvmOverloads constructor(
         const val PEN_SPEED_THIN = 0.12f
         const val PEN_SPEED_LO_PX = 4f
         const val PEN_SPEED_HI_PX = 30f
+
+        /** Position change that counts as the pen actually MOVING (dwell
+         *  clock); below this is hold jitter, not travel. */
+        const val PEN_MOVE_EPS_PX = 2f
 
         /** Chisel-nib travel-direction smoothing (sensor-noise cleanup only). */
         const val MARKER_DIR_EMA = 0.3f

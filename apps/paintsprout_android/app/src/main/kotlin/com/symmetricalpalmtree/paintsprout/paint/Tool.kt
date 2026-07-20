@@ -324,7 +324,7 @@ data class ToolProfile(
             pressureAffectsWidth = false,
             tiltGain = 0.0f,
             pressureAffectsDensity = true, // pressure -> partial lift: light touch thins, hard press removes
-            minDensity = 0.35f,
+            minDensity = 0.15f, // a feather graze barely lifts — the contrast must be unmistakable
             maxDensity = 1.0f,
             opacity = 1.0f,
             blurFactor = 0.0f,

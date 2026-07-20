@@ -106,7 +106,7 @@ fun resolveDensity(tool: Tool, pressureNorm: Float): Float {
 }
 
 /** Scaled pressure at which the eraser reaches full lift. */
-const val ERASER_FULL_AT = 0.55f
+const val ERASER_FULL_AT = 0.5f
 
 /**
  * Per-point unit normals (perpendicular to the local tangent) for a stroke.
