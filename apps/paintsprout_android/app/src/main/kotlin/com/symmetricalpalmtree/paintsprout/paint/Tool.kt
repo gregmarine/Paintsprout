@@ -226,7 +226,8 @@ data class ToolProfile(
             minPressureFactor = 0.35f,
             maxPressureFactor = 2.2f,
             pressureAffectsWidth = true,
-            tiltGain = 0.4f,
+            tiltGain = 0.7f, // laying the brush over drags its side: notably wider
+
             pressureAffectsDensity = false,
             minDensity = 1.0f,
             maxDensity = 1.0f,

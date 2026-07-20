@@ -586,6 +586,9 @@ object StrokeRenderer {
         if (pts.size == 1) {
             drawBristleDab(canvas, stroke, pts.first(), rgb, layout)
         } else {
+            // The landing pool: pressed at pen-down, before travel — and it
+            // seats the fan's birth, which has no direction to speak of yet.
+            drawBristleDab(canvas, stroke, pts.first(), rgb, layout)
             val normals = strokeNormals(pts).toMutableList()
             windowedTailNormal(pts, bristleTailWindow(layout, pts))?.let {
                 normals[normals.size - 1] = it
@@ -619,25 +622,27 @@ object StrokeRenderer {
     }
 
     /**
-     * A single pressed dab: the bristle fan meeting the paper, not an
-     * airbrushed disc. Short marks splay around a seeded direction over a
-     * faint core that seats them as one footprint; each bristle keeps its
-     * identity (thickness, supply, engagement), so a light touch is a few
-     * hairs and a spent brush leaves almost nothing. Deterministic from the
-     * stroke seed, so the live preview and the bake agree.
+     * A single pressed dab: a brush pushed straight down leaves a pooled
+     * core with a radial crown — the hairs splay outward in every direction,
+     * not along some travel line. Each crown mark keeps its bristle's
+     * identity (thickness, strength, supply, engagement), so a light touch
+     * is a soft pool with a few hairs and a spent brush leaves almost
+     * nothing. Deterministic from the stroke seed, so the live preview and
+     * the bake agree. Also drawn under every stroke's first point (see
+     * [paintBristle]/[appendBristleSegments]): the landing pool is real, and
+     * it seats the fan while the stroke is still too short to know its
+     * direction.
      */
     private fun drawBristleDab(canvas: Canvas, stroke: Stroke, p: StrokePoint, rgb: Int, layout: BristleLayout) {
         val ink = withAlpha(colorAt(p, rgb), brushLoadAlpha(p.load))
         val blur = if (layout.smear > 0.3f) BlurMaskFilter(layout.smear, BlurMaskFilter.Blur.NORMAL) else null
         canvas.drawCircle(
-            p.position.x, p.position.y, p.width * 0.4f,
+            p.position.x, p.position.y, p.width * DAB_CORE_RADIUS,
             Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = scaleAlpha(ink, DAB_CORE_ALPHA); maskFilter = blur
             },
         )
         val theta = bristleHash(0, stroke.seed) * (2.0 * PI).toFloat()
-        val acrossX = -sin(theta)
-        val acrossY = cos(theta)
         val arcs = stroke.arcLengths()
         val alphaS = FloatArray(1)
         val widthS = FloatArray(1)
@@ -647,22 +652,20 @@ object StrokeRenderer {
         for (b in 0 until layout.count) {
             fillBristleScales(layout, b, stroke.points, arcs, 0, 0, alphaS, widthS)
             if (alphaS[0] <= 0.02f) continue
-            val frac = layout.fracs[b]
-            // Off-axis bristles lean a little further out: the fan splays as
-            // it is pressed.
-            val ang = theta + frac * DAB_SPLAY_RAD +
-                (bristleHash(b + 1, layout.salts[b]) - 0.5f) * 0.3f
+            // The fan's cross positions unroll around the full circle, plus a
+            // seeded wobble — a crown, not a comb.
+            val ang = theta + layout.fracs[b] * PI.toFloat() +
+                (bristleHash(b + 1, layout.salts[b]) - 0.5f) * 0.5f
             val bx = cos(ang)
             val by = sin(ang)
-            val cx = p.position.x + acrossX * (frac * p.width * 0.45f)
-            val cy = p.position.y + acrossY * (frac * p.width * 0.45f)
-            val len = p.width *
+            val r0 = p.width * DAB_CROWN_START
+            val r1 = r0 + p.width *
                 (DAB_LEN_LO + (DAB_LEN_HI - DAB_LEN_LO) * bristleHash(b + 77, layout.salts[b]))
-            paint.color = scaleAlpha(ink, alphaS[0])
-            paint.strokeWidth = (layout.halves[b] * 2f * widthS[0]).coerceAtLeast(0.6f)
+            paint.color = scaleAlpha(ink, alphaS[0] * DAB_CROWN_ALPHA)
+            paint.strokeWidth = (layout.halves[b] * 2f * widthS[0] * 0.8f).coerceAtLeast(0.6f)
             canvas.drawLine(
-                cx - bx * len / 2f, cy - by * len / 2f,
-                cx + bx * len / 2f, cy + by * len / 2f, paint,
+                p.position.x + bx * r0, p.position.y + by * r0,
+                p.position.x + bx * r1, p.position.y + by * r1, paint,
             )
         }
     }
@@ -683,6 +686,11 @@ object StrokeRenderer {
         val from = max(0, accumPts - 1) // share the vertex line with what's drawn
         val to = target - 1
         val rgb = stroke.color or OPAQUE_ALPHA
+        // First append: lay the landing pool under the fan, exactly as the
+        // bake will (drawn once — the accumulator persists it).
+        if (accumPts == 0) {
+            drawBristleDab(canvas, stroke, pts.first(), rgb, layout)
+        }
         // Range-local normals: all of [from..to] have both neighbours, so they
         // are final and identical to a whole-stroke computation.
         val normals = strokeNormalsRange(pts, from, to)
@@ -997,14 +1005,16 @@ object StrokeRenderer {
      * which every bristle is on the paper, and the softness of each
      * bristle's own onset below that.
      */
-    private const val ENGAGE_FULL = 0.45f
-    private const val ENGAGE_SOFT = 0.25f
+    private const val ENGAGE_FULL = 0.62f
+    private const val ENGAGE_SOFT = 0.3f
 
-    /** Pressed-dab look: splay arc, mark length range, core seat strength. */
-    private const val DAB_SPLAY_RAD = 0.5f
-    private const val DAB_LEN_LO = 0.30f
-    private const val DAB_LEN_HI = 0.60f
-    private const val DAB_CORE_ALPHA = 0.35f
+    /** Pressed-dab look: pooled core + radial crown of short hair marks. */
+    private const val DAB_CORE_RADIUS = 0.42f
+    private const val DAB_CORE_ALPHA = 0.55f
+    private const val DAB_CROWN_START = 0.26f
+    private const val DAB_CROWN_ALPHA = 0.8f
+    private const val DAB_LEN_LO = 0.10f
+    private const val DAB_LEN_HI = 0.32f
 
     private fun brushLoadAlpha(load: Float): Float =
         if (load >= 1f) 1f else load.coerceAtLeast(0f).pow(BRUSH_LOAD_FADE_EXP)
@@ -1079,7 +1089,7 @@ object StrokeRenderer {
             val n1 = streakNoise(arcs[i] / STREAK_LEN_PX, salt)
             val n2 = streakNoise(arcs[i] / (STREAK_LEN_PX * 1.7f) + 11.3f, salt xor 0x2f77)
             val engage = smooth01((p.width / layout.spread / ENGAGE_FULL - edge) / ENGAGE_SOFT + 1f)
-            alphaOut[k] = wet * engage * (1f - depth * n1)
+            alphaOut[k] = layout.strength[b] * wet * engage * (1f - depth * n1)
             widthOut[k] = (1f - WIDTH_RAG * depth * n2).coerceAtLeast(0.15f)
         }
     }
@@ -1133,6 +1143,13 @@ class BristleLayout(stroke: Stroke, maxWidthFallback: Float) {
     /** Per-bristle noise identity for the along-stroke streak texture. */
     @JvmField val salts: IntArray
 
+    /**
+     * Per-bristle deposit strength. Real hairs don't carry equal paint — the
+     * variation is what makes the fan read as bristles instead of a solid
+     * band — and the edge hairs of the bundle carry the least.
+     */
+    @JvmField val strength: FloatArray
+
     @JvmField val smear: Float
 
     /** The brush's full-pressure footprint width — what [fracs] span. */
@@ -1152,6 +1169,7 @@ class BristleLayout(stroke: Stroke, maxWidthFallback: Float) {
         val hv = FloatArray(n)
         val dr = FloatArray(n)
         val st = IntArray(n)
+        val sg = FloatArray(n)
         var kept = 0
         for (b in 0 until n) {
             // Every bristle draws all its randoms so one bristle's fate never
@@ -1160,27 +1178,39 @@ class BristleLayout(stroke: Stroke, maxWidthFallback: Float) {
             val jitter = rnd.nextDouble().toFloat() - 0.5f
             val widthRnd = rnd.nextDouble().toFloat()
             val dryRnd = rnd.nextDouble().toFloat()
+            val strengthRnd = rnd.nextDouble().toFloat()
             val salt = rnd.nextInt()
             if (gap) continue
             val base = (b + 0.5f) / n * 2f - 1f
             fr[kept] = (base + jitter * (2f / n) * 0.8f).coerceIn(-1f, 1f)
             val bw = max(0.6f, spacing * (0.9f + widthRnd * 0.9f))
-            hv[kept] = bw / 2f + smear * 2f
+            // One smear margin, not two: bristles must not fuse into a band —
+            // the gaps that open as pressure spreads the fan are the look.
+            hv[kept] = bw / 2f + smear
             val edgeness = abs(base).pow(1.2f)
             dr[kept] = ((DRY_EDGE_LO + (DRY_EDGE_HI - DRY_EDGE_LO) * edgeness) *
                 (0.7f + 0.6f * dryRnd)).coerceAtMost(0.9f)
             st[kept] = salt
+            sg[kept] = (STRENGTH_LO + (1f - STRENGTH_LO) * strengthRnd) *
+                (1f - EDGE_HAIR_FADE * abs(base))
             kept++
         }
         fracs = fr.copyOf(kept)
         halves = hv.copyOf(kept)
         dryAt = dr.copyOf(kept)
         salts = st.copyOf(kept)
+        strength = sg.copyOf(kept)
     }
 
     private companion object {
         /** Dry-out threshold range from the fan's center to its edge. */
         const val DRY_EDGE_LO = 0.08f
         const val DRY_EDGE_HI = 0.55f
+
+        /** Weakest per-bristle deposit strength (strongest is 1). */
+        const val STRENGTH_LO = 0.55f
+
+        /** How much lighter the bundle's outermost hairs deposit. */
+        const val EDGE_HAIR_FADE = 0.25f
     }
 }
