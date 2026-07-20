@@ -118,6 +118,31 @@ fun strokeNormalsRange(pts: List<StrokePoint>, from: Int, to: Int): List<Vec2> {
 }
 
 /**
+ * The unit normal at a stroke's last point, measured over an arc-length
+ * [window] instead of the final segment. The raw tail normal follows every
+ * sensor wobble of the newest sample, and a bristle fan pivots laterally
+ * around the tail by half the brush width times that swing — visible jitter.
+ * A window about a brush-width long is the same steadying the wash geometry
+ * uses: at the scale of its own footprint the tool is rigid. Returns null
+ * when the chord collapses (coincident points), meaning: keep the segment
+ * normal.
+ */
+fun windowedTailNormal(pts: List<StrokePoint>, window: Float): Vec2? {
+    if (pts.size < 2) return null
+    var j = pts.size - 1
+    var acc = 0f
+    while (j > 0 && acc < window) {
+        acc += (pts[j].position - pts[j - 1].position).distance
+        j--
+    }
+    val chord = pts.last().position - pts[j].position
+    val len = chord.distance
+    if (len < 1e-3f) return null
+    val dir = chord / len
+    return Vec2(-dir.y, dir.x)
+}
+
+/**
  * A single closed polygon covering the whole variable-width stroke: down the
  * left edge (position + normal*halfWidth) and back up the right edge. Returns
  * the ordered polygon vertices; the renderer turns them into a filled `Path`

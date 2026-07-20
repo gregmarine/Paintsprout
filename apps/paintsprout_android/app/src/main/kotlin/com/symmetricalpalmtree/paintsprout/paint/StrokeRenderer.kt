@@ -7,9 +7,15 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import java.util.Random
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /**
  * Renders a [Stroke] onto an `android.graphics.Canvas`. Shared by the live
@@ -578,24 +584,33 @@ object StrokeRenderer {
         val layer = canvas.saveLayer(bounds, Paint().apply { alpha = alpha255(profile.opacity) })
         val pts = stroke.points
         if (pts.size == 1) {
-            drawBristleDab(canvas, pts.first(), rgb, layout)
+            drawBristleDab(canvas, stroke, pts.first(), rgb, layout)
         } else {
-            val normals = strokeNormals(pts)
+            val normals = strokeNormals(pts).toMutableList()
+            windowedTailNormal(pts, bristleTailWindow(layout, pts))?.let {
+                normals[normals.size - 1] = it
+            }
+            val arcs = stroke.arcLengths()
             val ink = IntArray(pts.size) { i ->
-                withAlpha(colorAt(pts[i], rgb), loadAlpha(pts[i].load))
+                withAlpha(colorAt(pts[i], rgb), brushLoadAlpha(pts[i].load))
             }
             // Reused across bristles; two slots spare for the tapered ends.
             val verts = FloatArray((pts.size + 2) * 4)
             val colors = IntArray((pts.size + 2) * 2)
+            val alphaS = FloatArray(pts.size)
+            val widthS = FloatArray(pts.size)
             val meshPaint = Paint()
             for (b in 0 until layout.count) {
+                fillBristleScales(layout, b, pts, arcs, 0, pts.size - 1, alphaS, widthS)
                 bristleSpan(
                     canvas, pts, normals, ink, layout.fracs[b], layout.halves[b], -1f,
                     0, pts.size - 1, withHead = true, withTail = true, verts, colors, meshPaint,
+                    alphaScale = alphaS, widthScale = widthS,
                 )
                 bristleSpan(
                     canvas, pts, normals, ink, layout.fracs[b], layout.halves[b], 1f,
                     0, pts.size - 1, withHead = true, withTail = true, verts, colors, meshPaint,
+                    alphaScale = alphaS, widthScale = widthS,
                 )
             }
         }
@@ -603,15 +618,53 @@ object StrokeRenderer {
         canvas.restoreToCount(layer)
     }
 
-    /** A single pressed dab: a soft disc in the ink the brush carried. */
-    private fun drawBristleDab(canvas: Canvas, p: StrokePoint, rgb: Int, layout: BristleLayout) {
+    /**
+     * A single pressed dab: the bristle fan meeting the paper, not an
+     * airbrushed disc. Short marks splay around a seeded direction over a
+     * faint core that seats them as one footprint; each bristle keeps its
+     * identity (thickness, supply, engagement), so a light touch is a few
+     * hairs and a spent brush leaves almost nothing. Deterministic from the
+     * stroke seed, so the live preview and the bake agree.
+     */
+    private fun drawBristleDab(canvas: Canvas, stroke: Stroke, p: StrokePoint, rgb: Int, layout: BristleLayout) {
+        val ink = withAlpha(colorAt(p, rgb), brushLoadAlpha(p.load))
         val blur = if (layout.smear > 0.3f) BlurMaskFilter(layout.smear, BlurMaskFilter.Blur.NORMAL) else null
         canvas.drawCircle(
-            p.position.x, p.position.y, p.width / 2f,
+            p.position.x, p.position.y, p.width * 0.4f,
             Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = withAlpha(colorAt(p, rgb), loadAlpha(p.load)); maskFilter = blur
+                color = scaleAlpha(ink, DAB_CORE_ALPHA); maskFilter = blur
             },
         )
+        val theta = bristleHash(0, stroke.seed) * (2.0 * PI).toFloat()
+        val acrossX = -sin(theta)
+        val acrossY = cos(theta)
+        val arcs = stroke.arcLengths()
+        val alphaS = FloatArray(1)
+        val widthS = FloatArray(1)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            strokeCap = Paint.Cap.ROUND; maskFilter = blur
+        }
+        for (b in 0 until layout.count) {
+            fillBristleScales(layout, b, stroke.points, arcs, 0, 0, alphaS, widthS)
+            if (alphaS[0] <= 0.02f) continue
+            val frac = layout.fracs[b]
+            // Off-axis bristles lean a little further out: the fan splays as
+            // it is pressed.
+            val ang = theta + frac * DAB_SPLAY_RAD +
+                (bristleHash(b + 1, layout.salts[b]) - 0.5f) * 0.3f
+            val bx = cos(ang)
+            val by = sin(ang)
+            val cx = p.position.x + acrossX * (frac * p.width * 0.45f)
+            val cy = p.position.y + acrossY * (frac * p.width * 0.45f)
+            val len = p.width *
+                (DAB_LEN_LO + (DAB_LEN_HI - DAB_LEN_LO) * bristleHash(b + 77, layout.salts[b]))
+            paint.color = scaleAlpha(ink, alphaS[0])
+            paint.strokeWidth = (layout.halves[b] * 2f * widthS[0]).coerceAtLeast(0.6f)
+            canvas.drawLine(
+                cx - bx * len / 2f, cy - by * len / 2f,
+                cx + bx * len / 2f, cy + by * len / 2f, paint,
+            )
+        }
     }
 
     /**
@@ -633,21 +686,27 @@ object StrokeRenderer {
         // Range-local normals: all of [from..to] have both neighbours, so they
         // are final and identical to a whole-stroke computation.
         val normals = strokeNormalsRange(pts, from, to)
+        val arcs = stroke.arcLengths()
         val ink = IntArray(to - from + 1) { k ->
             val p = pts[from + k]
-            withAlpha(colorAt(p, rgb), loadAlpha(p.load))
+            withAlpha(colorAt(p, rgb), brushLoadAlpha(p.load))
         }
         val verts = FloatArray((to - from + 3) * 4)
         val colors = IntArray((to - from + 3) * 2)
+        val alphaS = FloatArray(to - from + 1)
+        val widthS = FloatArray(to - from + 1)
         val paint = Paint()
         for (b in 0 until layout.count) {
+            fillBristleScales(layout, b, pts, arcs, from, to, alphaS, widthS)
             bristleSpan(
                 canvas, pts, normals, ink, layout.fracs[b], layout.halves[b], -1f,
                 from, to, withHead = from == 0, withTail = false, verts, colors, paint, base = from,
+                alphaScale = alphaS, widthScale = widthS,
             )
             bristleSpan(
                 canvas, pts, normals, ink, layout.fracs[b], layout.halves[b], 1f,
                 from, to, withHead = from == 0, withTail = false, verts, colors, paint, base = from,
+                alphaScale = alphaS, widthScale = widthS,
             )
         }
         return target
@@ -661,28 +720,40 @@ object StrokeRenderer {
         val pts = stroke.points
         val n = pts.size
         if (n == 1) {
-            drawBristleDab(canvas, pts.first(), stroke.color or OPAQUE_ALPHA, layout)
+            drawBristleDab(canvas, stroke, pts.first(), stroke.color or OPAQUE_ALPHA, layout)
             return
         }
         val from = max(0, n - tailPoints)
         val count = n - from
         val rgb = stroke.color or OPAQUE_ALPHA
-        val normals = strokeNormalsRange(pts, from, n - 1)
+        val normals = strokeNormalsRange(pts, from, n - 1).toMutableList()
+        // The raw tail normal swings with every sensor wobble and pivots the
+        // whole fan around the newest point; measure it over a brush-width
+        // window instead. The bake does the same, so pen-up changes nothing.
+        windowedTailNormal(pts, bristleTailWindow(layout, pts))?.let {
+            normals[normals.size - 1] = it
+        }
+        val arcs = stroke.arcLengths()
         val ink = IntArray(count) { k ->
             val p = pts[from + k]
-            withAlpha(colorAt(p, rgb), loadAlpha(p.load))
+            withAlpha(colorAt(p, rgb), brushLoadAlpha(p.load))
         }
         val verts = FloatArray((count + 2) * 4)
         val colors = IntArray((count + 2) * 2)
+        val alphaS = FloatArray(count)
+        val widthS = FloatArray(count)
         val paint = Paint()
         for (b in 0 until layout.count) {
+            fillBristleScales(layout, b, pts, arcs, from, n - 1, alphaS, widthS)
             bristleSpan(
                 canvas, pts, normals, ink, layout.fracs[b], layout.halves[b], -1f,
                 from, n - 1, withHead = false, withTail = true, verts, colors, paint, base = from,
+                alphaScale = alphaS, widthScale = widthS,
             )
             bristleSpan(
                 canvas, pts, normals, ink, layout.fracs[b], layout.halves[b], 1f,
                 from, n - 1, withHead = false, withTail = true, verts, colors, paint, base = from,
+                alphaScale = alphaS, widthScale = widthS,
             )
         }
     }
@@ -702,9 +773,14 @@ object StrokeRenderer {
      *
      * [withHead]/[withTail] add the tapered end caps — only the stroke's true
      * ends get them; incremental appends join flush at shared points instead.
-     * [base] is the point index that [normals] and [ink] entry 0 correspond to
-     * (range-local arrays). [verts] and [colors] are scratch owned by the
-     * caller; this runs dozens of times a frame and must not allocate.
+     * [base] is the point index that [normals], [ink], [alphaScale] and
+     * [widthScale] entry 0 correspond to (range-local arrays). [verts] and
+     * [colors] are scratch owned by the caller; this runs dozens of times a
+     * frame and must not allocate.
+     *
+     * [alphaScale]/[widthScale] are this bristle's per-point supply and edge
+     * modulation (see [fillBristleScales]) — pure functions of stored stroke
+     * data, so an incremental append and the bake agree at shared vertices.
      */
     private fun bristleSpan(
         canvas: Canvas,
@@ -722,13 +798,21 @@ object StrokeRenderer {
         colors: IntArray,
         paint: Paint,
         base: Int = 0,
+        alphaScale: FloatArray? = null,
+        widthScale: FloatArray? = null,
     ) {
         fun normalAt(i: Int) = normals[i - base]
         fun spineAt(i: Int) = pts[i].position + normalAt(i) * (frac * pts[i].width / 2f)
+        fun halfAt(i: Int) = halfWidth * (widthScale?.get(i - base) ?: 1f)
+        fun inkAt(i: Int): Int {
+            val c = ink[i - base]
+            val s = alphaScale?.get(i - base) ?: 1f
+            return if (s >= 1f) c else scaleAlpha(c, s)
+        }
 
         var slot = 0
-        fun put(spine: Vec2, normal: Vec2, inkColor: Int) {
-            val edge = spine + normal * (side * halfWidth)
+        fun put(spine: Vec2, normal: Vec2, inkColor: Int, hw: Float) {
+            val edge = spine + normal * (side * hw)
             verts[slot * 4] = edge.x; verts[slot * 4 + 1] = edge.y
             verts[slot * 4 + 2] = spine.x; verts[slot * 4 + 3] = spine.y
             // Same hue at the edge, no coverage — so it fades out rather than
@@ -744,12 +828,12 @@ object StrokeRenderer {
         // it. Taper the true ends to nothing instead.
         if (withHead) {
             val headDir = tangentOf(normalAt(from))
-            put(spineAt(from) - headDir * halfWidth, normalAt(from), ink[from - base] and 0x00FFFFFF)
+            put(spineAt(from) - headDir * halfAt(from), normalAt(from), ink[from - base] and 0x00FFFFFF, halfAt(from))
         }
-        for (i in from..to) put(spineAt(i), normalAt(i), ink[i - base])
+        for (i in from..to) put(spineAt(i), normalAt(i), inkAt(i), halfAt(i))
         if (withTail) {
             val tailDir = tangentOf(normalAt(to))
-            put(spineAt(to) + tailDir * halfWidth, normalAt(to), ink[to - base] and 0x00FFFFFF)
+            put(spineAt(to) + tailDir * halfAt(to), normalAt(to), ink[to - base] and 0x00FFFFFF, halfAt(to))
         }
 
         canvas.drawVertices(
@@ -878,6 +962,128 @@ object StrokeRenderer {
     private fun loadAlpha(load: Float): Float =
         if (load >= 1f) 1f else Math.pow(load.coerceAtLeast(0f).toDouble(), LOAD_FADE_EXP.toDouble()).toFloat()
 
+    // --- Bristle drying and texture -----------------------------------------
+    //
+    // A draining BRUSH does not dim like an airbrush: individual bristles run
+    // out, outer ones first, and the mark thins into streaks while what still
+    // deposits stays strong. So the bristle path keeps only a gentle global
+    // fade and lets per-bristle dropout carry the drain. Everything below is a
+    // pure function of stored stroke data (load, width, positions) plus the
+    // seeded layout, so live preview, incremental appends and the bake agree.
+
+    /** The bristle path's own, much gentler global fade (dropout does the rest). */
+    private const val BRUSH_LOAD_FADE_EXP = 0.3f
+
+    /** Load span over which one bristle fades from full supply to nothing. */
+    private const val DRY_BAND = 0.15f
+
+    /** Along-stroke texture wavelength, buffer px. */
+    private const val STREAK_LEN_PX = 14f
+
+    /** Texture depth on a loaded bristle vs one approaching dry. */
+    private const val STREAK_WET = 0.10f
+    private const val STREAK_DRY = 0.55f
+
+    /** How raggedy a drying bristle's edge gets (fraction of its thickness). */
+    private const val WIDTH_RAG = 0.45f
+
+    /** A fast drag starves transfer: load knocked off, ramping over spacing. */
+    private const val SPEED_DRY_SPAN = 0.22f
+    private const val SPEED_LO_PX = 8f
+    private const val SPEED_HI_PX = 40f
+
+    /**
+     * Pressure engagement: the width ratio (point width / full spread) at
+     * which every bristle is on the paper, and the softness of each
+     * bristle's own onset below that.
+     */
+    private const val ENGAGE_FULL = 0.45f
+    private const val ENGAGE_SOFT = 0.25f
+
+    /** Pressed-dab look: splay arc, mark length range, core seat strength. */
+    private const val DAB_SPLAY_RAD = 0.5f
+    private const val DAB_LEN_LO = 0.30f
+    private const val DAB_LEN_HI = 0.60f
+    private const val DAB_CORE_ALPHA = 0.35f
+
+    private fun brushLoadAlpha(load: Float): Float =
+        if (load >= 1f) 1f else load.coerceAtLeast(0f).pow(BRUSH_LOAD_FADE_EXP)
+
+    private fun smooth01(t: Float): Float {
+        val c = t.coerceIn(0f, 1f)
+        return c * c * (3f - 2f * c)
+    }
+
+    /** Deterministic per-cell hash in [0,1) — murmur-style finalizer. */
+    private fun bristleHash(cell: Int, salt: Int): Float {
+        var h = cell * -0x61c88647 xor salt
+        h = h xor (h ushr 16); h *= -0x7a143595
+        h = h xor (h ushr 13); h *= -0x3d4d51cb
+        h = h xor (h ushr 16)
+        return (h and 0x7FFFFFFF) * (1f / 0x80000000L.toFloat())
+    }
+
+    /** Smooth 1-D value noise in [0,1), parameterized by arc length. */
+    private fun streakNoise(x: Float, salt: Int): Float {
+        val c = floor(x)
+        val t = x - c
+        val cell = c.toInt()
+        val a = bristleHash(cell, salt)
+        val b = bristleHash(cell + 1, salt)
+        return a + (b - a) * smooth01(t)
+    }
+
+    /** Arc-length window for the steadied tail normal: about a brush width. */
+    private fun bristleTailWindow(layout: BristleLayout, pts: List<StrokePoint>): Float =
+        max(pts.last().width, layout.spread * 0.5f)
+
+    /**
+     * Per-point alpha and edge-width multipliers for bristle [b] over points
+     * [from..to], written range-local into [alphaOut]/[widthOut] (entry 0 =
+     * point [from]). This is where the brush's physics reads:
+     *
+     *  - SUPPLY: the bristle holds full strength while the (speed-starved)
+     *    load is above its own seeded threshold, then fades out over
+     *    [DRY_BAND] — outer bristles carry higher thresholds, so they dry
+     *    first and the stroke thins from its edges inward.
+     *  - TEXTURE: seeded value noise along arc length breaks the deposit into
+     *    streaks, shallow on a wet bristle, deep as it approaches dry; a
+     *    second phase ruffles the edge width the same way.
+     *  - ENGAGEMENT: at light pressure only the inner bristles touch; an
+     *    outer bristle settles on as the stroke's width ratio spreads past
+     *    its position in the fan.
+     */
+    private fun fillBristleScales(
+        layout: BristleLayout,
+        b: Int,
+        pts: List<StrokePoint>,
+        arcs: FloatArray,
+        from: Int,
+        to: Int,
+        alphaOut: FloatArray,
+        widthOut: FloatArray,
+    ) {
+        val dryAt = layout.dryAt[b]
+        val salt = layout.salts[b]
+        val edge = abs(layout.fracs[b])
+        for (i in from..to) {
+            val k = i - from
+            val p = pts[i]
+            val spacing = if (i == 0) 0f else arcs[i] - arcs[i - 1]
+            val eff = p.load -
+                SPEED_DRY_SPAN * smooth01((spacing - SPEED_LO_PX) / (SPEED_HI_PX - SPEED_LO_PX))
+            val wet = smooth01((eff - (dryAt - DRY_BAND)) / DRY_BAND)
+            // Texture starts building before the bristle actually dies.
+            val drought = smooth01((dryAt + 2f * DRY_BAND - eff) / (3f * DRY_BAND))
+            val depth = STREAK_WET + (STREAK_DRY - STREAK_WET) * drought
+            val n1 = streakNoise(arcs[i] / STREAK_LEN_PX, salt)
+            val n2 = streakNoise(arcs[i] / (STREAK_LEN_PX * 1.7f) + 11.3f, salt xor 0x2f77)
+            val engage = smooth01((p.width / layout.spread / ENGAGE_FULL - edge) / ENGAGE_SOFT + 1f)
+            alphaOut[k] = wet * engage * (1f - depth * n1)
+            widthOut[k] = (1f - WIDTH_RAG * depth * n2).coerceAtLeast(0.15f)
+        }
+    }
+
     /** The colour to deposit at [p] — what the brush carried, else the stroke's. */
     private fun colorAt(p: StrokePoint, rgb: Int): Int =
         if (p.color != INHERIT_COLOR) p.color or OPAQUE_ALPHA else rgb
@@ -890,6 +1096,12 @@ object StrokeRenderer {
 
     private fun withAlpha(rgb: Int, a: Float): Int =
         (alpha255(a) shl 24) or (rgb and 0x00FFFFFF)
+
+    /** [color] with its alpha multiplied by [s] (hue untouched). */
+    private fun scaleAlpha(color: Int, s: Float): Int {
+        val a = ((color ushr 24) * s.coerceIn(0f, 1f)).roundToInt().coerceIn(0, 255)
+        return (a shl 24) or (color and 0x00FFFFFF)
+    }
 }
 
 /**
@@ -909,13 +1121,28 @@ object StrokeRenderer {
 class BristleLayout(stroke: Stroke, maxWidthFallback: Float) {
     @JvmField val fracs: FloatArray
     @JvmField val halves: FloatArray
+
+    /**
+     * Per-bristle load threshold: the supply level at which this bristle
+     * starts to fade out. Outer bristles carry higher thresholds — they dry
+     * first, so a draining stroke thins from its edges inward instead of
+     * dimming uniformly.
+     */
+    @JvmField val dryAt: FloatArray
+
+    /** Per-bristle noise identity for the along-stroke streak texture. */
+    @JvmField val salts: IntArray
+
     @JvmField val smear: Float
+
+    /** The brush's full-pressure footprint width — what [fracs] span. */
+    @JvmField val spread: Float
 
     val count: Int get() = fracs.size
 
     init {
         val profile = ToolProfile.of(stroke.tool)
-        val spread =
+        spread =
             if (stroke.baseWidth > 0f) stroke.baseWidth * profile.maxPressureFactor else maxWidthFallback
         smear = profile.blurFactor * spread * 0.55f
         val n = (spread / 2.5f).roundToInt().coerceIn(8, 22)
@@ -923,17 +1150,37 @@ class BristleLayout(stroke: Stroke, maxWidthFallback: Float) {
         val rnd = Random(stroke.seed.toLong())
         val fr = FloatArray(n)
         val hv = FloatArray(n)
+        val dr = FloatArray(n)
+        val st = IntArray(n)
         var kept = 0
         for (b in 0 until n) {
-            if (rnd.nextDouble() < 0.1) continue // dry-brush gap
+            // Every bristle draws all its randoms so one bristle's fate never
+            // shifts another's identity.
+            val gap = rnd.nextDouble() < 0.1 // dry-brush gap
+            val jitter = rnd.nextDouble().toFloat() - 0.5f
+            val widthRnd = rnd.nextDouble().toFloat()
+            val dryRnd = rnd.nextDouble().toFloat()
+            val salt = rnd.nextInt()
+            if (gap) continue
             val base = (b + 0.5f) / n * 2f - 1f
-            fr[kept] = (base + (rnd.nextDouble().toFloat() - 0.5f) * (2f / n) * 0.8f)
-                .coerceIn(-1f, 1f)
-            val bw = max(0.6f, spacing * (0.9f + rnd.nextDouble().toFloat() * 0.9f))
+            fr[kept] = (base + jitter * (2f / n) * 0.8f).coerceIn(-1f, 1f)
+            val bw = max(0.6f, spacing * (0.9f + widthRnd * 0.9f))
             hv[kept] = bw / 2f + smear * 2f
+            val edgeness = abs(base).pow(1.2f)
+            dr[kept] = ((DRY_EDGE_LO + (DRY_EDGE_HI - DRY_EDGE_LO) * edgeness) *
+                (0.7f + 0.6f * dryRnd)).coerceAtMost(0.9f)
+            st[kept] = salt
             kept++
         }
         fracs = fr.copyOf(kept)
         halves = hv.copyOf(kept)
+        dryAt = dr.copyOf(kept)
+        salts = st.copyOf(kept)
+    }
+
+    private companion object {
+        /** Dry-out threshold range from the fan's center to its edge. */
+        const val DRY_EDGE_LO = 0.08f
+        const val DRY_EDGE_HI = 0.55f
     }
 }

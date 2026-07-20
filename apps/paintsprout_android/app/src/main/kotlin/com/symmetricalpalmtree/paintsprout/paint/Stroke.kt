@@ -97,6 +97,38 @@ class Stroke(
     }
 
     val isEmpty: Boolean get() = points.isEmpty()
+
+    private var arcCache = FloatArray(0)
+    private var arcCount = 0
+
+    /**
+     * Cumulative arc length at each point, in buffer px — entry i is valid for
+     * i < [points]`.size`. The bristle renderer parameterizes its along-stroke
+     * texture by this, so the same canvas distance always gets the same streak
+     * regardless of how the points were captured or replayed.
+     *
+     * Incremental: interior entries never change (points only append), but the
+     * final entry is re-derived on every call because the live preview
+     * temporarily appends a predicted point and then removes it — the cached
+     * value at that index may belong to a point that no longer exists.
+     */
+    fun arcLengths(): FloatArray {
+        val n = points.size
+        if (n == 0) return arcCache
+        if (arcCache.size < n) arcCache = arcCache.copyOf(maxOf(n, arcCache.size * 2, 64))
+        arcCache[0] = 0f
+        if (n > 1) {
+            // The last cached entry may have belonged to a removed transient
+            // point, so re-derive from there; everything before it is real.
+            var i = (arcCount - 1).coerceIn(1, n - 1)
+            while (i < n) {
+                arcCache[i] = arcCache[i - 1] + (points[i].position - points[i - 1].position).distance
+                i++
+            }
+        }
+        arcCount = n
+        return arcCache
+    }
 }
 
 /**
