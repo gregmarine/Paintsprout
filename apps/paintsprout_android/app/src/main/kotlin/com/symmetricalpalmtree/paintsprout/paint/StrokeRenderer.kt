@@ -1103,23 +1103,11 @@ object StrokeRenderer {
     /** Droplets are batched into one drawPoints per size bucket. */
     private const val DROP_BUCKETS = 8
 
-    // Drips: where the field builds up heavy — a dwell cluster — the paint
-    // beads and RUNS. The pool is a lookback count of recent points landing
-    // close together, so it derives purely from stored stroke data; the
-    // hash gate makes runs stochastic but replay-exact. Runs go +y (screen
-    // down) — the canvas has no accelerometer opinion.
-    private const val DRIP_POOL_LOOKBACK = 48
-    // ABSOLUTE radius, deliberately small: dwelling stacks points at the
-    // same spot (all 48 qualify), while ordinary travel at ~1.3px spacing
-    // puts only ~7 lookback points this close — a width-scaled radius made
-    // every moving stroke read as "heavy" and rain drips (device round 1).
-    private const val DRIP_POOL_RADIUS_PX = 4f
-    private const val DRIP_POOL_MIN = 14
-    private const val DRIP_CHANCE = 0.06f
-    private const val DRIP_LEN_LO = 16f
-    const val DRIP_LEN_HI = 90f
-    private const val DRIP_WIDTH = 2f
-    private const val DRIP_BEAD_R = 2.3f
+    // Drips (runs shed by heavy buildup) were built here and REMOVED at the
+    // user's verdict — the tool settled as a stipple/spray-can field. If a
+    // wet "spray paint" tool is ever built, the lookback-pool approach is
+    // in history at 632046f (pool radius must be small ABSOLUTE px, or
+    // ordinary travel self-qualifies as buildup).
 
     /**
      * The bake: the whole droplet field inside one opacity layer, tooth on
@@ -1132,8 +1120,7 @@ object StrokeRenderer {
         toothScale: Float, maxWidth: Float, minX: Float, minY: Float, maxX: Float, maxY: Float,
     ) {
         val pad = maxWidth / 2f * DROP_SCATTER + SPATTER_SIZE_HI + 1f
-        // Runs extend below the field, never above.
-        val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad + DRIP_LEN_HI + DRIP_BEAD_R)
+        val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
         val layer = canvas.saveLayer(bounds, Paint().apply { alpha = alpha255(profile.opacity) })
         appendDropletSegments(canvas, stroke, 0)
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
@@ -1172,35 +1159,6 @@ object StrokeRenderer {
             paint.strokeCap = Paint.Cap.ROUND
             paint.strokeWidth = bucketSize(b)
             canvas.drawPoints(buckets[b], 0, counts[b] * 2, paint)
-        }
-
-        // Drips, decided per appended point from its lookback pool.
-        var dripPaint: Paint? = null
-        for (i in fromIndex until pts.size) {
-            val p = pts[i]
-            val rPool = DRIP_POOL_RADIUS_PX
-            var pool = 0
-            var j = i - 1
-            val jEnd = max(0, i - DRIP_POOL_LOOKBACK)
-            while (j >= jEnd) {
-                val q = pts[j]
-                val dx = p.position.x - q.position.x
-                val dy = p.position.y - q.position.y
-                if (dx * dx + dy * dy <= rPool * rPool) pool++
-                j--
-            }
-            if (pool < DRIP_POOL_MIN) continue
-            if (bristleHash(i, seed xor 0x77aa11) > DRIP_CHANCE) continue
-            val lenU = bristleHash(i, seed xor 0x33cc55)
-            val heavy = (pool.toFloat() / DRIP_POOL_LOOKBACK).coerceAtMost(1f)
-            val len = DRIP_LEN_LO + (DRIP_LEN_HI - DRIP_LEN_LO) * lenU * heavy
-            val x = p.position.x + (bristleHash(i, seed xor 0x5e0f) - 0.5f) * p.width * 0.4f
-            val y0 = p.position.y
-            val dp = dripPaint ?: Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = rgb; strokeCap = Paint.Cap.ROUND; strokeWidth = DRIP_WIDTH
-            }.also { dripPaint = it }
-            canvas.drawLine(x, y0, x, y0 + len, dp)
-            canvas.drawCircle(x, y0 + len, DRIP_BEAD_R, dp)
         }
     }
 

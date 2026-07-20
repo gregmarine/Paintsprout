@@ -67,7 +67,8 @@ physically rotate the tablet instead.
 | ⬜ | Highlighter | Multiplies over what's beneath |
 | ⬜ | Clean-water brush | Rewets and lifts pigment — variant of machinery we already own (watercolor washes out paint) |
 | ⬜ | Palette knife | Scrapes and deposits |
-| ⬜ | Airbrush | Dwell-based buildup (accumulates while held still) — differs from spray's stamp-along-path |
+| ⬜ | Airbrush | Dwell-based buildup (accumulates while held still) — spray now has basic dwell (feel phase); this is the finer gradient-shading tool |
+| ⬜ | Spray paint (wet) | Dense wet CORE that reads as liquid paint (maybe with runs/drips), scattered halo outside — the feel-phase spray settled as a stipple/spray-can droplet field instead, the way the marker found its identity (user idea, 2026-07-20; drips were built and removed — the pool/lookback approach is in git history at 632046f) |
 
 ### Modifying tools (act on existing paint)
 | Status | Item | Notes |

@@ -1418,7 +1418,6 @@ class PaintCanvasView @JvmOverloads constructor(
         }
         val bounds = RectF(activeBounds).apply {
             inset(-pad, -pad)
-            if (droplet) bottom += StrokeRenderer.DRIP_LEN_HI + 4f // runs go down
             intersect(0f, 0f, logicalW.toFloat(), logicalH.toFloat())
         }
         val lp = Paint().apply { alpha = (profile.opacity * 255f).roundToInt().coerceIn(0, 255) }
