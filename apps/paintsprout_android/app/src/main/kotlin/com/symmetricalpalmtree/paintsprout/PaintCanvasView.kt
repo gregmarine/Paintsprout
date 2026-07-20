@@ -1410,13 +1410,15 @@ class PaintCanvasView @JvmOverloads constructor(
         val profile = com.symmetricalpalmtree.paintsprout.paint.ToolProfile.of(stroke.tool)
         val tooth = ToothCache.toothFor(surface, stroke.tool)
         // The droplet cone overshoots the nominal width; blur pads the rest.
-        val pad = if (profile.renderStyle == com.symmetricalpalmtree.paintsprout.paint.RenderStyle.DROPLET) {
+        val droplet = profile.renderStyle == com.symmetricalpalmtree.paintsprout.paint.RenderStyle.DROPLET
+        val pad = if (droplet) {
             activeMaxWidth / 2f * StrokeRenderer.DROP_SCATTER + 10f
         } else {
             activeMaxWidth / 2f + activeMaxWidth * profile.blurFactor * 3f + 8f
         }
         val bounds = RectF(activeBounds).apply {
             inset(-pad, -pad)
+            if (droplet) bottom += StrokeRenderer.DRIP_LEN_HI + 4f // runs go down
             intersect(0f, 0f, logicalW.toFloat(), logicalH.toFloat())
         }
         val lp = Paint().apply { alpha = (profile.opacity * 255f).roundToInt().coerceIn(0, 255) }
@@ -1884,6 +1886,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     water = tool == Tool.WATERCOLOR && waterMode,
                 )
                 active = stroke
+                if (tool == Tool.SPRAY) {
+                    removeCallbacks(sprayDwell)
+                    postDelayed(sprayDwell, SPRAY_DWELL_MS)
+                }
                 if (tool == Tool.WATERCOLOR) {
                     startWetSim(stroke)
                     startDrying(stroke)
@@ -1980,6 +1986,7 @@ class PaintCanvasView @JvmOverloads constructor(
                     active = null
                     activeClip = null
                     activePointerId = INVALID_POINTER
+                    removeCallbacks(sprayDwell)
                     endActiveExtras()
                     invalidate()
                 }
@@ -3038,6 +3045,34 @@ class PaintCanvasView @JvmOverloads constructor(
     private fun normPressure(raw: Float): Float =
         if (pressureMax > 0f) (raw / pressureMax).coerceIn(0f, 1f) else 1f
 
+    private var lastAcceptAtMs = 0L
+
+    /**
+     * Keeps the spray alive under a resting pen — a real can doesn't stop
+     * when your hand does. Every tick with no fresh accepted point appends
+     * an in-place point through the normal capture path, so the buildup is
+     * ordinary stored stroke data: droplets (and their drips) replay
+     * exactly on undo/redo, and the bake needs nothing special.
+     */
+    private val sprayDwell = object : Runnable {
+        override fun run() {
+            val s = active
+            if (s == null || s.tool != Tool.SPRAY) return
+            val pos = lastAcceptPos
+            val now = SystemClock.uptimeMillis()
+            if (pos != null && now - lastAcceptAtMs >= SPRAY_DWELL_MS) {
+                lastAcceptAtMs = now
+                lastAcceptPressure = smoothPressure
+                val point = buildPoint(pos, smoothPressure, smoothTilt)
+                s.add(point)
+                activeMaxWidth = max(activeMaxWidth, point.width)
+                activeBounds.union(pos.x, pos.y)
+                invalidate()
+            }
+            postDelayed(this, SPRAY_DWELL_MS)
+        }
+    }
+
     /** Resets the conditioning state at pointer-down (no carry across strokes). */
     private fun beginConditioning(rawPressure: Float, tilt: Float) {
         smoothPressure = normPressure(rawPressure)
@@ -3067,6 +3102,7 @@ class PaintCanvasView @JvmOverloads constructor(
         }
         lastAcceptPos = pos
         lastAcceptPressure = smoothPressure
+        lastAcceptAtMs = SystemClock.uptimeMillis()
         val point = buildPoint(pos, smoothPressure, smoothTilt)
         stroke.add(point)
         // Grow the live-blit bounds (padded when used; see blit helpers).
@@ -4346,6 +4382,10 @@ class PaintCanvasView @JvmOverloads constructor(
         const val MARKER_TIP_MM2 = 500f
         const val MARKER_RESAT_TAU_MS = 2500f
         const val MARKER_SAT_FLOOR = 0.25f
+
+        /** Spray dwell: a resting pen keeps spraying — one in-place point per
+         *  tick builds the field (and, heavy enough, sheds drips). */
+        const val SPRAY_DWELL_MS = 45L
 
         /** Chisel-nib travel-direction smoothing (sensor-noise cleanup only). */
         const val MARKER_DIR_EMA = 0.3f
