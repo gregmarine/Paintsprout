@@ -83,23 +83,6 @@ class Stroke(
     var wetCrop: android.graphics.Rect? = null
 
     /**
-     * Pen only: how long the nib rested at pen-down before travelling, and
-     * at the stroke's end before lifting, in ms. Ink pools while a nib
-     * rests; the dwell is captured here so the bake and any replay pool
-     * exactly as the screen showed.
-     */
-    var startDwellMs = 0L
-    var endDwellMs = 0L
-
-    /**
-     * Pen only: every MID-stroke rest bled a pool that stays — pausing and
-     * then travelling on must not take the ink back. Recorded when travel
-     * resumes; the live preview's growing tail pool converts seamlessly
-     * into the recorded one (same position, same dwell, same disc).
-     */
-    val pools: MutableList<PenPool> = mutableListOf()
-
-    /**
      * Watercolor only: the per-point drying progress this stroke was FROZEN at
      * when something cut its drying short (a new stroke, undo, a surface
      * change). Null — the normal case — means it dried fully. The bake renders
@@ -147,9 +130,6 @@ class Stroke(
         return arcCache
     }
 }
-
-/** A pen's mid-stroke rest: where the nib sat, how wide it was, how long. */
-class PenPool(val position: Vec2, val width: Float, val dwellMs: Long)
 
 /**
  * A contiguous span of a stroke the brush painted with effectively one colour at

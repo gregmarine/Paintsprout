@@ -1027,11 +1027,7 @@ object StrokeRenderer {
         // density can LIFT partially — a light touch thins the paint, a hard
         // press removes it (with tooth, residue survives in the valleys).
         val needsLayer = isEraser || profile.opacity < 1f || blurSigma > 0f || tooth != null
-        // The pen's end pools grow past the line width — the pad must cover
-        // them or the layer clips a growing pool into a square (user-visible
-        // as a square/circle flash under a resting nib).
-        val poolPad = if (stroke.tool == Tool.PEN) maxWidth / 2f * (1f + PEN_POOL_GAIN) else 0f
-        val pad = max(maxWidth / 2f + blurSigma * 3f + 1f, poolPad + 2f)
+        val pad = maxWidth / 2f + blurSigma * 3f + 1f
         val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
 
         var layer = -1
@@ -1068,8 +1064,7 @@ object StrokeRenderer {
             pts.size == 1 -> {
                 val p = pts.first()
                 canvas.drawCircle(
-                    p.position.x, p.position.y,
-                    p.width / 2f * penPoolScale(stroke, stroke.startDwellMs),
+                    p.position.x, p.position.y, p.width / 2f,
                     basePaint().apply { alpha = (alpha * p.density).toInt() },
                 )
             }
@@ -1108,49 +1103,14 @@ object StrokeRenderer {
             }
         }
 
-        // A resting nib pools: soft discs at the stroke's true ends, sized
-        // by the captured dwell. Pen only — an eraser has no ink to pool.
-        // Mid-stroke rests recorded on the stroke pool permanently — pausing
-        // and travelling on must not take the ink back.
-        if (stroke.tool == Tool.PEN && pts.isNotEmpty()) {
-            for (pool in stroke.pools) {
-                val s = penPoolScale(stroke, pool.dwellMs)
-                if (s > 1.02f) {
-                    canvas.drawCircle(pool.position.x, pool.position.y, pool.width / 2f * s, basePaint())
-                }
-            }
-            val startScale = penPoolScale(stroke, stroke.startDwellMs)
-            if (startScale > 1.02f) {
-                val p = pts.first()
-                canvas.drawCircle(p.position.x, p.position.y, p.width / 2f * startScale, basePaint())
-            }
-            val endScale = penPoolScale(stroke, stroke.endDwellMs)
-            if (endScale > 1.02f && pts.size > 1) {
-                val p = pts.last()
-                canvas.drawCircle(p.position.x, p.position.y, p.width / 2f * endScale, basePaint())
-            }
-        }
+        // Pen ink pooling (dwell-grown end/mid-stroke discs) was built here
+        // and REMOVED at the user's verdict — the onset/feel never sat
+        // right. Pinned to docs/tool-ideas.md; implementation in history at
+        // 944c81a (diffusion curve, PenPool records, movement-based dwell).
 
         if (tooth != null) applyTooth(canvas, bounds, tooth, toothScale)
         if (needsLayer) canvas.restoreToCount(layer)
     }
-
-    /** Ink-pool radius multiplier for a nib that rested [dwellMs]. */
-    private fun penPoolScale(stroke: Stroke, dwellMs: Long): Float {
-        if (stroke.tool != Tool.PEN || dwellMs <= 0L) return 1f
-        // Diffusion-shaped: ink bleeds fast at first, then keeps slowly
-        // luxuriating outward for seconds — the watercolor-like live growth
-        // the user asked to watch, not a pop.
-        val t = (dwellMs.toFloat() / PEN_POOL_FULL_MS).coerceIn(0f, 1f)
-        return 1f + PEN_POOL_GAIN * t.pow(0.45f)
-    }
-
-    /** How long a resting nib keeps bleeding, and how much wider than the
-     *  line the full pool gets. The first cut (700ms, 0.55) was measurable
-     *  and invisible; the second (900ms, 1.1) read as a pop — a pool must
-     *  visibly GROW while the nib rests. */
-    private const val PEN_POOL_FULL_MS = 3000f
-    private const val PEN_POOL_GAIN = 1.5f
 
     // --- Droplet field (spray) ----------------------------------------------
 

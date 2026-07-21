@@ -69,6 +69,7 @@ physically rotate the tablet instead.
 | ⬜ | Palette knife | Scrapes and deposits |
 | ⬜ | Airbrush | Dwell-based buildup (accumulates while held still) — spray now has basic dwell (feel phase); this is the finer gradient-shading tool |
 | ⬜ | Spray paint (wet) | Dense wet CORE that reads as liquid paint (maybe with runs/drips), scattered halo outside — the feel-phase spray settled as a stipple/spray-can droplet field instead, the way the marker found its identity (user idea, 2026-07-20; drips were built and removed — the pool/lookback approach is in git history at 632046f) |
+| ⬜ | Pen ink pooling | Nib resting bleeds a pool (start/mid/end dwells) — built and removed in the feel phase (full impl in git history at 944c81a: movement-based dwell clock immune to pressure jitter, permanent PenPool records, diffusion growth curve). Never sat right: onset felt too eager. Revisit with fresh eyes on the trigger conditions — maybe pressure-gated (a resting nib barely touching shouldn't bleed) or a per-tool ink-flow model |
 
 ### Modifying tools (act on existing paint)
 | Status | Item | Notes |

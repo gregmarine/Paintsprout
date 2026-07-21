@@ -327,7 +327,7 @@ data class ToolProfile(
             minDensity = 0.15f, // a feather graze barely lifts — the contrast must be unmistakable
             maxDensity = 1.0f,
             opacity = 1.0f,
-            blurFactor = 0.10f, // a rubber block's edge is soft, not surgical
+            blurFactor = 0.06f, // a rubber block's edge is soft, not surgical (0.10 read worse AND cost frames)
             toothFloor = 0.95f, // a firm pass must READ clean: only a whisper stays in the valleys (0.85 left visible ghosts needing a second pass)
             toothBias = 1.0f,
             renderStyle = RenderStyle.SOLID,
