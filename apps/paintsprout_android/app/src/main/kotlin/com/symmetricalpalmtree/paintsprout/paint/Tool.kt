@@ -328,7 +328,7 @@ data class ToolProfile(
             maxDensity = 1.0f,
             opacity = 1.0f,
             blurFactor = 0.0f,
-            toothFloor = 0.85f, // erasing leaves faint residue down in the tooth valleys
+            toothFloor = 0.95f, // a firm pass must READ clean: only a whisper stays in the valleys (0.85 left visible ghosts needing a second pass)
             toothBias = 1.0f,
             renderStyle = RenderStyle.SOLID,
         )

@@ -1027,7 +1027,11 @@ object StrokeRenderer {
         // density can LIFT partially — a light touch thins the paint, a hard
         // press removes it (with tooth, residue survives in the valleys).
         val needsLayer = isEraser || profile.opacity < 1f || blurSigma > 0f || tooth != null
-        val pad = maxWidth / 2f + blurSigma * 3f + 1f
+        // The pen's end pools grow past the line width — the pad must cover
+        // them or the layer clips a growing pool into a square (user-visible
+        // as a square/circle flash under a resting nib).
+        val poolPad = if (stroke.tool == Tool.PEN) maxWidth / 2f * (1f + PEN_POOL_GAIN) else 0f
+        val pad = max(maxWidth / 2f + blurSigma * 3f + 1f, poolPad + 2f)
         val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
 
         var layer = -1
