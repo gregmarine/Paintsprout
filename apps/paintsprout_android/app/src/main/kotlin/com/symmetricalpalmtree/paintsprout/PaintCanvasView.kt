@@ -1898,6 +1898,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     removeCallbacks(sprayDwell)
                     postDelayed(sprayDwell, SPRAY_DWELL_MS)
                 }
+                if (tool == Tool.PEN) {
+                    removeCallbacks(penPoolPulse)
+                    postDelayed(penPoolPulse, DRY_PULSE_MS)
+                }
                 if (tool == Tool.WATERCOLOR) {
                     startWetSim(stroke)
                     startDrying(stroke)
@@ -2006,6 +2010,7 @@ class PaintCanvasView @JvmOverloads constructor(
                     activeClip = null
                     activePointerId = INVALID_POINTER
                     removeCallbacks(sprayDwell)
+                    removeCallbacks(penPoolPulse)
                     endActiveExtras()
                     invalidate()
                 }
@@ -3102,6 +3107,20 @@ class PaintCanvasView @JvmOverloads constructor(
                 invalidate()
             }
             postDelayed(this, SPRAY_DWELL_MS)
+        }
+    }
+
+    /**
+     * Animates the pen's live pool while the nib rests: input events can go
+     * quiet under a perfectly still hand, and the bleed must grow silkily
+     * anyway. Just an invalidate pulse — the dwell itself is wall-clock.
+     */
+    private val penPoolPulse = object : Runnable {
+        override fun run() {
+            val s = active
+            if (s == null || s.tool != Tool.PEN) return
+            invalidate()
+            postDelayed(this, DRY_PULSE_MS)
         }
     }
 

@@ -1138,16 +1138,19 @@ object StrokeRenderer {
     /** Ink-pool radius multiplier for a nib that rested [dwellMs]. */
     private fun penPoolScale(stroke: Stroke, dwellMs: Long): Float {
         if (stroke.tool != Tool.PEN || dwellMs <= 0L) return 1f
-        return 1f + PEN_POOL_GAIN * smooth01(dwellMs.toFloat() / PEN_POOL_FULL_MS)
+        // Diffusion-shaped: ink bleeds fast at first, then keeps slowly
+        // luxuriating outward for seconds — the watercolor-like live growth
+        // the user asked to watch, not a pop.
+        val t = (dwellMs.toFloat() / PEN_POOL_FULL_MS).coerceIn(0f, 1f)
+        return 1f + PEN_POOL_GAIN * t.pow(0.45f)
     }
 
-    /** How long a resting nib takes to reach its full pool, and how much
-     *  wider than the line that pool gets. The first cut (700ms, 0.55) was
-     *  measurable and invisible — a ~2px swell on a 4px line; a pool must
-     *  read at a glance (~2x the line) while natural quick pauses stay
-     *  subtle. */
-    private const val PEN_POOL_FULL_MS = 900f
-    private const val PEN_POOL_GAIN = 1.1f
+    /** How long a resting nib keeps bleeding, and how much wider than the
+     *  line the full pool gets. The first cut (700ms, 0.55) was measurable
+     *  and invisible; the second (900ms, 1.1) read as a pop — a pool must
+     *  visibly GROW while the nib rests. */
+    private const val PEN_POOL_FULL_MS = 3000f
+    private const val PEN_POOL_GAIN = 1.5f
 
     // --- Droplet field (spray) ----------------------------------------------
 
