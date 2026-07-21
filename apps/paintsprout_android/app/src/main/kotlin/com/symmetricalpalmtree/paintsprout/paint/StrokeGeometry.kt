@@ -18,12 +18,19 @@ import kotlin.math.pow
 // — the reachable range sits in a compressed middle band. Remap that band to
 // [0, 1] so an upright pen reads as a fine tip and laying it onto its side reads
 // as the full width, with everything in between proportional.
-const val TILT_LO_RAD = 0.42f // ~24 deg: "upright" hold -> thin
-const val TILT_HI_RAD = 1.05f // ~60 deg: on its side -> full width
+//
+// Band CALIBRATED against the user's measured hand (2026-07-20, raw tilt
+// capture): upright 15-19°, natural hold 42-48°, comfortable flat 74-77°.
+// The ported band (24-60°, ease 2.1) clamped everything past 60° — the last
+// 16° of their lay-down did nothing — and the natural hold landed at 0.32
+// engagement; this band keeps natural at ≈0.29 (accepted feels barely move)
+// while the flat end gains the range that was being clamped away.
+const val TILT_LO_RAD = 0.349f // 20°: just above the measured upright hold
+const val TILT_HI_RAD = 1.292f // 74°: the measured comfortable flat
 
 // Ease-in exponent (>1) so the first few degrees off upright widen gently
 // instead of jumping, while full tilt still reaches the same max width.
-const val TILT_EASE = 2.1f
+const val TILT_EASE = 1.6f
 
 /** Linear interpolation, matching Flutter's `lerpDouble(a, b, t) = a + (b-a)*t`. */
 private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
