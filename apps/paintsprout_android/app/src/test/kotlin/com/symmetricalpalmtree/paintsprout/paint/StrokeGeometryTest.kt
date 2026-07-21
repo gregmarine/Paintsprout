@@ -69,11 +69,14 @@ class StrokeGeometryTest {
 
     @Test
     fun pencilDensityMapsPressure() {
-        // minDensity 0.1, maxDensity 0.95; pressure is scaled *1.3 then clamped.
+        // minDensity 0.1, maxDensity 0.95; gamma response (p^1.25) spreads
+        // the range instead of the old boost-and-clamp.
         assertEquals(0.1f, resolveDensity(Tool.PENCIL, 0f), eps)
         assertEquals(0.95f, resolveDensity(Tool.PENCIL, 1f), eps)
-        // pressureNorm 0.5 -> p' = 0.65 -> lerp(0.1, 0.95, 0.65) = 0.6525
-        assertEquals(0.6525f, resolveDensity(Tool.PENCIL, 0.5f), eps)
+        // pressureNorm 0.5 -> 0.5^1.25 = 0.4204 -> lerp(0.1, 0.95, .4204)
+        assertEquals(0.4573f, resolveDensity(Tool.PENCIL, 0.5f), 0.001f)
+        // The top of the range keeps differentiating (no clamp plateau).
+        assertTrue(resolveDensity(Tool.PENCIL, 0.95f) < resolveDensity(Tool.PENCIL, 1f))
     }
 
     // --- strokeNormals -------------------------------------------------------
@@ -226,7 +229,8 @@ class StrokeGeometryTest {
     @Test
     fun eraserLiftSaturatesAtModeratePressure() {
         // A normal erasing hand removes fully; only a graze lifts partially.
-        assertEquals(1.0f, resolveDensity(Tool.ERASER, 0.5f), eps) // p'=0.65 >= FULL_AT
+        // The user's measured NORMAL pressure is ~0.6: full lift there.
+        assertEquals(1.0f, resolveDensity(Tool.ERASER, 0.6f), eps)
         assertEquals(0.15f, resolveDensity(Tool.ERASER, 0f), eps)
         val graze = resolveDensity(Tool.ERASER, 0.15f)
         assertTrue("graze should lift partially, was $graze", graze in 0.2f..0.7f)

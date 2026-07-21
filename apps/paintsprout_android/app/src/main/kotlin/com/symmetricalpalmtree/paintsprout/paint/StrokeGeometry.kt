@@ -92,9 +92,11 @@ fun chiselNibWidth(base: Float, tiltRadians: Float, travelAngle: Float?): Float 
 fun resolveDensity(tool: Tool, pressureNorm: Float): Float {
     val profile = ToolProfile.of(tool)
     if (!profile.pressureAffectsDensity) return 1.0f
-    // Real strokes rarely exceed ~0.8 raw pressure, so scale up to use the full
-    // density range without the artist having to bear down to the stops.
-    val p = (pressureNorm * 1.3f).coerceIn(0.0f, 1.0f)
+    // A gamma response, not the old boost-and-clamp (×1.3, clamped): that
+    // made every press above ~0.77 raw read IDENTICAL and light touches 30%
+    // too strong — measured against the user's real pen (light 0.20–0.29,
+    // normal 0.60, hard 0.90–1.0), the curve now spreads the whole range.
+    val p = pressureNorm.coerceIn(0.0f, 1.0f).pow(PRESSURE_GAMMA)
     if (tool == Tool.ERASER) {
         // The eraser's ramp saturates early: a normal erasing hand must
         // remove paint FULLY (a linear ramp left ghosts on every ordinary
@@ -106,7 +108,11 @@ fun resolveDensity(tool: Tool, pressureNorm: Float): Float {
 }
 
 /** Scaled pressure at which the eraser reaches full lift. */
-const val ERASER_FULL_AT = 0.5f
+const val ERASER_FULL_AT = 0.45f
+
+/** Pressure response gamma: >1 lightens light touches and keeps the top
+ *  of the range differentiating instead of clamping flat. */
+const val PRESSURE_GAMMA = 1.25f
 
 /**
  * Per-point unit normals (perpendicular to the local tangent) for a stroke.
