@@ -3131,10 +3131,20 @@ class PaintCanvasView @JvmOverloads constructor(
             if (raw == null) {
                 penLastRawPos = pos
             } else if ((pos - raw).distance > PEN_MOVE_EPS_PX) {
+                val now = SystemClock.uptimeMillis()
                 if (stroke.startDwellMs == 0L) {
-                    stroke.startDwellMs = SystemClock.uptimeMillis() - penDownMs
+                    stroke.startDwellMs = now - penDownMs
+                } else if (now - penMovedAtMs >= PEN_POOL_MIN_MS) {
+                    // The nib rested mid-stroke: it bled a pool that STAYS.
+                    stroke.pools.add(
+                        com.symmetricalpalmtree.paintsprout.paint.PenPool(
+                            raw,
+                            stroke.points.lastOrNull()?.width ?: sizeFor(tool),
+                            now - penMovedAtMs,
+                        ),
+                    )
                 }
-                penMovedAtMs = SystemClock.uptimeMillis()
+                penMovedAtMs = now
                 penLastRawPos = pos
             }
         }
@@ -4453,6 +4463,9 @@ class PaintCanvasView @JvmOverloads constructor(
         /** Position change that counts as the pen actually MOVING (dwell
          *  clock); below this is hold jitter, not travel. */
         const val PEN_MOVE_EPS_PX = 2f
+
+        /** Shortest mid-stroke rest that leaves a permanent pool. */
+        const val PEN_POOL_MIN_MS = 250L
 
         /** Chisel-nib travel-direction smoothing (sensor-noise cleanup only). */
         const val MARKER_DIR_EMA = 0.3f

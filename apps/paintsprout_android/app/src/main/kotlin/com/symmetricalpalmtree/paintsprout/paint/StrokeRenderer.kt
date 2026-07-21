@@ -1110,7 +1110,15 @@ object StrokeRenderer {
 
         // A resting nib pools: soft discs at the stroke's true ends, sized
         // by the captured dwell. Pen only — an eraser has no ink to pool.
+        // Mid-stroke rests recorded on the stroke pool permanently — pausing
+        // and travelling on must not take the ink back.
         if (stroke.tool == Tool.PEN && pts.isNotEmpty()) {
+            for (pool in stroke.pools) {
+                val s = penPoolScale(stroke, pool.dwellMs)
+                if (s > 1.02f) {
+                    canvas.drawCircle(pool.position.x, pool.position.y, pool.width / 2f * s, basePaint())
+                }
+            }
             val startScale = penPoolScale(stroke, stroke.startDwellMs)
             if (startScale > 1.02f) {
                 val p = pts.first()
