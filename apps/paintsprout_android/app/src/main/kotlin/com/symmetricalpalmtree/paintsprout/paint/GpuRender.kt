@@ -34,10 +34,25 @@ object GpuRender {
 
     private val lock = Any()
     private val root = RenderNode("root")
-    private var reader: ImageReader? = null
-    private var renderer: HardwareRenderer? = null
-    private var poolW = 0
-    private var poolH = 0
+
+    /**
+     * Pooled renderer + reader per buffer size, LRU-bounded. The watercolor
+     * pipeline renders at several sizes per stroke (the half-res live crop and
+     * the full-res bake crop, both quantized), and creating these is expensive
+     * — a single-size pool would thrash on every switch.
+     */
+    private class PoolEntry(val reader: ImageReader, val renderer: HardwareRenderer)
+
+    private val pool = object : LinkedHashMap<Long, PoolEntry>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, PoolEntry>): Boolean {
+            if (size <= MAX_POOL) return false
+            eldest.value.renderer.destroy()
+            eldest.value.reader.close()
+            return true
+        }
+    }
+
+    private const val MAX_POOL = 3
 
     /**
      * Gaussian-blurs [src] on the GPU via a [RenderEffect] (premultiplied-correct,
@@ -60,9 +75,16 @@ object GpuRender {
     fun renderInto(dst: Bitmap, effect: RenderEffect? = null, draw: (Canvas) -> Unit) =
         synchronized(lock) {
             renderInternal(dst.width, dst.height, effect, draw) { hw ->
-                Canvas(dst).apply {
-                    drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
-                    drawBitmap(hw, 0f, 0f, null)
+                // A wrapped hardware buffer cannot be drawn by a software canvas
+                // (throws); copy() is the sanctioned GPU readback into software.
+                val sw = hw.copy(Bitmap.Config.ARGB_8888, false)
+                try {
+                    Canvas(dst).apply {
+                        drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+                        drawBitmap(sw, 0f, 0f, null)
+                    }
+                } finally {
+                    sw.recycle()
                 }
             }
         }
@@ -85,7 +107,9 @@ object GpuRender {
         draw: (Canvas) -> Unit,
         consume: (Bitmap) -> R,
     ): R {
-        val (reader, renderer) = ensurePool(width, height)
+        val entry = ensurePool(width, height)
+        val reader = entry.reader
+        val renderer = entry.renderer
         root.setPosition(0, 0, width, height)
 
         // A RenderEffect (blur) renders to an intermediate layer, so clearing
@@ -132,20 +156,16 @@ object GpuRender {
 
     /** Releases the pooled GPU objects (call when the canvas is torn down). */
     fun release() = synchronized(lock) {
-        renderer?.destroy()
-        reader?.close()
-        renderer = null
-        reader = null
-        poolW = 0
-        poolH = 0
+        for (entry in pool.values) {
+            entry.renderer.destroy()
+            entry.reader.close()
+        }
+        pool.clear()
     }
 
-    private fun ensurePool(width: Int, height: Int): Pair<ImageReader, HardwareRenderer> {
-        val r = reader
-        val rr = renderer
-        if (r != null && rr != null && poolW == width && poolH == height) return r to rr
-        renderer?.destroy()
-        reader?.close()
+    private fun ensurePool(width: Int, height: Int): PoolEntry {
+        val key = (width.toLong() shl 32) or height.toLong()
+        pool[key]?.let { return it }
         val newReader = ImageReader.newInstance(
             width, height, PixelFormat.RGBA_8888, 2,
             HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or HardwareBuffer.USAGE_GPU_COLOR_OUTPUT,
@@ -154,10 +174,8 @@ object GpuRender {
             setSurface(newReader.surface)
             setContentRoot(root)
         }
-        reader = newReader
-        renderer = newRenderer
-        poolW = width
-        poolH = height
-        return newReader to newRenderer
+        val entry = PoolEntry(newReader, newRenderer)
+        pool[key] = entry
+        return entry
     }
 }

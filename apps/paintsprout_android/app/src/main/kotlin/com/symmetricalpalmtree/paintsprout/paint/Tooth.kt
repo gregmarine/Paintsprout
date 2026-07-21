@@ -52,6 +52,27 @@ object ToothCache {
     fun toothFor(surface: SurfaceKind, tool: Tool): Bitmap? =
         if (ToolProfile.of(tool).reactsToTooth) tooth[surface to tool] else null
 
+    // Raw tooth fields as tileable bitmaps (r = tooth, 1 = crest) — the wet
+    // simulation's flow-resistance input, unshaped by any tool response.
+    private val rawField = HashMap<SurfaceKind, Bitmap>()
+
+    /** The surface's RAW tooth field as a tileable bitmap for the wet sim. */
+    @Synchronized
+    fun rawFieldFor(surface: SurfaceKind, size: Int = TILE_SIZE): Bitmap =
+        rawField.getOrPut(surface) {
+            val px = IntArray(size * size)
+            if (surface == SurfaceKind.PLAIN) {
+                px.fill(0xFF808080.toInt()) // flat: uniform mid resistance
+            } else {
+                val field = buildToothField(surface, size)
+                for (i in field.indices) {
+                    val v = (field[i] * 255f).toInt().coerceIn(0, 255)
+                    px[i] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+                }
+            }
+            Bitmap.createBitmap(px, size, size, Bitmap.Config.ARGB_8888)
+        }
+
     /**
      * Bakes a surface's raw tooth [field] through a tool's response into a
      * tileable alpha texture (rgb unused; only alpha matters for the dstIn).

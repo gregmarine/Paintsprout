@@ -18,12 +18,19 @@ import kotlin.math.pow
 // — the reachable range sits in a compressed middle band. Remap that band to
 // [0, 1] so an upright pen reads as a fine tip and laying it onto its side reads
 // as the full width, with everything in between proportional.
-const val TILT_LO_RAD = 0.42f // ~24 deg: "upright" hold -> thin
-const val TILT_HI_RAD = 1.05f // ~60 deg: on its side -> full width
+//
+// Band CALIBRATED against the user's measured hand (2026-07-20, raw tilt
+// capture): upright 15-19°, natural hold 42-48°, comfortable flat 74-77°.
+// The ported band (24-60°, ease 2.1) clamped everything past 60° — the last
+// 16° of their lay-down did nothing — and the natural hold landed at 0.32
+// engagement; this band keeps natural at ≈0.29 (accepted feels barely move)
+// while the flat end gains the range that was being clamped away.
+const val TILT_LO_RAD = 0.349f // 20°: just above the measured upright hold
+const val TILT_HI_RAD = 1.292f // 74°: the measured comfortable flat
 
 // Ease-in exponent (>1) so the first few degrees off upright widen gently
 // instead of jumping, while full tilt still reaches the same max width.
-const val TILT_EASE = 2.1f
+const val TILT_EASE = 1.6f
 
 /** Linear interpolation, matching Flutter's `lerpDouble(a, b, t) = a + (b-a)*t`. */
 private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
@@ -43,7 +50,9 @@ fun resolveWidth(
     val profile = ToolProfile.of(tool)
     if (!tool.isDynamic) return baseSize
 
-    val p = pressureNorm.coerceIn(0.0f, 1.0f)
+    // The same gamma response the density tools use — the hand meets ONE
+    // curve everywhere, whether pressure drives width or darkness.
+    val p = pressureNorm.coerceIn(0.0f, 1.0f).pow(PRESSURE_GAMMA)
     val pressureFactor = if (profile.pressureAffectsWidth) {
         lerp(profile.minPressureFactor, profile.maxPressureFactor, p)
     } else {
@@ -52,10 +61,38 @@ fun resolveWidth(
 
     val rawTilt = ((tiltRadians - TILT_LO_RAD) / (TILT_HI_RAD - TILT_LO_RAD))
         .coerceIn(0.0f, 1.0f)
-    val tiltNorm = rawTilt.pow(TILT_EASE)
+    val ease = if (profile.tiltEase > 0f) profile.tiltEase else TILT_EASE
+    val tiltNorm = rawTilt.pow(ease)
     val tiltFactor = 1.0f + profile.tiltGain * tiltNorm
 
     return max(0.5f, baseSize * pressureFactor * tiltFactor)
+}
+
+// The marker's chisel nib: a flat edge held at a fixed angle in hand space.
+// Dragging ALONG the edge lays only its thickness; dragging ACROSS it lays
+// the full engaged edge. Tilt engages more edge (pressing the face down)
+// instead of multiplying an isotropic ribbon — the old tiltGain look the
+// user rejected.
+const val NIB_ANGLE_RAD = 0.6f // ~34°, the classic right-hand chisel hold
+const val NIB_FLOOR = 0.3f // the edge's own thickness, as a fraction
+const val NIB_TILT_ENGAGE = 2.5f // full tilt engages 3.5x the upright edge
+const val NIB_DEFAULT_CROSS = 0.7f // no direction yet (first point): mid engagement
+
+/**
+ * The chisel-nib mark width for a marker travelling at [travelAngle]
+ * (radians, canvas space; null = direction unknown), holding [tiltRadians]
+ * of tilt over a [base] px edge.
+ */
+fun chiselNibWidth(base: Float, tiltRadians: Float, travelAngle: Float?): Float {
+    val rawTilt = ((tiltRadians - TILT_LO_RAD) / (TILT_HI_RAD - TILT_LO_RAD))
+        .coerceIn(0.0f, 1.0f)
+    val engaged = base * (1f + NIB_TILT_ENGAGE * rawTilt.pow(TILT_EASE))
+    val cross = if (travelAngle == null) {
+        NIB_DEFAULT_CROSS
+    } else {
+        kotlin.math.abs(kotlin.math.sin(travelAngle - NIB_ANGLE_RAD))
+    }
+    return max(0.5f, engaged * (NIB_FLOOR + (1f - NIB_FLOOR) * cross))
 }
 
 /**
@@ -65,11 +102,27 @@ fun resolveWidth(
 fun resolveDensity(tool: Tool, pressureNorm: Float): Float {
     val profile = ToolProfile.of(tool)
     if (!profile.pressureAffectsDensity) return 1.0f
-    // Real strokes rarely exceed ~0.8 raw pressure, so scale up to use the full
-    // density range without the artist having to bear down to the stops.
-    val p = (pressureNorm * 1.3f).coerceIn(0.0f, 1.0f)
+    // A gamma response, not the old boost-and-clamp (×1.3, clamped): that
+    // made every press above ~0.77 raw read IDENTICAL and light touches 30%
+    // too strong — measured against the user's real pen (light 0.20–0.29,
+    // normal 0.60, hard 0.90–1.0), the curve now spreads the whole range.
+    val p = pressureNorm.coerceIn(0.0f, 1.0f).pow(PRESSURE_GAMMA)
+    if (tool == Tool.ERASER) {
+        // The eraser's ramp saturates early: a normal erasing hand must
+        // remove paint FULLY (a linear ramp left ghosts on every ordinary
+        // pass) — only a genuine graze lifts partially.
+        val t = (p / ERASER_FULL_AT).coerceIn(0.0f, 1.0f)
+        return lerp(profile.minDensity, profile.maxDensity, t)
+    }
     return lerp(profile.minDensity, profile.maxDensity, p)
 }
+
+/** Scaled pressure at which the eraser reaches full lift. */
+const val ERASER_FULL_AT = 0.45f
+
+/** Pressure response gamma: >1 lightens light touches and keeps the top
+ *  of the range differentiating instead of clamping flat. */
+const val PRESSURE_GAMMA = 1.25f
 
 /**
  * Per-point unit normals (perpendicular to the local tangent) for a stroke.
@@ -90,6 +143,92 @@ fun strokeNormals(pts: List<StrokePoint>): List<Vec2> {
         normals.add(Vec2(-dir.y, dir.x))
     }
     return normals
+}
+
+/**
+ * Unit normals for just the points [from..to] (inclusive), reading only the
+ * neighbours the formula needs — so an incremental append costs the range, not
+ * the stroke. Entry k corresponds to point from+k, and matches what
+ * [strokeNormals] would produce at the same index PROVIDED the points after
+ * [to] existed when [strokeNormals] ran (interior normals are final once both
+ * neighbours exist; only the last point's normal is provisional).
+ */
+fun strokeNormalsRange(pts: List<StrokePoint>, from: Int, to: Int): List<Vec2> {
+    require(pts.size >= 2) { "strokeNormalsRange needs at least 2 points" }
+    require(from in 0..to && to < pts.size) { "bad range $from..$to for ${pts.size} points" }
+    val normals = ArrayList<Vec2>(to - from + 1)
+    for (i in from..to) {
+        val tangent = when (i) {
+            0 -> pts[1].position - pts[0].position
+            pts.size - 1 -> pts[i].position - pts[i - 1].position
+            else -> pts[i + 1].position - pts[i - 1].position
+        }
+        val len = tangent.distance
+        val dir = if (len < 1e-3f) Vec2(1f, 0f) else tangent / len
+        normals.add(Vec2(-dir.y, dir.x))
+    }
+    return normals
+}
+
+/**
+ * Per-point unit normals measured over an arc-length window instead of
+ * adjacent samples. A slow pen landing lays a cluster of points whose
+ * spacing is the size of the sensor noise, and central-difference normals
+ * swing wildly through it — the visible jag at stroke starts. At the scale
+ * of its own footprint the tool is rigid (the wash geometry's
+ * surface-tension lesson), so each tangent is the chord across [window] of
+ * arc length centred on the point; a collapsed window carries the previous
+ * direction rather than inventing one from noise. [arcs] is
+ * `Stroke.arcLengths()` (entries valid for `pts.indices`).
+ */
+fun windowedNormals(pts: List<StrokePoint>, arcs: FloatArray, minWindow: Float = 4f): List<Vec2> {
+    require(pts.size >= 2) { "windowedNormals needs at least 2 points" }
+    val n = pts.size
+    val out = ArrayList<Vec2>(n)
+    var j = 0
+    var k = 0
+    var prevDir = Vec2(1f, 0f)
+    for (i in 0 until n) {
+        // Window = the LOCAL footprint: a thin pencil stays near-raw, a
+        // broad tilted marker steadies hard. The pointers stay monotone
+        // under a varying window; the mild chord asymmetry that allows is
+        // harmless for a smoothing measurement.
+        val half = maxOf(minWindow, pts[i].width) / 2f
+        while (j < i && arcs[j + 1] <= arcs[i] - half) j++
+        if (k < i) k = i
+        while (k < n - 1 && arcs[k] < arcs[i] + half) k++
+        val chord = pts[k].position - pts[j].position
+        val len = chord.distance
+        val dir = if (len < 1e-3f) prevDir else chord / len
+        prevDir = dir
+        out.add(Vec2(-dir.y, dir.x))
+    }
+    return out
+}
+
+/**
+ * The unit normal at a stroke's last point, measured over an arc-length
+ * [window] instead of the final segment. The raw tail normal follows every
+ * sensor wobble of the newest sample, and a bristle fan pivots laterally
+ * around the tail by half the brush width times that swing — visible jitter.
+ * A window about a brush-width long is the same steadying the wash geometry
+ * uses: at the scale of its own footprint the tool is rigid. Returns null
+ * when the chord collapses (coincident points), meaning: keep the segment
+ * normal.
+ */
+fun windowedTailNormal(pts: List<StrokePoint>, window: Float): Vec2? {
+    if (pts.size < 2) return null
+    var j = pts.size - 1
+    var acc = 0f
+    while (j > 0 && acc < window) {
+        acc += (pts[j].position - pts[j - 1].position).distance
+        j--
+    }
+    val chord = pts.last().position - pts[j].position
+    val len = chord.distance
+    if (len < 1e-3f) return null
+    val dir = chord / len
+    return Vec2(-dir.y, dir.x)
 }
 
 /**

@@ -67,7 +67,9 @@ physically rotate the tablet instead.
 | ⬜ | Highlighter | Multiplies over what's beneath |
 | ⬜ | Clean-water brush | Rewets and lifts pigment — variant of machinery we already own (watercolor washes out paint) |
 | ⬜ | Palette knife | Scrapes and deposits |
-| ⬜ | Airbrush | Dwell-based buildup (accumulates while held still) — differs from spray's stamp-along-path |
+| ⬜ | Airbrush | Dwell-based buildup (accumulates while held still) — spray now has basic dwell (feel phase); this is the finer gradient-shading tool |
+| ⬜ | Spray paint (wet) | Dense wet CORE that reads as liquid paint (maybe with runs/drips), scattered halo outside — the feel-phase spray settled as a stipple/spray-can droplet field instead, the way the marker found its identity (user idea, 2026-07-20; drips were built and removed — the pool/lookback approach is in git history at 632046f) |
+| ⬜ | Pen ink pooling | Nib resting bleeds a pool (start/mid/end dwells) — built and removed in the feel phase (full impl in git history at 944c81a: movement-based dwell clock immune to pressure jitter, permanent PenPool records, diffusion growth curve). Never sat right: onset felt too eager. Revisit with fresh eyes on the trigger conditions — maybe pressure-gated (a resting nib barely touching shouldn't bleed) or a per-tool ink-flow model |
 
 ### Modifying tools (act on existing paint)
 | Status | Item | Notes |
@@ -89,7 +91,7 @@ physically rotate the tablet instead.
 | ⬜ | Pattern brushes | Repeat art along a path |
 | ⬜ | Brush presets library | Per-tool saved settings + favorites |
 | ⬜ | Pressure-curve editor | Per tool |
-| ⬜ | Stroke stabilization / streamline | Largest single improvement to perceived line quality on a tablet; noticed immediately |
+| ❄️ | Stroke stabilization / streamline | Deferred 2026-07-18 — see [For consideration](#for-consideration-not-aligned-with-current-philosophy) |
 
 ---
 
@@ -224,7 +226,8 @@ Where Paintsprout could be genuinely unlike anything else — the hard parts are
 | Status | Item | Notes |
 |--------|------|-------|
 | ⬜ | Wet-on-wet fluid diffusion | Real bleeding that evolves over time, not a static blur at stroke time |
-| ⬜ | Drying timer | Pigment stays wet/reactive for seconds, then sets — timing becomes a skill |
+| 🚧 | Drying timer | Pigment stays wet/reactive for seconds, then sets — timing becomes a skill. Visual half shipped (feel branch): the wash ages live — spread creeps out, rim deepens, fill lightens as each section dries, converging to the baked look. Reactive-while-wet half still open |
+| ⬜ | Drying-feel controls | Expose the drying constants as user settings — dry time (DRY_MS), wet tightness (WET_SPREAD), wet rim faintness (WET_RIM), wet darkening (WET_DARKEN) in StrokeRenderer/PaintCanvasView — so the wash's temperament is tweakable per taste, maybe per paper |
 | ⬜ | Pre-wetting the paper | A later stroke blooms |
 | ⬜ | Gravity / drips | Runs when you tilt the device — accelerometer is right there |
 | ⬜ | Impasto height field | Thickness → normal map; movable light source raking across it — the whole appeal of oil |
@@ -261,3 +264,4 @@ coming from other apps will expect them, and we'll remain open to reconsidering 
 | ❄️ | Canvas pan | The canvas is the screen; there's nothing off-screen |
 | ❄️ | Canvas rotation (two-finger) | Physically rotate the tablet |
 | ❄️ | Flip canvas horizontally | Physical artists use a mirror to check composition |
+| ❄️ | Stroke stabilization / streamline | Drags the line behind the pen on a leash to smooth it — a drawing assist; a real pen doesn't do this. (Sensor-noise conditioning is NOT this and ships with the fidelity phase.) |

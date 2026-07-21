@@ -46,14 +46,89 @@ class Stroke(
     val tool: Tool,
     @param:ColorInt val color: Int,
     val seed: Int = 0,
+    /**
+     * The tool's nominal (unpressed) width in buffer px at capture time, or 0
+     * when unknown. The bristle renderer sizes its layout from this — a
+     * brush's bristle count is a property of the brush, not of how hard one
+     * stroke pressed — and replay re-renders identically because it's stored.
+     * 0 falls back to the observed stroke width (legacy strokes, tests).
+     */
+    val baseWidth: Float = 0f,
+    /**
+     * A clean-water stroke (watercolor's water mode): deposits no pigment,
+     * only re-wets — the paint underneath is diluted and pushed, harder than
+     * a pigmented wash does it. Captured at pen-down so undo/redo replays
+     * the stroke as what it was.
+     */
+    val water: Boolean = false,
 ) {
     val points: MutableList<StrokePoint> = mutableListOf()
+
+    /**
+     * The wet simulation's recorded tick schedule (watercolor only; empty for
+     * every other tool and for the ribbon fallback). Live ticks run on the wall
+     * clock — the wash keeps moving while the pen pauses, and for a while after
+     * pen-up — but each tick RECORDS how many points had been stamped before
+     * it. Replaying stamps and ticks from this list re-runs exactly the
+     * simulation the live preview showed, which is what makes undo/redo honest
+     * for a wall-clock-driven effect.
+     */
+    val wetSchedule: MutableList<Int> = mutableListOf()
+
+    /**
+     * The buffer crop the live wet sim ended on (watercolor only). The live
+     * crop grows as the stroke wanders; the bake replays over this final crop
+     * from the start so both see the same field extent.
+     */
+    var wetCrop: android.graphics.Rect? = null
+
+    /**
+     * Watercolor only: the per-point drying progress this stroke was FROZEN at
+     * when something cut its drying short (a new stroke, undo, a surface
+     * change). Null — the normal case — means it dried fully. The bake renders
+     * whatever is recorded here, so an interrupted wash commits exactly as the
+     * screen showed it (soft rim and all) instead of snapping crisp — and undo
+     * replays the same frozen state.
+     */
+    var dryFreeze: FloatArray? = null
 
     fun add(p: StrokePoint) {
         points.add(p)
     }
 
     val isEmpty: Boolean get() = points.isEmpty()
+
+    private var arcCache = FloatArray(0)
+    private var arcCount = 0
+
+    /**
+     * Cumulative arc length at each point, in buffer px — entry i is valid for
+     * i < [points]`.size`. The bristle renderer parameterizes its along-stroke
+     * texture by this, so the same canvas distance always gets the same streak
+     * regardless of how the points were captured or replayed.
+     *
+     * Incremental: interior entries never change (points only append), but the
+     * final entry is re-derived on every call because the live preview
+     * temporarily appends a predicted point and then removes it — the cached
+     * value at that index may belong to a point that no longer exists.
+     */
+    fun arcLengths(): FloatArray {
+        val n = points.size
+        if (n == 0) return arcCache
+        if (arcCache.size < n) arcCache = arcCache.copyOf(maxOf(n, arcCache.size * 2, 64))
+        arcCache[0] = 0f
+        if (n > 1) {
+            // The last cached entry may have belonged to a removed transient
+            // point, so re-derive from there; everything before it is real.
+            var i = (arcCount - 1).coerceIn(1, n - 1)
+            while (i < n) {
+                arcCache[i] = arcCache[i - 1] + (points[i].position - points[i - 1].position).distance
+                i++
+            }
+        }
+        arcCount = n
+        return arcCache
+    }
 }
 
 /**

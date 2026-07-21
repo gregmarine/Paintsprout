@@ -1,0 +1,27 @@
+// Presents the wet sim's pigment field as a premultiplied wash (Phase 3).
+//
+// Per-channel Beer-Lambert over white: transmittance t = exp(-k x absorbance).
+// That transmittance is decomposed into (alpha, colour) so the spectral mixer
+// can composite the wash over any backdrop, not just white:
+//
+//   alpha  = 1 - min(t)          (the strongest-absorbing channel sets opacity)
+//   premul = t - min(t)          (straight colour x alpha, algebraically)
+//
+// Composited over white this reproduces t exactly: premul + (1 - alpha) = t.
+// Zero absorbance (bare sheet, or a plain-water stroke) presents as alpha 0 —
+// invisible, even while its water is still moving pigment around.
+//
+// The output feeds the pigment mixer's uWash input, which expects premultiplied
+// colour — same contract as the ribbon wash it replaces.
+
+uniform shader uPig; // pigment field, rgb = absorbance (crop-anchored)
+uniform float uK;    // presentation strength: opacity of a saturated wash
+
+half4 main(float2 xy) {
+  float3 d = float3(uPig.eval(xy).rgb);
+  float3 t = exp(-uK * d);
+  float tMin = min(t.r, min(t.g, t.b));
+  float alpha = 1.0 - tMin;
+  float3 premul = t - tMin;
+  return half4(half3(premul), half(alpha));
+}

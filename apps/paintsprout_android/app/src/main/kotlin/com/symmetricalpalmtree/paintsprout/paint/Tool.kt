@@ -93,8 +93,15 @@ enum class RenderStyle {
     /** Crisp constant-color ribbon (pen, eraser). */
     SOLID,
 
-    /** Soft blurred, translucent, builds up on overlap (spray can). */
+    /** Soft blurred, translucent, builds up on overlap. */
     SOFT,
+
+    /**
+     * A stochastic droplet field (spray can): seeded dots scattered around
+     * the spine, density thinning radially — the soft edge is statistics,
+     * not blur — with occasional larger spatter.
+     */
+    DROPLET,
 
     /** Variable-width ribbon multiplied by a grain texture (pencil, marker). */
     GRAIN,
@@ -127,6 +134,15 @@ data class ToolProfile(
     /** How much tilt broadens the mark (0 = none). */
     val tiltGain: Float,
 
+    /**
+     * Per-tool tilt response exponent (0 = the shared TILT_EASE). A
+     * sharpened pencil is a CONE: the tip keeps point-contact — a thin
+     * line — through most tilts, and the wide side of the graphite only
+     * engages when the flank actually lies down, so the pencil wants a
+     * late, steep response where the marker's felt face wants a gradual one.
+     */
+    val tiltEase: Float = 0f,
+
     /** Whether pressure scales per-point opacity/darkness (pencil). */
     val pressureAffectsDensity: Boolean,
     val minDensity: Float,
@@ -152,6 +168,33 @@ data class ToolProfile(
 
     /** How the stroke is rendered. */
     val renderStyle: RenderStyle,
+
+    /**
+     * How long this tool's laid paint stays WET on the canvas, in ms — the
+     * window in which a brush dragged through it smears it (picks it up fast
+     * and carries it). 0 = dry media: pencil graphite never liquid-smears.
+     * Fresher = more smearable; see the wet-trace ledger in PaintCanvasView.
+     */
+    val wetMs: Long = 0L,
+
+    /**
+     * Grain-mesh structure (pencil graphite, marker dye; all zeros = the
+     * flat legacy mesh). [grainFalloff] is how much lighter the mark's edge
+     * deposits than its core — NEGATIVE runs it backwards, edges denser
+     * than the core: the marker's pooled wet edge. [grainStreak] the depth
+     * of the along-stroke micro-streaks the dragging tip leaves;
+     * [grainChunkPx] the mesh chunk length in buffer px of ARC LENGTH (not
+     * points — point spacing varies with pen speed) — chunks composite
+     * SRC_OVER, so a stroke crossing itself DARKENS there like layered
+     * graphite or dye (0 = one union mesh, overlaps don't build).
+     * [grainSideRegime] enables the side-of-lead response (lighter, deeper
+     * falloff, streakier as tilt grows) — graphite physics; a tilted marker
+     * still lays solid ink, so only the pencil sets it.
+     */
+    val grainFalloff: Float = 0f,
+    val grainStreak: Float = 0f,
+    val grainChunkPx: Float = 0f,
+    val grainSideRegime: Boolean = false,
 ) {
     /** Whether this tool's mark is broken up by the surface tooth at all. */
     val reactsToTooth: Boolean get() = toothFloor < 1.0f
@@ -159,10 +202,11 @@ data class ToolProfile(
     companion object {
         // Pencil: pressure -> darkness, tilt -> width, gritty graphite grain.
         private val PENCIL = ToolProfile(
-            minPressureFactor = 1.0f,
-            maxPressureFactor = 1.0f,
-            pressureAffectsWidth = false,
+            minPressureFactor = 0.9f, // bearing down flattens the tip a touch
+            maxPressureFactor = 1.12f,
+            pressureAffectsWidth = true,
             tiltGain = 16.0f,
+            tiltEase = 5.0f, // conical tip: thin until nearly flat, then the side blooms
             pressureAffectsDensity = true,
             minDensity = 0.1f,
             maxDensity = 0.95f,
@@ -171,22 +215,31 @@ data class ToolProfile(
             toothFloor = 0.0f, // gritty: grooves show bare surface
             toothBias = 1.4f,
             renderStyle = RenderStyle.GRAIN,
+            grainFalloff = 0.45f, // graphite thins from core to edge
+            grainStreak = 0.30f, // the lead drags fine streaks over the tooth
+            grainChunkPx = 48f, // crossings layer up like real graphite
+            grainSideRegime = true, // laid-over lead deposits lighter + streakier
         )
 
-        // Marker: same feel as the pencil, but a soft/even grain -> chunky marker.
+        // Marker: soft/even dye grain with a chisel nib — width comes from
+        // chiselNibWidth (travel direction + tilt engagement), not from the
+        // profile's isotropic width factors.
         private val MARKER = ToolProfile(
             minPressureFactor = 1.0f,
             maxPressureFactor = 1.0f,
             pressureAffectsWidth = false,
-            tiltGain = 5.5f,
+            tiltGain = 0.0f, // the nib model owns tilt (see chiselNibWidth)
             pressureAffectsDensity = true,
             minDensity = 0.1f,
-            maxDensity = 0.95f,
+            maxDensity = 0.82f, // translucent dye: every pass must have headroom to layer
             opacity = 1.0f,
             blurFactor = 0.0f,
             toothFloor = 0.62f, // even: soft, near-solid ink
             toothBias = 1.0f,
             renderStyle = RenderStyle.GRAIN,
+            wetMs = 4000, // fresh dye ink smears briefly
+            grainFalloff = -0.18f, // wet edge: ink pools denser at the mark's rim
+            grainChunkPx = 48f, // dye layering: overlaps darken
         )
 
         private val PEN = ToolProfile(
@@ -202,6 +255,7 @@ data class ToolProfile(
             toothFloor = 0.85f, // gel pen: mostly fills, faint tooth on rough surfaces
             toothBias = 1.0f,
             renderStyle = RenderStyle.SOLID,
+            wetMs = 4000, // wet ink line, briefly smearable
         )
 
         // Line: a straight, clean, constant-width solid mark — the pen's feel, drawn
@@ -219,6 +273,7 @@ data class ToolProfile(
             toothFloor = 0.85f, // like the pen: mostly fills, faint tooth on rough surfaces
             toothBias = 1.0f,
             renderStyle = RenderStyle.SOLID,
+            wetMs = 4000, // same ink as the pen
         )
 
         // Paint brush: bristle streaks that follow the path, spreading with pressure.
@@ -226,7 +281,8 @@ data class ToolProfile(
             minPressureFactor = 0.35f,
             maxPressureFactor = 2.2f,
             pressureAffectsWidth = true,
-            tiltGain = 0.4f,
+            tiltGain = 0.7f, // laying the brush over drags its side: notably wider
+
             pressureAffectsDensity = false,
             minDensity = 1.0f,
             maxDensity = 1.0f,
@@ -235,6 +291,7 @@ data class ToolProfile(
             toothFloor = 0.7f, // medium: dry-brush skips over the tooth
             toothBias = 1.0f,
             renderStyle = RenderStyle.BRISTLE,
+            wetMs = 15000, // laid paint stays workable
         )
 
         // Watercolor: a translucent pigment wash.
@@ -251,6 +308,7 @@ data class ToolProfile(
             toothFloor = 0.6f, // granulation: pigment settles into the tooth
             toothBias = 1.0f,
             renderStyle = RenderStyle.WASH,
+            wetMs = 20000, // a wash stays wet longest
         )
 
         // Spray can: soft, translucent, builds up on overlap.
@@ -263,10 +321,11 @@ data class ToolProfile(
             minDensity = 1.0f,
             maxDensity = 1.0f,
             opacity = 0.92f,
-            blurFactor = 0.25f,
+            blurFactor = 0.0f, // the droplet field's soft edge is statistics, not blur
             toothFloor = 0.78f, // droplets settle a touch more on the crests
             toothBias = 1.0f,
-            renderStyle = RenderStyle.SOFT,
+            renderStyle = RenderStyle.DROPLET,
+            wetMs = 6000, // a wet droplet field
         )
 
         private val ERASER = ToolProfile(
@@ -274,12 +333,12 @@ data class ToolProfile(
             maxPressureFactor = 1.0f,
             pressureAffectsWidth = false,
             tiltGain = 0.0f,
-            pressureAffectsDensity = false,
-            minDensity = 1.0f,
+            pressureAffectsDensity = true, // pressure -> partial lift: light touch thins, hard press removes
+            minDensity = 0.15f, // a feather graze barely lifts — the contrast must be unmistakable
             maxDensity = 1.0f,
             opacity = 1.0f,
-            blurFactor = 0.0f,
-            toothFloor = 0.85f, // erasing leaves faint residue down in the tooth valleys
+            blurFactor = 0.06f, // a rubber block's edge is soft, not surgical (0.10 read worse AND cost frames)
+            toothFloor = 0.95f, // a firm pass must READ clean: only a whisper stays in the valleys (0.85 left visible ghosts needing a second pass)
             toothBias = 1.0f,
             renderStyle = RenderStyle.SOLID,
         )

@@ -35,15 +35,20 @@ class StrokeGeometryTest {
     }
 
     @Test
-    fun pencilWidthDrivenByTiltNotPressure() {
-        // Pencil width ignores pressure (drives density instead); below the lo
-        // tilt cutoff it stays at base size.
+    fun pencilWidthMostlyTiltSlightPressure() {
+        // Feel phase: pressure now nudges pencil width a little (a pressed
+        // tip flattens), 0.9x..1.12x, while tilt stays the dominant axis.
         val base = 4f
-        assertEquals(base, resolveWidth(Tool.PENCIL, base, pressureNorm = 0f, tiltRadians = 0f), eps)
-        assertEquals(base, resolveWidth(Tool.PENCIL, base, pressureNorm = 1f, tiltRadians = 0f), eps)
+        assertEquals(base * 0.9f, resolveWidth(Tool.PENCIL, base, pressureNorm = 0f, tiltRadians = 0f), eps)
+        assertEquals(base * 1.12f, resolveWidth(Tool.PENCIL, base, pressureNorm = 1f, tiltRadians = 0f), eps)
 
-        // Full tilt: tiltFactor = 1 + tiltGain(16) * 1 = 17.
-        assertEquals(base * 17f, resolveWidth(Tool.PENCIL, base, 0f, TILT_HI_RAD), eps)
+        // Full tilt: tiltFactor = 1 + tiltGain(16) * 1 = 17, times pressure.
+        assertEquals(base * 0.9f * 17f, resolveWidth(Tool.PENCIL, base, 0f, TILT_HI_RAD), eps)
+
+        // Conical tip: at the measured NATURAL hold (~45 deg) the line stays
+        // near-thin — the side of the graphite only blooms close to flat.
+        val natural = resolveWidth(Tool.PENCIL, base, 0f, 0.79f)
+        assertTrue("natural hold should stay thin, was ${natural / base}x", natural < base * 1.6f)
     }
 
     @Test
@@ -69,11 +74,14 @@ class StrokeGeometryTest {
 
     @Test
     fun pencilDensityMapsPressure() {
-        // minDensity 0.1, maxDensity 0.95; pressure is scaled *1.3 then clamped.
+        // minDensity 0.1, maxDensity 0.95; gamma response (p^1.25) spreads
+        // the range instead of the old boost-and-clamp.
         assertEquals(0.1f, resolveDensity(Tool.PENCIL, 0f), eps)
         assertEquals(0.95f, resolveDensity(Tool.PENCIL, 1f), eps)
-        // pressureNorm 0.5 -> p' = 0.65 -> lerp(0.1, 0.95, 0.65) = 0.6525
-        assertEquals(0.6525f, resolveDensity(Tool.PENCIL, 0.5f), eps)
+        // pressureNorm 0.5 -> 0.5^1.25 = 0.4204 -> lerp(0.1, 0.95, .4204)
+        assertEquals(0.4573f, resolveDensity(Tool.PENCIL, 0.5f), 0.001f)
+        // The top of the range keeps differentiating (no clamp plateau).
+        assertTrue(resolveDensity(Tool.PENCIL, 0.95f) < resolveDensity(Tool.PENCIL, 1f))
     }
 
     // --- strokeNormals -------------------------------------------------------
@@ -137,6 +145,29 @@ class StrokeGeometryTest {
     }
 
     @Test
+    fun strokeNormalsRangeMatchesWholeStrokeComputation() {
+        // A wiggly stroke; every interior sub-range must agree with the full
+        // computation (the incremental append relies on this).
+        val pts = listOf(
+            StrokePoint(Vec2(0f, 0f), 2f),
+            StrokePoint(Vec2(10f, 4f), 2f),
+            StrokePoint(Vec2(18f, -3f), 2f),
+            StrokePoint(Vec2(30f, 5f), 2f),
+            StrokePoint(Vec2(41f, 2f), 2f),
+        )
+        val full = strokeNormals(pts)
+        for (from in pts.indices) {
+            for (to in from until pts.size) {
+                val range = strokeNormalsRange(pts, from, to)
+                for (i in from..to) {
+                    assertEquals("x[$from..$to @$i]", full[i].x, range[i - from].x, eps)
+                    assertEquals("y[$from..$to @$i]", full[i].y, range[i - from].y, eps)
+                }
+            }
+        }
+    }
+
+    @Test
     fun ribbonOutlineClampsHalfWidthToMinimum() {
         // width 0.4 -> half-width 0.2 -> clamped up to 0.5.
         val pts = listOf(
@@ -146,5 +177,67 @@ class StrokeGeometryTest {
         val normals = strokeNormals(pts)
         val outline = ribbonOutline(pts, normals)
         assertEquals(0.5f, outline.first().y, eps)
+    }
+
+    @Test
+    fun windowedNormalsSteadyThroughLandingClusterNoise() {
+        // A horizontal line whose points carry ~±1px of irregular vertical
+        // sensor noise at ~1.3px spacing — a pen landing. The windowed
+        // chord bounds the residual tilt at noise/window (here 2/16), so
+        // every normal stays near vertical — and strictly steadier than the
+        // raw central-difference normals, which swing with each sample.
+        val noise = floatArrayOf(1f, -0.7f, 0.3f, -1f, 0.8f, -0.2f, 0.6f, -0.9f)
+        val pts = ArrayList<StrokePoint>()
+        var x = 0f
+        var i = 0
+        while (x <= 40f) {
+            pts.add(StrokePoint(Vec2(x, 100f + noise[i % noise.size]), width = 16f))
+            i++
+            x += 1.3f
+        }
+        val stroke = Stroke(Tool.MARKER, 0xFF000000.toInt(), baseWidth = 16f)
+        pts.forEach(stroke::add)
+        val windowed = windowedNormals(stroke.points, stroke.arcLengths())
+        val raw = strokeNormals(stroke.points)
+        for ((k, nrm) in windowed.withIndex()) {
+            assertTrue(
+                "normal $k should be near vertical, was (${nrm.x}, ${nrm.y})",
+                kotlin.math.abs(nrm.y) > 0.95f,
+            )
+        }
+        val worstWindowed = windowed.minOf { kotlin.math.abs(it.y) }
+        val worstRaw = raw.minOf { kotlin.math.abs(it.y) }
+        assertTrue(
+            "windowed ($worstWindowed) must beat raw ($worstRaw)",
+            worstWindowed > worstRaw,
+        )
+    }
+
+    @Test
+    fun chiselNibWidthFollowsTravelDirection() {
+        val base = 16f
+        // Across the edge (travel perpendicular to the nib angle): full width.
+        val across = NIB_ANGLE_RAD + (Math.PI / 2).toFloat()
+        assertEquals(base, chiselNibWidth(base, 0f, across), 0.01f)
+        // Along the edge: only the nib's own thickness.
+        assertEquals(base * NIB_FLOOR, chiselNibWidth(base, 0f, NIB_ANGLE_RAD), 0.01f)
+        // Unknown direction (first point): mid engagement, between the two.
+        val unknown = chiselNibWidth(base, 0f, null)
+        assertTrue(unknown > base * NIB_FLOOR && unknown < base)
+        // Full tilt engages more edge.
+        assertEquals(
+            base * (1f + NIB_TILT_ENGAGE),
+            chiselNibWidth(base, TILT_HI_RAD, across), 0.01f,
+        )
+    }
+
+    @Test
+    fun eraserLiftSaturatesAtModeratePressure() {
+        // A normal erasing hand removes fully; only a graze lifts partially.
+        // The user's measured NORMAL pressure is ~0.6: full lift there.
+        assertEquals(1.0f, resolveDensity(Tool.ERASER, 0.6f), eps)
+        assertEquals(0.15f, resolveDensity(Tool.ERASER, 0f), eps)
+        val graze = resolveDensity(Tool.ERASER, 0.15f)
+        assertTrue("graze should lift partially, was $graze", graze in 0.2f..0.7f)
     }
 }

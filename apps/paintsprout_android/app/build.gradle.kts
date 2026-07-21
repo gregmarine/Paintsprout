@@ -62,5 +62,9 @@ dependencies {
     // Off-thread stroke bakes: Dispatchers.Default composites, Main swaps + invalidates.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
+    // Stylus latency (Apache-2.0): kalman-predicted pen positions so the live
+    // ink tail is drawn where the pen will be when the frame reaches glass.
+    implementation("androidx.input:input-motionprediction:1.0.0-beta05")
+
     testImplementation("junit:junit:4.13.2")
 }

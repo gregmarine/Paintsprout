@@ -1,0 +1,36 @@
+// Water half of one fixed-timestep wet-sim tick (Phase 3).
+//
+// The water field is an OPAQUE texture (r = wetness, 0 = dry sheet). It is kept
+// separate from the pigment field because Android bitmaps store premultiplied
+// colour: pigment packed into the rgb of a texture whose alpha is wetness would
+// be crushed to zero the moment the sheet dries — exactly when stranded pigment
+// must persist as the darkened edge.
+//
+// Physics: water diffuses toward drier neighbours, throttled by the paper tooth
+// (valleys hold water, crests shed it — this is what makes edges finger), and
+// evaporates a little each tick.
+//
+// Determinism: identical inputs -> identical output (no time, no randomness);
+// the bake replays the same ticks the live preview ran.
+
+uniform shader uWater;    // previous tick, r = wetness in [0,1]
+uniform shader uTooth;    // paper tooth field, r in [0,1], 1 = crest
+uniform float uDiffuse;   // water spread per tick (0..0.25 stable)
+uniform float uEvap;      // wetness lost per tick
+uniform float uToothDrag; // how strongly crests resist flow (0..1)
+
+half4 main(float2 xy) {
+  float wet = float(uWater.eval(xy).r);
+  float n = float(uWater.eval(xy + float2(0.0, -1.0)).r);
+  float s = float(uWater.eval(xy + float2(0.0, 1.0)).r);
+  float w = float(uWater.eval(xy + float2(-1.0, 0.0)).r);
+  float e = float(uWater.eval(xy + float2(1.0, 0.0)).r);
+
+  float tooth = float(uTooth.eval(xy).r);
+  float mobility = 1.0 - uToothDrag * tooth;
+  float lap = (n + s + w + e) - 4.0 * wet;
+  float next = wet + uDiffuse * mobility * lap;
+  next = max(next - uEvap, 0.0);
+
+  return half4(half(clamp(next, 0.0, 1.0)), 0.0, 0.0, 1.0);
+}
