@@ -43,7 +43,9 @@ fun resolveWidth(
     val profile = ToolProfile.of(tool)
     if (!tool.isDynamic) return baseSize
 
-    val p = pressureNorm.coerceIn(0.0f, 1.0f)
+    // The same gamma response the density tools use — the hand meets ONE
+    // curve everywhere, whether pressure drives width or darkness.
+    val p = pressureNorm.coerceIn(0.0f, 1.0f).pow(PRESSURE_GAMMA)
     val pressureFactor = if (profile.pressureAffectsWidth) {
         lerp(profile.minPressureFactor, profile.maxPressureFactor, p)
     } else {
