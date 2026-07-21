@@ -1112,6 +1112,49 @@ object StrokeRenderer {
         if (needsLayer) canvas.restoreToCount(layer)
     }
 
+    /**
+     * Appends the eraser's segments from [fromIndex] as a WHITE soft-edged
+     * mask, RAW — the caller blits it DST_OUT with the tooth applied once.
+     * Lets a long eraser stroke accumulate instead of re-blurring the whole
+     * path every frame (the re-blur grew with stroke length — felt as lag).
+     * Blur is per-segment rather than whole-stroke average — imperceptible
+     * on a soft opaque-interior mask; the bake ([paintSolid]) stays the
+     * source of truth.
+     */
+    fun appendEraserSegments(canvas: Canvas, stroke: Stroke, fromIndex: Int) {
+        val profile = ToolProfile.of(stroke.tool)
+        val pts = stroke.points
+        if (pts.isEmpty()) return
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        fun blurFor(w: Float): BlurMaskFilter? {
+            val sigma = profile.blurFactor * w
+            return if (sigma > 0.3f) BlurMaskFilter(sigma, BlurMaskFilter.Blur.NORMAL) else null
+        }
+        if (fromIndex == 0) {
+            val p = pts.first()
+            paint.strokeWidth = p.width
+            paint.maskFilter = blurFor(p.width)
+            paint.alpha = alpha255(p.density)
+            canvas.drawPoint(p.position.x, p.position.y, paint)
+        }
+        var i = max(1, fromIndex)
+        while (i < pts.size) {
+            val a = pts[i - 1]
+            val b = pts[i]
+            val w = (a.width + b.width) / 2f
+            paint.strokeWidth = w
+            paint.maskFilter = blurFor(w)
+            paint.alpha = alpha255((a.density + b.density) / 2f)
+            canvas.drawLine(a.position.x, a.position.y, b.position.x, b.position.y, paint)
+            i++
+        }
+    }
+
     // --- Droplet field (spray) ----------------------------------------------
 
     /**

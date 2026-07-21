@@ -1365,6 +1365,20 @@ class PaintCanvasView @JvmOverloads constructor(
                     }
                     return
                 }
+                Tool.ERASER -> {
+                    // Incremental like spray/brush: re-blurring the whole
+                    // soft-edged path every frame grew with stroke length —
+                    // the user felt it as lag.
+                    ensureEraserAccum(s)
+                    withTransientPoint(s, predictedTailPoint()) {
+                        blitAccum(canvas, s) { c ->
+                            if (s.points.size > accumDrawn) {
+                                StrokeRenderer.appendEraserSegments(c, s, accumDrawn)
+                            }
+                        }
+                    }
+                    return
+                }
                 Tool.BRUSH -> {
                     val layout = bristleLayout
                         ?: com.symmetricalpalmtree.paintsprout.paint.BristleLayout(s, activeMaxWidth)
@@ -1399,6 +1413,14 @@ class PaintCanvasView @JvmOverloads constructor(
         accumDrawn = stroke.points.size
     }
 
+    /** Appends any not-yet-drawn eraser mask segments to [activeAccum]. */
+    private fun ensureEraserAccum(stroke: Stroke) {
+        val accum = activeAccum ?: return
+        if (stroke.points.size <= accumDrawn && accumDrawn > 0) return
+        StrokeRenderer.appendEraserSegments(Canvas(accum), stroke, accumDrawn)
+        accumDrawn = stroke.points.size
+    }
+
     /**
      * Blits the accumulated stroke (plus its live tail, if any) with the tool's
      * opacity and the surface tooth — inside a layer clipped to the stroke's
@@ -1420,7 +1442,11 @@ class PaintCanvasView @JvmOverloads constructor(
             inset(-pad, -pad)
             intersect(0f, 0f, logicalW.toFloat(), logicalH.toFloat())
         }
-        val lp = Paint().apply { alpha = (profile.opacity * 255f).roundToInt().coerceIn(0, 255) }
+        val lp = Paint().apply {
+            alpha = (profile.opacity * 255f).roundToInt().coerceIn(0, 255)
+            // The eraser's accumulated mask LIFTS what's beneath it.
+            if (stroke.tool == Tool.ERASER) blendMode = BlendMode.DST_OUT
+        }
         val layer = canvas.saveLayer(bounds, lp)
         canvas.drawBitmap(accum, 0f, 0f, null)
         liveTail?.invoke(canvas)
@@ -3381,7 +3407,8 @@ class PaintCanvasView @JvmOverloads constructor(
     private fun beginActiveExtras() {
         accumDrawn = 0
         bristleLayout = null
-        val wantsAccum = active?.tool == Tool.SPRAY || active?.tool == Tool.BRUSH
+        val wantsAccum = active?.tool == Tool.SPRAY || active?.tool == Tool.BRUSH ||
+            active?.tool == Tool.ERASER
         if (wantsAccum && logicalW > 0 && logicalH > 0) {
             val cur = activeAccum
             if (cur != null && cur.width == logicalW && cur.height == logicalH) {
