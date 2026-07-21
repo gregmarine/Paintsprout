@@ -134,6 +134,15 @@ data class ToolProfile(
     /** How much tilt broadens the mark (0 = none). */
     val tiltGain: Float,
 
+    /**
+     * Per-tool tilt response exponent (0 = the shared TILT_EASE). A
+     * sharpened pencil is a CONE: the tip keeps point-contact — a thin
+     * line — through most tilts, and the wide side of the graphite only
+     * engages when the flank actually lies down, so the pencil wants a
+     * late, steep response where the marker's felt face wants a gradual one.
+     */
+    val tiltEase: Float = 0f,
+
     /** Whether pressure scales per-point opacity/darkness (pencil). */
     val pressureAffectsDensity: Boolean,
     val minDensity: Float,
@@ -197,6 +206,7 @@ data class ToolProfile(
             maxPressureFactor = 1.12f,
             pressureAffectsWidth = true,
             tiltGain = 16.0f,
+            tiltEase = 5.0f, // conical tip: thin until nearly flat, then the side blooms
             pressureAffectsDensity = true,
             minDensity = 0.1f,
             maxDensity = 0.95f,

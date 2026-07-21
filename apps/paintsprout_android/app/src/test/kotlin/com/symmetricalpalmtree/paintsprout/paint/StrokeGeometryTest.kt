@@ -44,6 +44,11 @@ class StrokeGeometryTest {
 
         // Full tilt: tiltFactor = 1 + tiltGain(16) * 1 = 17, times pressure.
         assertEquals(base * 0.9f * 17f, resolveWidth(Tool.PENCIL, base, 0f, TILT_HI_RAD), eps)
+
+        // Conical tip: at the measured NATURAL hold (~45 deg) the line stays
+        // near-thin — the side of the graphite only blooms close to flat.
+        val natural = resolveWidth(Tool.PENCIL, base, 0f, 0.79f)
+        assertTrue("natural hold should stay thin, was ${natural / base}x", natural < base * 1.6f)
     }
 
     @Test

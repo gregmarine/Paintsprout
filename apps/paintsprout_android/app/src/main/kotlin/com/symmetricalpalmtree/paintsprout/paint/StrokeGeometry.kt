@@ -61,7 +61,8 @@ fun resolveWidth(
 
     val rawTilt = ((tiltRadians - TILT_LO_RAD) / (TILT_HI_RAD - TILT_LO_RAD))
         .coerceIn(0.0f, 1.0f)
-    val tiltNorm = rawTilt.pow(TILT_EASE)
+    val ease = if (profile.tiltEase > 0f) profile.tiltEase else TILT_EASE
+    val tiltNorm = rawTilt.pow(ease)
     val tiltFactor = 1.0f + profile.tiltGain * tiltNorm
 
     return max(0.5f, baseSize * pressureFactor * tiltFactor)
