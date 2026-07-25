@@ -598,7 +598,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 |---|---|---|---|
 | 0 | Plan & decisions (this document) | — | ✅ |
 | 1 | Container skeleton: deps, paths, schema constants, WAL | no | ✅ |
-| 2 | Non-destructive opens, probe, swap repair | no | ⬜ |
+| 2 | Non-destructive opens, probe, swap repair | no | ✅ |
 | 3 | Crypto core: keystore stores, key mint, KDF cache, rate limiter | no | ⬜ |
 | 4 | Global index DB: Room entities, DAOs, repository, sentinels | no | ⬜ |
 | 5 | Bootstrap gate + unlock UI + launch routing | **yes** | ⬜ |
@@ -664,13 +664,36 @@ set is complete for the plumbing phases. Three deviations from the plan text, al
 anything that isn't a bare UUID (invariant 25) and that `listDocuments` never mistakes a half-written
 swap file for a document.
 
-## Phase 2 — Non-destructive opens, probe, swap repair
+## Phase 2 — Non-destructive opens, probe, swap repair ✅
 `SafeOpenHelperFactory` wrapping every open with a corruption handler that **reports and never
 deletes**. `DbProbe`: empty/missing → `Invalid`; first 16 bytes ≠ `SQLite format 3\0` → `Encrypted`;
 opens as plain SQLite and reads `sqlite_master` → `Plaintext`; else `Encrypted`. Exists-guarded
 open entry points, separately named creation entry points. `SwapRecovery.repair(dir)` implementing
 the three interrupted-swap states from the spec.
 **Verify:** JVM unit tests over crafted files — truncated, garbage, real SQLite, aside-name present.
+
+**As built.** Five files: `OpenGuards` (the `SoilOpenException` hierarchy plus
+`requireExistingDatabase` / `existsAsDatabase`), `NonDestructiveOpenHelperFactory`, `DbProbe`,
+`CommitSwap`, `SwapRecovery`. 29 tests. Deviations:
+
+- **`CommitSwap` landed here too**, ahead of Phases 23/24 which consume it. Recovery is only
+  meaningful against the writer that produces the states it repairs, so the tests interrupt a real
+  swap at each of its cut points and make recovery finish the job — including a loop asserting that
+  at *no* cut point does the data exist under zero names. Hand-crafted on-disk states would have
+  tested my idea of the swap rather than the swap.
+- **Testable seams instead of mocks**, since the project has no mocking library: `nonDestructive()`
+  is a standalone callback wrapper (no `Context` needed — a `java.lang.reflect.Proxy` stands in for
+  `SupportSQLiteDatabase`), `DbProbe.probe()` takes the plaintext-opener as a parameter (step 3 needs
+  a device), and `SwapRecovery.repairAll()` takes the per-file repair function so the
+  guard-per-file behaviour is tested directly rather than inferred.
+- **`SwapRecovery` also handles the `.new` install name** (an import that never committed → dropped,
+  since nothing verified it) and treats a **zero-byte real file as missing**, so a stub fabricated by
+  a create-capable open cannot outrank an aside holding the actual data.
+- **The SQLite magic is built from an explicit terminator byte** rather than a string literal with an
+  embedded NUL. The first draft had a raw `0x00` sitting invisibly in the source — correct, and
+  exactly the kind of thing an editor or an encoding round-trip silently eats.
+
+Not wired to anything yet: `repairAll` must run before the first probe, which is Phase 5's bootstrap.
 
 ## Phase 3 — Crypto core
 Three keystore-backed preference files (secure prefs / derived-key store / reserved), created under
