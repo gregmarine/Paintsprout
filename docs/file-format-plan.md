@@ -600,7 +600,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 1 | Container skeleton: deps, paths, schema constants, WAL | no | ✅ |
 | 2 | Non-destructive opens, probe, swap repair | no | ✅ |
 | 3 | Crypto core: keystore stores, key mint, KDF cache, rate limiter | no | ✅ |
-| 4 | Global index DB: Room entities, DAOs, repository, sentinels | no | ⬜ |
+| 4 | Global index DB: Room entities, DAOs, repository, sentinels | no | ✅ |
 | 5 | Bootstrap gate + unlock UI + launch routing | **yes** | ⬜ |
 | 6 | `.soil` container: schema, `notebook_meta`, create/open/seal, registry | **yes** | ⬜ |
 | 7 | Object model: universal row, columnar mapping, subtree helpers | no | ⬜ |
@@ -734,13 +734,46 @@ Two open-path rules the limiter documents but cannot enforce, for whoever writes
 UI: a **cancelled** prompt is not a failure, and a missing file must be reported as missing rather
 than looped back into the prompt.
 
-## Phase 4 — Global index DB
+## Phase 4 — Global index DB ✅
 Room entities/DAOs for `objects`, `scratchpad`, `clipboard`, `sketchbook_activity`. One repository
 owns every write (DAO access is read-only elsewhere) so the `updatedAt` discipline is enforceable in
 one place. Idempotent `ensurePinnedList()`, `ensureClipboard()`, `ensureScratchpadRoot()`,
 `ensureClipboardRoot()`. Cycle-guarded (50-hop) ancestry walk.
 **Verify:** instrumented/unit tests on a temp encrypted file: create, insert, query by
 `(parentId, type, deletedAt)`, list-edge scrub on delete.
+
+**As built.** Seven files in `data/index/`: `Sentinels`, `IndexObject` (+ `IndexType`, `IndexEdit`),
+`ActivityRow`, `IndexDao` (+ `IndexSql`, `ActivitySql`), `IndexDatabase`, `Ancestry`,
+`IndexRepository`. 33 tests; 206 in the module. Deviations, all about getting real verification
+without a device:
+
+- **Room owns only `objects` and `sketchbook_activity`.** The document-shaped tables (`scratchpad`,
+  `clipboard`) are created from `SchemaSql` in the database callback and have no entities — they are
+  column-for-column the `.soil` object table, read and written by the same table-name-parameterised
+  code, and a second definition of the universal row would immediately start competing with the
+  first. Room ignores tables it has no entity for, which is exactly the behaviour wanted.
+- **Room's schema export is on and committed** (`app/schemas/`), and a drift test executes *both*
+  Room's generated `createSql` and the hand-written `SchemaSql` DDL against real SQLite, comparing
+  `table_info` and `index_list`. This is the guard the spec asks for — "all creation sites must
+  produce an identically-validating schema" — made mechanical. It also asserts Room has no entity for
+  a document-shaped table.
+- **Queries are `const val` in `IndexSql`/`ActivitySql`, referenced by `@Query`.** Room resolves the
+  constants at compile time and validates them against the entities; the tests then execute the same
+  strings against real SQLite with real data. One string, checked from both ends.
+- **`Ancestry` is a pure function over a lookup**, so the cycle guard and the hop cap are tested
+  directly rather than through a database. It also carries `wouldCycle`, the check a *move* must
+  pass — dragging a folder into its own descendant is what creates the cycle the walk has to survive.
+- **`IndexEdit` makes the `updatedAt` rule a table** instead of a habit at each call site, and
+  `IndexRepository.edit()` is the only thing that consults it.
+- **The cover key-scope rule is already enforced**, ahead of covers existing (Phase 14): `setCover`
+  refuses a private-scope book, and `setEncryption` clears an existing cover in the same write when
+  converting to a private passphrase.
+
+Two test-side bugs worth recording, both caught by the suite rather than by review. The ancestry
+cycle test asserted the walk returns *both* rows of a 2-cycle; it correctly stops where the cycle
+closes. And the JDBC test helper bound `:name` parameters positionally, which silently shifts every
+argument after a repeated name — `SOFT_DELETE` uses `:at` twice. It now binds by name, the way Room
+does.
 
 ## Phase 5 — Bootstrap gate + unlock UI 🧪
 The open state machine: `repair → probe → (Invalid: mint key, create ENCRYPTED, derive+cache) |

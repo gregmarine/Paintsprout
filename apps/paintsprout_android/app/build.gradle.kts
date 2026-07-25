@@ -43,6 +43,12 @@ android {
         buildConfig = true
     }
 
+    // Room writes its generated schema here at build time. It is committed, and a
+    // unit test compares it against the hand-written DDL in SchemaSql — the ORM
+    // and the constants must describe the same tables or an open fails validation
+    // on a device with a perfectly good file.
+    sourceSets["main"].assets.srcDir("$projectDir/schemas")
+
     buildTypes {
         // No applicationIdSuffix on debug: the native app is meant to replace the
         // previous Flutter install outright, so debug and release share one id.
@@ -54,6 +60,10 @@ android {
             )
         }
     }
+}
+
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {
