@@ -602,7 +602,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 3 | Crypto core: keystore stores, key mint, KDF cache, rate limiter | no | ✅ |
 | 4 | Global index DB: Room entities, DAOs, repository, sentinels | no | ✅ |
 | 5 | Bootstrap gate + unlock UI + launch routing | **yes** | ✅ |
-| 6 | `.soil` container: schema, `notebook_meta`, create/open/seal, registry | **yes** | ⬜ |
+| 6 | `.soil` container: schema, `notebook_meta`, create/open/seal, registry | **yes** | ✅ |
 | 7 | Object model: universal row, columnar mapping, subtree helpers | no | ⬜ |
 | 8 | Binary codecs: stroke format B, masks, matrix, wet state | no | ⬜ |
 | 9 | Document repository: pages, layers, ops, undoDepth, cache, palette | no | ⬜ |
@@ -853,12 +853,72 @@ default corruption handler reacts to by **deleting and recreating the file**. Ev
 this app produces that error, which is why `NonDestructiveOpenHelperFactory` had to exist before any
 key did.
 
-## Phase 6 — `.soil` container 🧪
+## Phase 6 — `.soil` container ✅ 🧪
 `sketchbook` + `notebook_meta` tables, document Room DB, create/open/seal, the open-document
 registry, per-document key scope resolution. A temporary debug menu item creates and deletes a
 sketchbook file so the container can be exercised before any UI exists.
 **Device test:** create a file, `adb pull`, open it in the stock `sqlcipher` CLI with the recovery
 key, confirm the table set and that no `-wal`/`-shm` survives a clean close.
+
+**As built.** `NotebookMeta` (+ `FolderRef`, `SoilJson`), `SoilDatabase`, `OpenDocuments`,
+`SketchbookStore`, and a temporary long-press-Save hook in the editor. 11 tests; 231 in the module.
+
+> ### ⚠️ Decision 12 narrowed: the document container does **not** use Room
+>
+> The user chose Room over raw `androidx.sqlite`, and that still holds for the index. It does not
+> hold for the document, and the reason is the format rather than convenience.
+>
+> A `.soil` is **portable**. It can arrive from another device, from an older or newer build, or
+> from another app in the family — and the spec explicitly allows one file to carry several apps'
+> object tables. Room's open path validates a file against its entity definitions and rejects
+> anything it doesn't recognise. That is the right instinct for a database we own outright and the
+> wrong one for a document somebody hands us: a mixed file carrying both a `notebook` and a
+> `sketchbook` table is *valid* by the format's own rules and would fail Room's validation.
+>
+> So `SoilDatabase` opens through `SupportSQLiteOpenHelper` directly. We keep the `user_version`
+> lifecycle (create / upgrade / downgrade) that the platform helper provides — and which the
+> `sqlcipher_export` hazard makes us care about — without the entity validation. The schema still
+> comes from `SchemaSql`, so there is still exactly one definition.
+>
+> **Flag this if you disagree** — it is a deliberate divergence from a decision you made, not an
+> oversight, and Phase 23's importer is where it pays off or doesn't.
+
+Other notes:
+
+- **The bootstrap runs in `onCreate` only, never in `onOpen`.** Re-running it on open would quietly
+  add our tables to a document that belongs to another app in the family — the "never touch a table
+  you don't own" line, from the other side.
+- **A file stamped newer than this build is refused** rather than opened. The platform default would
+  throw anyway; the reason it matters is that carrying on ends with this build writing its *lower*
+  version number over the file's, so the newer build would then try to "upgrade" what it wrote.
+- **`OpenDocuments`** exists to stop an import from replacing a document the editor is holding open —
+  swapping a file out from under a live connection corrupts both copies.
+- **Creating a sketchbook the way a user means it** — file + index row + a first page — composes
+  `SketchbookStore` with `IndexRepository`, and belongs to Phase 14. The debug hook does the first
+  two so the pairing gets exercised now.
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| File created at `Garden/<uuid>.soil` | ✅ `ed233d18-…-13f68c5e52b5.soil`, 20480 bytes |
+| Encrypted from the first byte | ✅ no `SQLite format 3\0` header |
+| Table set is exactly ours | ✅ `notebook_meta`, `sketchbook` — and nothing else |
+| `sketchbook` DDL on device | ✅ the 26-column universal row, `order` quoted, PK last |
+| Its index | ✅ `index_sketchbook_parentId_order_deletedAt` |
+| `user_version` | ✅ 1 |
+| **No sidecars survive a clean seal** | ✅ "Sidecars after seal: none" |
+| Open-document registry empties on seal | ✅ 0 open |
+| Index row and file created together | ✅ 1 file, 1 index row |
+| `notebook_meta` JSON | ✅ family field set, `notebookId` (not `sketchbookId`), `folderPath: []` |
+| Stock `sqlcipher` CLI opens it with the global key | ✅ |
+| `CHECK (id = 0)` is genuinely enforced | ✅ inserting `id=1` fails with a constraint error |
+| Delete removes the file and the row | ✅ Garden empty afterwards |
+| Crashes | ✅ none |
+
+One incidental finding: the tool rail is taller than the Movink's screen, so Save/Canvas size/
+Calibrate/Clear sit below the fold and need a scroll to reach. It is inside a `ScrollView` so nothing
+is unreachable, and it predates this work — noting it rather than fixing it mid-phase.
 
 ## Phase 7 — Object model
 `SoilObject` universal row data class + a columnar mapper shared by the document table, the

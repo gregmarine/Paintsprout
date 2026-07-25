@@ -43,6 +43,13 @@ import com.symmetricalpalmtree.paintsprout.paint.Tool
 import com.symmetricalpalmtree.paintsprout.paint.Tray
 import com.symmetricalpalmtree.paintsprout.paint.WatercolorParams
 import com.symmetricalpalmtree.paintsprout.paint.WoodParams
+import com.symmetricalpalmtree.paintsprout.data.index.IndexGate
+import com.symmetricalpalmtree.paintsprout.data.soil.OpenDocuments
+import com.symmetricalpalmtree.paintsprout.data.soil.SketchbookStore
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 /**
@@ -227,7 +234,13 @@ class MainActivity : AppCompatActivity() {
         rail.addView(redoBtn)
 
         rail.addView(divider())
-        rail.addView(iconButton(R.drawable.ic_save, "Save PNG") { save() })
+        rail.addView(
+            iconButton(R.drawable.ic_save, "Save PNG") { save() }.apply {
+                // Temporary: the only way to exercise the .soil container before the
+                // library screen exists (Phase 14 removes this along with the hook).
+                setOnLongClickListener { storageCheck(); true }
+            },
+        )
         rail.addView(iconButton(R.drawable.ic_canvas_size, "Canvas size") { pickCanvasSize() })
         rail.addView(iconButton(R.drawable.ic_calibrate, "Calibrate screen") { openCalibration() })
         rail.addView(iconButton(R.drawable.ic_clear, "Clear") { confirmClear() })
@@ -1026,6 +1039,76 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Clear") { _, _ -> binding.canvas.clear() }
             .show()
+    }
+
+    /**
+     * Temporary container exercise, reached by long-pressing Save.
+     *
+     * There is no library screen yet and no way for a sketchbook to come into
+     * existence, so this is how the `.soil` container gets driven on a real
+     * device: create a file, seal it, and report what actually landed on disk.
+     * Phase 14 deletes this along with the long-press that opens it.
+     */
+    private fun storageCheck() {
+        lifecycleScope.launch {
+            val report = withContext(Dispatchers.IO) { runCatching { buildStorageReport() } }
+            val text = report.fold(
+                onSuccess = { it },
+                onFailure = { "Failed: ${it::class.java.simpleName}\n${it.message}" },
+            )
+            MaterialAlertDialogBuilder(this@MainActivity)
+                .setTitle("Storage check")
+                .setMessage(text)
+                .setNegativeButton("Close", null)
+                .setPositiveButton("Delete test books") { _, _ -> deleteTestSketchbooks() }
+                .show()
+        }
+    }
+
+    private suspend fun buildStorageReport(): String {
+        val repo = IndexGate.awaitReady()
+        val name = "Test book ${System.currentTimeMillis() % 100000}"
+
+        val soil = SketchbookStore.create(this, name)
+        val tables = soil.tables().filterNot { it.startsWith("sqlite_") }.sorted()
+        val meta = soil.readMeta()
+        soil.seal()
+        val stranded = soil.strandedSidecars().map { it.name }
+
+        // The index row is what makes it a sketchbook the app knows about; the
+        // pairing of the two is the thing worth seeing exercised.
+        repo.createSketchbook(name = name, id = soil.documentId)
+
+        val files = SketchbookStore.listFiles(this)
+        return buildString {
+            appendLine("Created: ${soil.file.name}")
+            appendLine("Size: ${soil.file.length()} bytes")
+            appendLine("Tables: ${tables.joinToString(", ")}")
+            appendLine("Meta name: ${meta?.name}")
+            appendLine("Meta scope: ${meta?.keyScope}, encrypted=${meta?.encrypted}")
+            appendLine("Sidecars after seal: ${if (stranded.isEmpty()) "none" else stranded.joinToString()}")
+            appendLine("Open documents: ${OpenDocuments.ids().size}")
+            appendLine("Files in Garden: ${files.size}")
+            appendLine("Index rows: ${repo.sketchbooks(null).size}")
+        }
+    }
+
+    private fun deleteTestSketchbooks() {
+        lifecycleScope.launch {
+            val gone = withContext(Dispatchers.IO) {
+                val repo = IndexGate.awaitReady()
+                var count = 0
+                for (row in repo.sketchbooks(null)) {
+                    runCatching {
+                        SketchbookStore.delete(this@MainActivity, row.id)
+                        repo.delete(row.id)
+                        count++
+                    }
+                }
+                count
+            }
+            android.widget.Toast.makeText(this@MainActivity, "Deleted $gone", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun save() {
