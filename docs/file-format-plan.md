@@ -1160,18 +1160,23 @@ Every blob was then decoded **independently, in Python**, rather than trusted be
   ~2× scale with translation, and an exact affine bottom row. A real `Matrix.getValues()` capture,
   preserved bit for bit.
 
-**Two things worth recording.**
+**Frisket-constrained erasing, verified.** A second hand-run added op 17 — an `ERASER` stroke with a
+338-byte `stroke_clip` child. Erasing *by hand inside* a selection persists with the mask that
+confines it, so the constraint replays with the stroke. That is the harder half of the feature and
+the more likely one to be used.
 
-`erase` is still the one op type never written on device, and the reason is a small interaction trap
-rather than anything in the storage layer. Row timestamps separate the two sessions cleanly — the
-injected run ends at 11:04, the hand-run starts at 11:10 — and the hand-run contains an `ERASER`
-*stroke* at 11:12:14, not an `erase` op. `deleteSelection()` definitely writes an `EraseOp`, and
-nothing in the code selects the eraser on its own, so what happened is that the **eraser tool** was
-tapped while looking for the **"Erase inside selection"** button. Those two are easy to confuse: one
-is a tool near the top of the rail, the other appears *mid-rail only while a selection is live*,
-shifting everything below it as it comes and goes. Worth remembering when the library and page UI
-start adding to that rail. `EraseOp`'s encoding is unit-tested and its row shape is `fill` minus the
-colour, so the risk is low — but it is untested on glass and should be ticked off in Phase 12's pass.
+**`EraseOp` is deliberately accepted as unit-tested only.** It is the *other* thing: the "Erase
+inside selection" button, which clears the whole region in one step. Two attempts to reach it on
+device produced hand-erasing instead — the eraser tool sits near the top of the rail while the
+selection actions appear *mid-rail only while a selection is live*, shifting everything below them,
+and the two are easy to confuse. Worth remembering as the page and library UI grow into that rail.
+
+Chasing it further is not worth the cost, for a reason rather than by fatigue: `eraseRow` and
+`fillRow` build through the **same** `maskRow()` and the same `repo.appendOp`, so `erase` is `fill`
+minus one column. `fill` is device-verified twice with its mask decoded independently and its
+geometry checked against the buffer size, and `eraseRow` is unit-tested for type, columns and mask
+round-trip. The genuinely unexercised surface is one `copy()` call with one fewer argument. "Every op
+type seen on glass" was the wrong goal; confidence was the goal, and it is already there.
 
 One of the three `stroke_clip` rows has **no live parent**. That is the format working as designed,
 not a leak: a redo tail is hard-deleted when a new op replaces it, and the spec's rule is that a
