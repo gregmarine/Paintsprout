@@ -612,7 +612,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 13 | Autosave, lifecycle, seal, crash safety | **yes** | ✅ |
 | 14 | Library screen (flat): create, open, rename, delete, covers | **yes** | ✅ |
 | 15 | Folders, move, sort, name search | **yes** | ✅ |
-| 16 | Pinned + recents | **yes** | ⬜ |
+| 16 | Pinned + recents | **yes** | ✅ |
 | 17 | Multi-page UI: page strip, add/duplicate/delete/reorder | **yes** | ⬜ |
 | 18 | Scratchpad | **yes** | ⬜ |
 | 19 | Lasso tool | **yes** | ⬜ |
@@ -1370,11 +1370,44 @@ in this device's system font and rendered as an empty tofu box. It is a vector d
 remembering as a rule rather than a one-off: a Unicode glyph is a *font dependency*, and the target
 device is an e-ink-adjacent tablet with a minimal font set.
 
-## Phase 16 — Pinned + recents 🧪
+## Phase 16 — Pinned + recents ✅ 🧪
 `PINNED_LIST_ID` list with `list_item` child rows (hard-deleted on unpin, scrubbed on document
 delete, members resolved and filtered at read). `sketchbook_activity` logging `OPENED`/`EDITED`, and
 a Recents section derived from it.
 **Device test:** pin/unpin, delete a pinned book (no ghost), confirm recents ordering.
+
+**As built.** Mostly surfacing what Phase 4 already built — the membership edges, the activity log
+and their disciplines were there; this phase gave them a screen. Pinned and Recent sections, a pin
+badge on cards, and Pin/Unpin in the action menu. 390 tests (no new ones: the data-layer behaviour
+was already covered, and what was added is UI).
+
+- **Pinned and Recent live at the root only**, not repeated inside every folder and not competing
+  with a search in progress. They are library-wide shortcuts, so the root of the library is where
+  they belong.
+- **Recent excludes what is pinned.** A book that is both would otherwise occupy two cards a
+  centimetre apart, which is noise rather than information.
+- **The pin badge is a vector, not a glyph** — Phase 15 already learned what a missing font character
+  looks like on this device.
+- **Row cards state their own margins.** `card()` builds itself for the `GridLayout`, and
+  `GridLayout.LayoutParams` margins do not survive being regenerated for a `LinearLayout`, so the
+  horizontal rows set theirs explicitly or the cards touch.
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| Pin a book | ✅ appears under Pinned, badged in both places |
+| Pin a second | ✅ both listed, insertion order preserved |
+| Recent populated from the activity log | ✅ and excluding the pinned one |
+| **Delete a pinned book** | ✅ **no ghost** — gone from Pinned, Recent and the grid |
+| Its file removed | ✅ two files left in the garden |
+| Dangling `list_item` edges afterwards | ✅ **0** |
+| Orphan activity rows afterwards | ✅ **0** |
+
+The last three rows are the membership discipline demonstrated rather than asserted: `delete()`
+scrubs every edge pointing at a document *before* the row is soft-deleted, and `pinnedSketchbooks()`
+filters members at read as well — belt and braces, because a list that can resurrect a deleted
+sketchbook is a picker crash waiting to happen.
 
 ## Phase 17 — Multi-page UI 🧪
 Page strip with thumbnails, add / duplicate / delete / reorder, prev/next navigation, per-page

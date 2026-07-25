@@ -50,6 +50,7 @@ import kotlin.math.roundToInt
 class LibraryActivity : AppCompatActivity() {
 
     private lateinit var grid: GridLayout
+    private lateinit var shortcuts: LinearLayout
     private lateinit var empty: TextView
     private lateinit var breadcrumb: TextView
     private lateinit var search: EditText
@@ -98,6 +99,7 @@ class LibraryActivity : AppCompatActivity() {
             val books = sort.applyTo(
                 if (searching) index.searchSketchbooks(query) else index.sketchbooks(folderId),
             )
+            val pinnedIds = index.pinnedSketchbooks().map { it.id }.toSet()
 
             breadcrumb.text = when {
                 searching -> getString(R.string.library_results, books.size)
@@ -106,18 +108,68 @@ class LibraryActivity : AppCompatActivity() {
             }
             upButton.visibility = if (folderId != null && !searching) View.VISIBLE else View.GONE
 
+            // Pinned and Recent are library-wide shortcuts, so they belong at the
+            // root of it — not repeated inside every folder, and not competing with
+            // a search the user is in the middle of.
+            shortcuts.removeAllViews()
+            if (folderId == null && !searching) {
+                val pinned = index.pinnedSketchbooks()
+                val recent = index.recentSketchbooks(limit = 8).filter { it.id !in pinnedIds }
+                if (pinned.isNotEmpty()) shortcuts.addView(section(getString(R.string.library_pinned), pinned, pinnedIds))
+                if (recent.isNotEmpty()) shortcuts.addView(section(getString(R.string.library_recent), recent, pinnedIds))
+            }
+
             grid.removeAllViews()
             folders.forEach { grid.addView(folderCard(it)) }
-            books.forEach { grid.addView(bookCard(it)) }
+            books.forEach { grid.addView(bookCard(it, it.id in pinnedIds)) }
 
             empty.text = when {
                 searching -> getString(R.string.library_no_results)
                 folderId == null -> getString(R.string.library_empty)
                 else -> getString(R.string.library_folder_empty)
             }
-            empty.visibility = if (folders.isEmpty() && books.isEmpty()) View.VISIBLE else View.GONE
+            empty.visibility =
+                if (folders.isEmpty() && books.isEmpty() && shortcuts.childCount == 0) View.VISIBLE else View.GONE
         }
     }
+
+    /** A labelled row of cards — Pinned, or Recent. */
+    private fun section(title: String, books: List<IndexObject>, pinnedIds: Set<String>): View =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(
+                TextView(this@LibraryActivity).apply {
+                    text = title
+                    textSize = 13f
+                    setTextColor(0xFF6B7075.toInt())
+                    setPadding(dp(20), dp(12), dp(20), 0)
+                },
+            )
+            addView(
+                android.widget.HorizontalScrollView(this@LibraryActivity).apply {
+                    isHorizontalScrollBarEnabled = false
+                    addView(
+                        LinearLayout(this@LibraryActivity).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            setPadding(dp(12), 0, dp(12), 0)
+                            books.forEach { book ->
+                                addView(
+                                    bookCard(book, book.id in pinnedIds).apply {
+                                        // The card builds itself for the grid, and
+                                        // GridLayout's margins do not survive being
+                                        // re-generated for a LinearLayout — so a row
+                                        // card states its own or the cards touch.
+                                        layoutParams = LinearLayout.LayoutParams(
+                                            dp(200), ViewGroup.LayoutParams.WRAP_CONTENT,
+                                        ).apply { setMargins(dp(8), dp(8), dp(8), dp(8)) }
+                                    },
+                                )
+                            }
+                        },
+                    )
+                },
+            )
+        }
 
     private fun goUp() {
         lifecycleScope.launch {
@@ -145,9 +197,9 @@ class LibraryActivity : AppCompatActivity() {
         }.apply { setOnLongClickListener { folderActions(folder); true } }
     }
 
-    private fun bookCard(book: IndexObject): View {
+    private fun bookCard(book: IndexObject, pinned: Boolean = false): View {
         val cover = ImageView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(200), dp(140))
+            layoutParams = android.widget.FrameLayout.LayoutParams(dp(200), dp(140))
             scaleType = ImageView.ScaleType.CENTER_CROP
             setBackgroundColor(0xFFEFEDE7.toInt())
             book.blob?.let { bytes ->
@@ -158,8 +210,27 @@ class LibraryActivity : AppCompatActivity() {
             }
             contentDescription = book.name
         }
+        // A drawable, not a glyph — this device's font has no pushpin, and Phase 15
+        // already learned what that looks like.
+        val top = android.widget.FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(200), dp(140))
+            addView(cover)
+            if (pinned) {
+                addView(
+                    ImageView(this@LibraryActivity).apply {
+                        setImageResource(R.drawable.ic_pin)
+                        setBackgroundColor(0x66000000)
+                        setPadding(dp(4), dp(4), dp(4), dp(4))
+                        layoutParams = android.widget.FrameLayout.LayoutParams(dp(28), dp(28)).apply {
+                            gravity = Gravity.TOP or Gravity.END
+                            setMargins(0, dp(6), dp(6), 0)
+                        }
+                    },
+                )
+            }
+        }
         val pages = book.pageCount ?: 0
-        return card(cover, book.name, resources.getQuantityString(R.plurals.library_pages, pages, pages)) {
+        return card(top, book.name, resources.getQuantityString(R.plurals.library_pages, pages, pages)) {
             open(book)
         }.apply { setOnLongClickListener { bookActions(book); true } }
     }
@@ -211,24 +282,35 @@ class LibraryActivity : AppCompatActivity() {
         startActivity(Intent(this, MainActivity::class.java))
     }
 
-    private fun bookActions(book: IndexObject) = MaterialAlertDialogBuilder(this)
-        .setTitle(book.name)
-        .setItems(
-            arrayOf(
-                getString(R.string.library_rename),
-                getString(R.string.library_move),
-                getString(R.string.library_duplicate),
-                getString(R.string.library_delete),
-            ),
-        ) { _, which ->
-            when (which) {
-                0 -> promptRename(book)
-                1 -> promptMove(book)
-                2 -> duplicate(book)
-                3 -> confirmDeleteBook(book)
-            }
+    private fun bookActions(book: IndexObject) {
+        lifecycleScope.launch {
+            val index = IndexGate.awaitReady()
+            val pinned = index.isPinned(book.id)
+            MaterialAlertDialogBuilder(this@LibraryActivity)
+                .setTitle(book.name)
+                .setItems(
+                    arrayOf(
+                        getString(if (pinned) R.string.library_unpin else R.string.library_pin),
+                        getString(R.string.library_rename),
+                        getString(R.string.library_move),
+                        getString(R.string.library_duplicate),
+                        getString(R.string.library_delete),
+                    ),
+                ) { _, which ->
+                    when (which) {
+                        0 -> lifecycleScope.launch {
+                            if (pinned) index.unpin(book.id) else index.pin(book.id)
+                            refresh()
+                        }
+                        1 -> promptRename(book)
+                        2 -> promptMove(book)
+                        3 -> duplicate(book)
+                        4 -> confirmDeleteBook(book)
+                    }
+                }
+                .show()
         }
-        .show()
+    }
 
     private fun folderActions(folder: IndexObject) = MaterialAlertDialogBuilder(this)
         .setTitle(folder.name)
@@ -515,13 +597,23 @@ class LibraryActivity : AppCompatActivity() {
             setPadding(dp(12), dp(8), dp(12), dp(24))
         }
 
+        shortcuts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xFFFAF9F6.toInt())
             addView(header)
             addView(empty)
             addView(
-                ScrollView(this@LibraryActivity).apply { addView(grid) },
+                ScrollView(this@LibraryActivity).apply {
+                    addView(
+                        LinearLayout(this@LibraryActivity).apply {
+                            orientation = LinearLayout.VERTICAL
+                            addView(shortcuts)
+                            addView(grid)
+                        },
+                    )
+                },
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
             )
         }

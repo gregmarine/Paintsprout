@@ -30,6 +30,10 @@
     <string name="library_root">Sketchbooks</string>
     <string name="library_up">Up</string>
     <string name="library_move">Move</string>
+    <string name="library_pin">Pin</string>
+    <string name="library_unpin">Unpin</string>
+    <string name="library_pinned">Pinned</string>
+    <string name="library_recent">Recent</string>
     <string name="library_move_refused">A folder can\'t be moved inside itself</string>
     <string name="library_folder_empty">This folder is empty.</string>
     <string name="library_folder_not_empty">Move or delete what\'s inside first.</string>
