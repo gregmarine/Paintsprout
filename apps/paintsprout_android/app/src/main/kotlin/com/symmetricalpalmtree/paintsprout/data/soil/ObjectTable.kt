@@ -47,6 +47,10 @@ class ObjectTable(
 
     override fun count(parentId: String): Int = scalar(sql.countLiveChildren, arrayOf(parentId))
 
+    override fun tombstonedBefore(at: Long): List<SoilObject> = query(sql.tombstonedBefore, arrayOf(at))
+
+    override fun ofType(type: String): List<SoilObject> = query(sql.ofType, arrayOf(type))
+
     // --- Writes -------------------------------------------------------------
 
     override fun insert(row: SoilObject) = db.execSQL(sql.insert, bind(row))
@@ -154,6 +158,17 @@ class ObjectSql(private val table: String) {
 
     val countLiveChildren =
         "SELECT COUNT(*) FROM `$table` WHERE `parentId` = ? AND `deletedAt` IS NULL"
+
+    /**
+     * Tombstones from *before* a moment — the compactor's one read.
+     *
+     * Strictly before, because the moment it is given is when this session
+     * opened: anything tombstoned since is still this session's business.
+     */
+    val tombstonedBefore =
+        "SELECT $columnList FROM `$table` WHERE `deletedAt` IS NOT NULL AND `deletedAt` < ?"
+
+    val ofType = "SELECT $columnList FROM `$table` WHERE `type` = ? AND `deletedAt` IS NULL"
 
     val insert = "INSERT INTO `$table` ($columnList) VALUES ($marks)"
 

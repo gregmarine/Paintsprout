@@ -319,10 +319,10 @@ class DocumentSession private constructor(
     private fun decodeCache(): Bitmap? {
         val row = repo.cache(layerId) ?: return null
         val bytes = row.blob ?: return null
-        // Bounded decode: these bytes are as much "a file on disk" as any other,
-        // and a hostile or merely enormous one must not be an OOM on open.
-        val options = BitmapFactory.Options().apply { inMutable = true }
-        return runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) }.getOrNull()
+        // Bounded, and genuinely so — see [BoundedDecode]. These bytes are as
+        // much "a file somebody sent" as any other since import shipped, and null
+        // here costs a replay rather than an out-of-memory kill on page open.
+        return BoundedDecode.full(bytes, mutable = true)
     }
 
     /**
@@ -553,7 +553,7 @@ class DocumentSession private constructor(
     private fun decodeThumbnail(bytes: ByteArray?, maxEdge: Int): Bitmap? {
         if (bytes == null) return null
         return runCatching {
-            var current = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@runCatching null
+            var current = BoundedDecode.full(bytes) ?: return@runCatching null
             for (step in ThumbnailPlan.steps(current.width, current.height, maxEdge)) {
                 current = current.scaledTo(step.width, step.height)
             }

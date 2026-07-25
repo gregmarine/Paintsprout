@@ -621,7 +621,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 22 | Export `.soil` + `notebook_meta` upkeep | **yes** | ✅ |
 | 23 | Import `.soil` | **yes** | ✅ |
 | 24 | Encryption UX: per-document passphrase, rotation, lock states | **yes** | ✅ |
-| 25 | Compaction, VACUUM, size/perf measurement, leak audit | **yes** | ⬜ |
+| 25 | Compaction, VACUUM, size/perf measurement, leak audit | **yes** | ✅ |
 
 ## Working protocol
 
@@ -1923,13 +1923,59 @@ embedded cover on the way through.
 | Everything on the new key | ✅ all three books **and the index** open in stock `sqlcipher` with the new passphrase, every one at `user_version` = 1, row counts intact (11 / 59 / 50 objects, 11 index rows) |
 | The app after rotation | ✅ cold start, opened a 12-page book, page renders |
 
-## Phase 25 — Compaction, measurement, leak audit 🧪
+## Phase 25 — Compaction, measurement, leak audit ✅ 🧪
 Compactor sweep (guarded per row, `VACUUM` only if something actually changed, `updatedAt`
 preserved). Measure real file sizes for a typical page and a heavy page; re-measure PNG vs raw+zlib
 for the raster cache; decide a cache-retention policy (all pages vs the N most recent). Audit: no
 stray sidecars, no names in plaintext prefs, no content in the index, bounded decode everywhere.
 Write the final `docs/soil-format.md` spec describing what actually shipped.
 **Device test:** a large book — open time, seal time, file size, storage growth over a session.
+
+**As built.** The measurement came first, because the retention policy should follow numbers rather
+than instinct — and the numbers were emphatic. 528 tests, and
+[`docs/soil-format.md`](soil-format.md) is the spec of what actually shipped.
+
+- **The raster cache is 75–88% of a document.** 651 KB for one heavy page; 185 KB across thirteen
+  sparse ones, against 11 KB of stroke geometry. Artwork is small and pixels are not, and everything
+  about the policy follows from that: keep the four most recently written caches, drop the rest, let
+  those pages replay their ops.
+- **PNG beats raw+zlib**, measured both ways on the same artwork: 651,644 vs 675,468 bytes on the
+  heavy page, 184,909 vs 188,479 across the sparse ones. 2–4% smaller *and* self-describing, so the
+  question the plan left open in Phase 8 is settled in PNG's favour.
+- **The compactor purges tombstones from *prior* sessions only.** A row tombstoned while the document
+  was open is still this session's business. `VACUUM` runs only if something actually went — it
+  rewrites the whole file, which is not a thing to do on the way out of a document nobody changed.
+- **Compaction never moves `updatedAt`.** It is the input to the backup predicate, and reclaiming
+  space must not make a document look edited.
+- **The index compacts too**, once per launch, before anything reads. It accumulates tombstones the
+  same way a document does — and a deleted sketchbook's row was still holding its **cover**, which is
+  a picture of artwork the user asked to be rid of.
+
+### The audit found one thing the code was only claiming
+
+Three places decode stored pixels, and all three carried a comment saying the decode was bounded
+against "a hostile or merely enormous" image. **None of them was bounded.** That was survivable while
+every byte had been written by this app; Phase 23 ended it — a `.soil` is now a file we did not
+write, its cache blob is a PNG, and a PNG header can claim 30,000 × 30,000 whatever the compressed
+size. `BoundedDecode` checks the header before any pixels are allocated, refuses past 40 million of
+them, and returns null rather than a smaller picture: every caller has a correct answer for "no
+image" — replay the ops, draw a blank card — and none has one for "a different image than the file
+holds".
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| Cold launch to first frame | **573 ms** (index opened with its cached raw key) |
+| A 13-page book, before compaction | 245,760 B — 75% raster cache |
+| …after one open and seal | **126,976 B** — a **48% reduction**, 9 of 13 caches dropped |
+| Its content afterwards | ✅ 12 live pages, 16 strokes, 4 caches — nothing lost but rebuildable pixels |
+| Storage growth over a session | 126,976 → 159,744 B after painting across four pages — **bounded**, not cumulative |
+| Sidecars after a clean close | ✅ none beside any `.soil` |
+| Plaintext prefs | ✅ **ids only** — `SKETCHBOOK\|<uuid>\|<uuid>`, no names, no content |
+| Content in the index | ✅ blobs are covers on live sketchbook rows and nothing else; **0 covers for private-scope books** |
+| Index tombstones after its sweep | ✅ **0**, and 0 free pages |
+| Bounded decode | ❌ **three unbounded sites, all claiming otherwise** — fixed; every decode now goes through one helper |
 
 ---
 

@@ -59,6 +59,17 @@ object IndexSql {
     /** Deleting a member scrubs its edges everywhere, before the member itself goes. */
     const val DELETE_EDGES_FOR = "DELETE FROM objects WHERE type = 'list_item' AND refId = :refId"
 
+    /**
+     * Tombstones from before a moment, for the compactor.
+     *
+     * The index accumulates these the same way a document does, and they are not
+     * weightless: a deleted sketchbook's row still carries its **cover**, which is
+     * a picture of artwork the user asked to be rid of.
+     */
+    const val PURGE_TOMBSTONES = "DELETE FROM objects WHERE deletedAt IS NOT NULL AND deletedAt < :before"
+
+    const val TOMBSTONED_BEFORE = "SELECT * FROM objects WHERE deletedAt IS NOT NULL AND deletedAt < :before"
+
     const val SOFT_DELETE = "UPDATE objects SET deletedAt = :at, updatedAt = :at WHERE id = :id"
 
     const val COUNT_LIVE_CHILDREN =
@@ -109,6 +120,12 @@ interface IndexDao {
 
     @Query(IndexSql.SOFT_DELETE)
     suspend fun softDelete(id: String, at: Long)
+
+    @Query(IndexSql.PURGE_TOMBSTONES)
+    suspend fun purgeTombstones(before: Long): Int
+
+    @Query(IndexSql.TOMBSTONED_BEFORE)
+    suspend fun tombstonedBefore(before: Long): List<IndexObject>
 
     @Query(IndexSql.COUNT_LIVE_CHILDREN)
     suspend fun countLiveChildren(parentId: String?): Int

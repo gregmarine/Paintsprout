@@ -276,6 +276,22 @@ class IndexRepository(
 
     // --- Recents ------------------------------------------------------------
 
+    /**
+     * Purges rows tombstoned before [before], with the activity that pointed at
+     * them. Returns how many went.
+     *
+     * The same rule the document compactor uses, for the same reason, and with
+     * one extra: a deleted sketchbook's row still holds its cover, so leaving it
+     * means keeping a picture of artwork the user asked to be rid of. Nothing can
+     * restore an index tombstone — deleting a book removes its file first — so
+     * "before this launch" is margin enough.
+     */
+    suspend fun compact(before: Long): Int = db.withTransaction {
+        val dead = objects.tombstonedBefore(before)
+        dead.forEach { activity.deleteFor(it.id) }
+        objects.purgeTombstones(before)
+    }
+
     suspend fun recordOpened(id: String) = log(id, ActivityRow.OPENED)
 
     suspend fun recordEdited(id: String) = log(id, ActivityRow.EDITED)

@@ -33,6 +33,12 @@ interface ObjectStore {
 
     fun count(parentId: String): Int
 
+    /** Rows tombstoned strictly before [at] — what the compactor may purge. */
+    fun tombstonedBefore(at: Long): List<SoilObject>
+
+    /** Every live row of a type, wherever it hangs. For the cache sweep. */
+    fun ofType(type: String): List<SoilObject>
+
     fun insert(row: SoilObject)
 
     fun upsert(row: SoilObject)

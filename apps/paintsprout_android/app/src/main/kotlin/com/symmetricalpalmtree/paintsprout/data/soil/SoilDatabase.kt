@@ -34,6 +34,11 @@ class SoilDatabase private constructor(
     val documentId: String,
     val file: File,
     private val helper: SupportSQLiteOpenHelper,
+    /**
+     * When this session opened the file. The compactor's safety margin: only a
+     * row that was already a tombstone before this moment is purged.
+     */
+    private val openedAt: Long = System.currentTimeMillis(),
 ) : Closeable {
 
     val db: SupportSQLiteDatabase get() = helper.writableDatabase
@@ -79,6 +84,15 @@ class SoilDatabase private constructor(
         // Baked in before the file goes cold, which is what lets export stay a
         // prompt-free copy: the embedded metadata is already current.
         runCatching { readMeta()?.let { writeMeta(refresh(it)) } }
+        // Then the sweep: rows tombstoned in *prior* sessions and stale raster
+        // caches. `VACUUM` only if something actually went — it rewrites the whole
+        // file, which is not a thing to do on the way out of a document nobody
+        // changed. Guarded like every other step, because reclaiming space must
+        // never be the reason a document failed to close.
+        runCatching {
+            val store = ObjectTable(db, SchemaSql.SKETCHBOOK_TABLE)
+            if (Compactor.sweep(store, openedAt).changed) db.execSQL("VACUUM")
+        }
         runCatching { WalConfig.seal(db) }
         runCatching { helper.close() }
         // SQLite removes -wal and -shm itself when the last connection closes;

@@ -246,6 +246,17 @@ object IndexGate {
         // Awaited, not fired off: "ready" has to mean the sentinels are there, or
         // the first consumer through the gate races the bootstrap that creates them.
         repo.ensureSentinels()
+        // The index's own sweep, once per launch and before anybody reads: rows
+        // tombstoned in an earlier session, and the covers they were still
+        // holding. Guarded — a library that opens is worth more than one that is
+        // tidy.
+        runCatching {
+            // And a VACUUM only if something actually went — it rewrites the whole
+            // file, which is not a thing to do on every launch. Outside the
+            // transaction the purge ran in, because SQLite will not have it inside
+            // one.
+            if (repo.compact(System.currentTimeMillis()) > 0) db.openHelper.writableDatabase.execSQL("VACUUM")
+        }
         database = db
         repository = repo
     }

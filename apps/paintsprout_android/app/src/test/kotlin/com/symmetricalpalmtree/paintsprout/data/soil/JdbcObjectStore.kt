@@ -61,6 +61,10 @@ class JdbcObjectStore(
 
     override fun count(parentId: String) = scalar(sql.countLiveChildren, listOf(parentId))
 
+    override fun tombstonedBefore(at: Long) = query(sql.tombstonedBefore, listOf(at))
+
+    override fun ofType(type: String) = query(sql.ofType, listOf(type))
+
     // --- Writes -------------------------------------------------------------
 
     override fun insert(row: SoilObject) = exec(sql.insert, bind(row))

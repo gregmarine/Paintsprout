@@ -33,6 +33,7 @@ import android.net.Uri
 import com.symmetricalpalmtree.paintsprout.crypto.AttemptLimiter
 import com.symmetricalpalmtree.paintsprout.crypto.CryptoStores
 import com.symmetricalpalmtree.paintsprout.crypto.KeyRotation
+import com.symmetricalpalmtree.paintsprout.data.soil.BoundedDecode
 import com.symmetricalpalmtree.paintsprout.data.soil.DocumentKeying
 import com.symmetricalpalmtree.paintsprout.data.soil.ExportName
 import com.symmetricalpalmtree.paintsprout.data.soil.ImportPlan
@@ -212,10 +213,10 @@ class LibraryActivity : AppCompatActivity() {
             scaleType = ImageView.ScaleType.CENTER_CROP
             setBackgroundColor(0xFFEFEDE7.toInt())
             book.blob?.let { bytes ->
-                // Bounded decode: these bytes came off disk, and a hostile or
-                // merely enormous cover must not be an OOM on the library screen.
-                runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
-                    .getOrNull()?.let(::setImageBitmap)
+                // Sampled to the size a card actually shows, with a ceiling on
+                // what will be decoded at all — see [BoundedDecode]. A cover is
+                // written by this app today and arrives in a file tomorrow.
+                BoundedDecode.sampled(bytes, COVER_EDGE)?.let(::setImageBitmap)
             }
             contentDescription = book.name
         }
@@ -1017,5 +1018,8 @@ class LibraryActivity : AppCompatActivity() {
 
     private companion object {
         const val KEY_SORT = "library_sort"
+
+        /** A card is 200dp wide; a cover decoded much past that is wasted memory. */
+        const val COVER_EDGE = 640
     }
 }
