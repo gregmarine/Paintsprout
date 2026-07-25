@@ -605,7 +605,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 6 | `.soil` container: schema, `notebook_meta`, create/open/seal, registry | **yes** | ✅ |
 | 7 | Object model: universal row, columnar mapping, subtree helpers | no | ✅ |
 | 8 | Binary codecs: stroke format B, masks, matrix, wet state | no | ✅ |
-| 9 | Document repository: pages, layers, ops, undoDepth, cache, palette | no | ⬜ |
+| 9 | Document repository: pages, layers, ops, undoDepth, cache, palette | no | ✅ |
 | 10 | Editor save — strokes + surface ops | **yes** | ⬜ |
 | 11 | Editor save — selection ops, clips, wet state, palette | **yes** | ⬜ |
 | 12 | Editor load — raster cache fast path, cross-session undo/redo | **yes** | ⬜ |
@@ -1000,12 +1000,43 @@ than an exception — including a 300-iteration fuzz over all four. Two carry re
 with no channels; ours carries width and sometimes three more. Phase 25 measures it against real
 artwork, which is the first point at which the number would mean anything.
 
-## Phase 9 — Document repository
+## Phase 9 — Document repository ✅
 `SketchbookRepository`: create sketchbook (meta row + page + layer + palette), page CRUD/reorder,
 layer accessors, `appendOp` (truncating the redo tail), `undo`/`redo` as `undoDepth` moves,
 raster-cache read/write, palette read/write. Same API surface parameterized over table name so the
 scratchpad reuses it verbatim.
 **Verify:** JVM tests against a temp file DB — full lifecycle, undo/redo across a close/reopen.
+
+**As built.** `ObjectStore` (new interface), `SketchbookRepository`, plus a test-side
+`JdbcObjectStore`. `ObjectTable` now implements `ObjectStore` and builds its writes from
+`ObjectSql` rather than `ContentValues`. 21 tests; 325 in the module.
+
+- **`ObjectStore` was extracted so the repository is testable**, and the test implementation runs the
+  *same* `ObjectSql` strings and the *same* `SoilObjectMapper` against real SQLite built from the
+  same `SchemaSql`. Only the driver differs — so what these tests exercise is the real behaviour
+  against real SQL, not a mock's idea of it. It also turned out to be the honest way to express
+  "the scratchpad reuses this verbatim": the repository takes a store and a root id, and the
+  scratchpad is the same class over a different table in a different database. There is a test that
+  runs the whole lifecycle over `scratchpad` to prove it.
+- **Inserts moved into `ObjectSql`.** `ContentValues` is Android-only and would have split the write
+  path in two; now both implementations bind the mapper's values to one statement.
+- **`appendOp` is three writes in one transaction**, and the first is the load-bearing one: a new op
+  *replaces the future*, so the redo tail is hard-deleted before it lands. That is the one routine
+  hard delete on the content path, and it is what keeps `order` dense — which is what lets a single
+  integer be the entire undo model. A crash between the three would leave a layer whose `undoDepth`
+  disagrees with its ops, hence the transaction.
+- **`deletePage` stamps the page only.** Its layers and ops are left untouched: every read filters by
+  parent, so they vanish without being written, undo is one stamp, and the compactor reclaims the
+  subtree when the page itself is purged.
+- **`cache()` returns null unless `opCount` equals the current `undoDepth`.** Stale is not an error —
+  the caller replays the ops and pays milliseconds. `cacheRow()` returns it regardless, for
+  overwriting.
+- **The test that states the point of the whole storage layer** is `undo history survives closing and
+  reopening the document`: it writes to a real file, closes the connection, reopens it, and finds
+  four ops, a frontier at 2, a live redo stack, and a cache correctly judged stale.
+
+One test-authoring slip caught by the suite: `assertEquals(2, blob.single())` compares a boxed
+`Integer` to a boxed `Byte` and fails. No product implication.
 
 ## Phase 10 — Editor save: strokes + surface 🧪
 `DocumentSession` owns the open document for the editor. `PaintCanvasView` gains a persistence
