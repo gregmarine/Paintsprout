@@ -185,7 +185,36 @@ class MainActivity : AppCompatActivity() {
             updateRail()
         }
         updateRail()
-        attachDocument()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Opened here rather than in onCreate: the document is sealed whenever the
+        // editor is not in front of the user, so coming back has to reopen it.
+        if (session == null) attachDocument()
+    }
+
+    /**
+     * Seals the document on the way out.
+     *
+     * A `.soil` must not be left with a `-wal` beside it — a file browser should
+     * show sketchbooks and nothing else — so the file is genuinely closed when the
+     * editor stops, not merely flushed. The snapshots are taken here, on the main
+     * thread, while those bitmaps are certainly still alive; the writing happens
+     * on a scope that outlives this screen.
+     */
+    override fun onStop() {
+        super.onStop()
+        val open = session ?: return
+        session = null
+        binding.canvas.onOpCommitted = null
+        binding.canvas.onUndone = null
+        binding.canvas.onRedone = null
+        binding.canvas.onBrushLoadChanged = null
+
+        val paint = if (open.isDirty) binding.canvas.paintSnapshot() else null
+        val cover = if (open.isDirty) binding.canvas.coverSnapshot() else null
+        applicationScope.launch { open.close(paint, cover) }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -272,18 +301,18 @@ class MainActivity : AppCompatActivity() {
         session?.recordPalette(tray.pots, tray.mixture, binding.canvas.brushLoad)
     }
 
+    /**
+     * Flushes early, before the seal.
+     *
+     * `onStop` does the real work, but a process can be killed between pause and
+     * stop — and this is also the last callback a *force*-stop respects on some
+     * devices. Flushing here narrows the window in which recent strokes exist only
+     * in memory to the debounce interval.
+     */
     override fun onPause() {
         super.onPause()
         val open = session ?: return
-        // The snapshot is taken here, on the main thread, while the bitmap is
-        // still guaranteed to be alive; the write happens after.
-        val paint = binding.canvas.paintSnapshot()
-        // Application-scoped and non-cancellable: leaving the screen must not be
-        // able to cut a write in half. Phase 13 makes this a full seal.
-        applicationScope.launch {
-            open.flush()
-            paint?.let { open.writeCache(it) }
-        }
+        applicationScope.launch { open.flush() }
     }
 
     private fun hideSystemBars() {

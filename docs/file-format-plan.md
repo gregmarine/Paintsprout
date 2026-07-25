@@ -609,7 +609,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 10 | Editor save — strokes + surface ops | **yes** | ✅ |
 | 11 | Editor save — selection ops, clips, wet state, palette | **yes** | ✅ |
 | 12 | Editor load — raster cache fast path, cross-session undo/redo | **yes** | ✅ |
-| 13 | Autosave, lifecycle, seal, crash safety | **yes** | ⬜ |
+| 13 | Autosave, lifecycle, seal, crash safety | **yes** | ✅ |
 | 14 | Library screen (flat): create, open, rename, delete, covers | **yes** | ⬜ |
 | 15 | Folders, move, sort, name search | **yes** | ⬜ |
 | 16 | Pinned + recents | **yes** | ⬜ |
@@ -1238,12 +1238,49 @@ flagged at the outset, now measured rather than guessed, and on a page with a lo
 the cache to painted bounds and keeping caches only for recently-opened pages both look necessary
 rather than optional.
 
-## Phase 13 — Autosave, lifecycle, crash safety 🧪
+## Phase 13 — Autosave, lifecycle, crash safety ✅ 🧪
 Debounce/coalesce policy, `onPause` seal, application-scoped non-cancellable close with a per-step
 guarded seal, dirty tracking, cover + `pageCount` + `updatedAt` refresh on close, in-progress work
 never written to a plaintext temp file.
 **Device test:** force-stop mid-stroke, kill during seal, disk-full simulation if practical; confirm
 no data loss beyond the last debounce window and no stray sidecars.
+
+**As built.** `DocumentSession.close()` is now a real seal, `isDirty` tracking, `coverSnapshot()`, and
+an editor lifecycle that opens on `onStart` and seals on `onStop`. 4 tests; 379 in the module.
+
+- **The document is sealed whenever the editor is not in front of the user**, not merely flushed. A
+  `.soil` must not sit in the garden with a `-wal` beside it, so `onStop` genuinely closes the file
+  and `onStart` reopens it. That the reopen is cheap is Phase 12's cache paying for itself.
+- **Every step of the seal is guarded on its own.** A disk-full failure seconds after the user left
+  must not crash, and — more to the point — must not stop the steps after it: skipping the checkpoint
+  because the cover failed to write would leave a `-wal` behind forever.
+- **The bitmaps are captured on the main thread, written on an application scope.** The snapshot is
+  taken while those bitmaps are certainly alive; the writing outlives the screen.
+- **`isDirty` gates the index refresh**, and the reason is the backup predicate rather than saving
+  work: refreshing the row bumps `updatedAt`, and opening a sketchbook to look at it must not re-flag
+  it for copying.
+- **`onPause` still flushes.** `onStop` does the real work, but a process can die between the two,
+  and this narrows the window in which recent strokes exist only in memory to the debounce interval.
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| Sidecars while the document is open | `-wal` and `-shm` present, as they should be |
+| **Sidecars after the seal** | ✅ **only the `.soil`** |
+| Five strokes at 1 s intervals, then force-stop | ✅ all five survived |
+| A sixth stroke killed ~150 ms in | lost — **exactly the debounce window**, as designed |
+| Reopening the unsealed file (WAL not absorbed) | ✅ clean, no crash, 561 ms |
+| Index row after a dirty close | ✅ `pages=1  cover=42842B  scope=GLOBAL` |
+| Cover stored at all | ✅ permitted — the book is `GLOBAL` scope, so it shares the index's key |
+| **Open and close without editing** | ✅ `updatedAt` **unchanged** — the backup predicate was not re-flagged |
+
+That last row is the `updatedAt` discipline demonstrated end to end rather than asserted: the same
+epoch-ms value before and after a full open/close cycle with no edits.
+
+**Not done:** the disk-full simulation. It needs a filled partition or an injected `IOException`, and
+the per-step `runCatching` it would exercise is visible by inspection. Left for Phase 25's hardening
+pass, where a fault-injection seam would earn its keep across the compactor too.
 
 ## Phase 14 — Library screen (flat) 🧪
 `LibraryActivity`: list, create (with a canvas-size chooser — book-level), open, rename, delete,

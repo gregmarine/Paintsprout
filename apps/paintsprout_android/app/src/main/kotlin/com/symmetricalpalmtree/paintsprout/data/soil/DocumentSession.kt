@@ -59,9 +59,22 @@ class DocumentSession private constructor(
     /** The tray, captured on change and written with the next batch. */
     private var pendingPalette: PaletteSnapshot? = null
 
+    /**
+     * Whether anything has actually changed since this document was opened.
+     *
+     * The seal consults it for a reason beyond saving work: refreshing the index
+     * row bumps `updatedAt`, and `updatedAt` is the input to the backup predicate.
+     * Opening a sketchbook to look at it, and re-flagging it for backup as a
+     * result, is exactly the "no" case the discipline exists for.
+     */
+    @Volatile
+    var isDirty: Boolean = false
+        private set
+
     // --- Recording ----------------------------------------------------------
 
     fun record(op: PaintOp) {
+        isDirty = true
         synchronized(pending) { pending.addLast(op) }
         scheduleFlush()
     }
@@ -75,15 +88,22 @@ class DocumentSession private constructor(
      * brush costs one write per batch instead of hundreds.
      */
     fun recordPalette(pots: List<Pot>, mixture: Recipe, load: BrushLoad) {
+        isDirty = true
         pendingPalette = PaletteSnapshot(pots.toList(), mixture, load)
         scheduleFlush()
     }
 
     private class PaletteSnapshot(val pots: List<Pot>, val mixture: Recipe, val load: BrushLoad)
 
-    fun recordUndo() = scope.launch { lock.withLock { flushNow(); repo.undo(layerId) } }
+    fun recordUndo() = scope.launch {
+        isDirty = true
+        lock.withLock { flushNow(); repo.undo(layerId) }
+    }
 
-    fun recordRedo() = scope.launch { lock.withLock { flushNow(); repo.redo(layerId) } }
+    fun recordRedo() = scope.launch {
+        isDirty = true
+        lock.withLock { flushNow(); repo.redo(layerId) }
+    }
 
     private fun scheduleFlush() {
         if (flushJob?.isActive == true) return
@@ -250,7 +270,9 @@ class DocumentSession private constructor(
      * Written at the frontier it was composited at, and read back only while that
      * still matches — so an undo makes it stale rather than wrong.
      */
-    suspend fun writeCache(paint: Bitmap) = lock.withLock {
+    suspend fun writeCache(paint: Bitmap) = lock.withLock { writeCacheLocked(paint) }
+
+    private suspend fun writeCacheLocked(paint: Bitmap) {
         withContext(NonCancellable + Dispatchers.IO) {
             runCatching {
                 val bytes = java.io.ByteArrayOutputStream().use { out ->
@@ -280,14 +302,55 @@ class DocumentSession private constructor(
 
     // --- Closing ------------------------------------------------------------
 
-    /** Flushes, seals the file, and lets go of it. */
-    suspend fun close() {
+    /**
+     * Everything that has to happen before the file goes cold.
+     *
+     * **Each step is guarded on its own.** A disk-full failure seconds after the
+     * user left the page must not crash the app, and — more importantly — must not
+     * stop the steps after it from running. Skipping the checkpoint because the
+     * cover failed to write would leave a `-wal` beside the document forever.
+     *
+     * Run this from an application-scoped, non-cancellable coroutine: the screen
+     * going away is precisely when it needs to survive.
+     *
+     * [cover] and [paint] are captured by the caller on the main thread, while
+     * those bitmaps are still guaranteed to be alive.
+     */
+    suspend fun close(paint: Bitmap? = null, cover: Bitmap? = null) {
         flushJob?.cancel()
         lock.withLock {
-            flushNow()
             withContext(NonCancellable + Dispatchers.IO) {
+                runCatching { flushNow() }
+                if (isDirty) {
+                    paint?.let { p -> runCatching { writeCacheLocked(p) } }
+                    runCatching { refreshIndexRow(cover) }
+                }
+                // The seal proper: refresh the embedded identity record, vacuum,
+                // truncate the WAL, close, and leave no sidecars behind.
                 runCatching { soil.seal { it.copy(updatedAt = System.currentTimeMillis()) } }
             }
+            isDirty = false
+        }
+    }
+
+    /**
+     * What the library needs to know about a closed document.
+     *
+     * Only when something changed — see [isDirty]. The cover is offered rather
+     * than stored: [IndexRepository.setCover] refuses it for a document with its
+     * own passphrase, because the index opens with the *global* key and that is a
+     * key boundary a picture of the contents must not cross.
+     */
+    private suspend fun refreshIndexRow(cover: Bitmap?) {
+        val index = IndexGate.awaitReady()
+        index.setPageCount(documentId, repo.pageCount())
+        index.recordEdited(documentId)
+        if (cover != null) {
+            val bytes = java.io.ByteArrayOutputStream().use { out ->
+                cover.compress(Bitmap.CompressFormat.WEBP_LOSSY, 90, out)
+                out.toByteArray()
+            }
+            index.setCover(documentId, bytes)
         }
     }
 

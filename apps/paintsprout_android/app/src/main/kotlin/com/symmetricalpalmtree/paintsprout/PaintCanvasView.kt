@@ -3586,6 +3586,31 @@ class PaintCanvasView @JvmOverloads constructor(
     fun paintSnapshot(): Bitmap? = paintBmp?.copy(Bitmap.Config.ARGB_8888, false)
 
     /**
+     * A small flattened picture of the page — paper and paint — for a library card.
+     *
+     * Scaled down here rather than at the call site so the full-size composite
+     * never leaves this class, and drawn with filtering so the thumbnail reads as
+     * the artwork rather than as aliasing.
+     */
+    fun coverSnapshot(maxEdge: Int = 512): Bitmap? {
+        val surface = surfaceBmp ?: return null
+        val paint = paintBmp ?: return null
+        if (bufW <= 0 || bufH <= 0) return null
+
+        val scale = minOf(maxEdge.toFloat() / bufW, maxEdge.toFloat() / bufH, 1f)
+        val w = (bufW * scale).roundToInt().coerceAtLeast(1)
+        val h = (bufH * scale).roundToInt().coerceAtLeast(1)
+        val dst = Rect(0, 0, w, h)
+
+        return createBitmap(w, h).also { out ->
+            Canvas(out).apply {
+                drawBitmap(surface, srcRect, dst, hqPaint)
+                drawBitmap(paint, srcRect, dst, hqPaint)
+            }
+        }
+    }
+
+    /**
      * Puts a saved page back on the canvas.
      *
      * [committedOps] and [undoneOps] together are the layer's whole history: the
