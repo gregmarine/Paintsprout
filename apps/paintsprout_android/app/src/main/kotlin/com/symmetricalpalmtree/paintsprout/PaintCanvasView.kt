@@ -437,6 +437,18 @@ class PaintCanvasView @JvmOverloads constructor(
     private val committed = mutableListOf<PaintOp>()
     private val redoStack = mutableListOf<PaintOp>()
     var onHistoryChanged: (() -> Unit)? = null
+
+    /**
+     * Persistence hooks. Called for each *newly* committed op, and when the undo
+     * frontier moves — never for a redo replay, which is the same op arriving
+     * again rather than a new one.
+     *
+     * The order these fire in is the order the ops sit in, which is what lets the
+     * stored history and this one be the same history.
+     */
+    var onOpCommitted: ((PaintOp) -> Unit)? = null
+    var onUndone: (() -> Unit)? = null
+    var onRedone: (() -> Unit)? = null
     val canUndo: Boolean get() = committed.isNotEmpty()
     val canRedo: Boolean get() = redoStack.isNotEmpty()
 
@@ -965,7 +977,9 @@ class PaintCanvasView @JvmOverloads constructor(
         concreteParams = concrete
         metalParams = metal
         chalkboardParams = chalkboard
-        committed.add(SurfaceOp(kind, bgColor, canvas, watercolor, wood, stone, concrete, metal, chalkboard))
+        val surfaceOp = SurfaceOp(kind, bgColor, canvas, watercolor, wood, stone, concrete, metal, chalkboard)
+        committed.add(surfaceOp)
+        onOpCommitted?.invoke(surfaceOp)
         regenerateSurface()
         // Checkpoints hold paint toothed for the OLD surface, so drop them and
         // rebuild from blank — foldOps re-tooths each stroke with the new surface.
@@ -3465,6 +3479,7 @@ class PaintCanvasView @JvmOverloads constructor(
             unbaked.subList(0, batch.size).clear()
             unbakedClips.subList(0, batch.size).clear()
             committed.addAll(ops)
+            ops.forEach { onOpCommitted?.invoke(it) }
             clearRedo()
             storeCheckpoint(committed.size, next)
             old?.recycle()
@@ -3552,6 +3567,7 @@ class PaintCanvasView @JvmOverloads constructor(
         interruptWet()
         if (baking || rebuilding || committed.isEmpty()) return
         redoStack.add(committed.removeAt(committed.lastIndex))
+        onUndone?.invoke()
         syncSurfaceToHistory()
         rebuild()
     }
@@ -3560,6 +3576,7 @@ class PaintCanvasView @JvmOverloads constructor(
         interruptWet()
         if (baking || rebuilding || redoStack.isEmpty()) return
         committed.add(redoStack.removeAt(redoStack.lastIndex))
+        onRedone?.invoke()
         syncSurfaceToHistory()
         rebuild()
     }
@@ -3700,6 +3717,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val old = paintBmp
         paintBmp = next
         committed.add(op)
+        onOpCommitted?.invoke(op)
         clearRedo()
         storeCheckpoint(committed.size, next)
         old?.recycle()
@@ -3854,6 +3872,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val m = floatSourceMask
         paintBmp = newPaint
         committed.add(op)
+        onOpCommitted?.invoke(op)
         clearRedo()
         storeCheckpoint(committed.size, newPaint)
         if (movedMask != null) selectionMask = movedMask

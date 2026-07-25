@@ -43,11 +43,15 @@ import com.symmetricalpalmtree.paintsprout.paint.Tool
 import com.symmetricalpalmtree.paintsprout.paint.Tray
 import com.symmetricalpalmtree.paintsprout.paint.WatercolorParams
 import com.symmetricalpalmtree.paintsprout.paint.WoodParams
+import com.symmetricalpalmtree.paintsprout.data.LastOpen
 import com.symmetricalpalmtree.paintsprout.data.index.IndexGate
+import com.symmetricalpalmtree.paintsprout.data.soil.DocumentSession
 import com.symmetricalpalmtree.paintsprout.data.soil.OpenDocuments
 import com.symmetricalpalmtree.paintsprout.data.soil.SketchbookStore
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
@@ -130,6 +134,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var undoBtn: ImageButton
     private lateinit var redoBtn: ImageButton
 
+    /** The document being painted into, once it has finished opening. */
+    private var session: DocumentSession? = null
+
+    /** Outlives this screen, so a flush is never cut short by leaving it. */
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -174,11 +184,50 @@ class MainActivity : AppCompatActivity() {
             updateRail()
         }
         updateRail()
+        attachDocument()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) hideSystemBars()
+    }
+
+    /**
+     * Binds the canvas to a document on disk.
+     *
+     * Until the library screen exists there is nothing to choose from, so this
+     * opens whatever was last open and creates a sketchbook if there isn't one.
+     * Painting before it resolves is fine: the ops that arrive first are queued in
+     * the canvas's own history and this only starts recording from the moment it
+     * attaches — Phase 12 is what makes the two halves meet on load.
+     */
+    private fun attachDocument() {
+        lifecycleScope.launch {
+            val opened = runCatching {
+                DocumentSession.openOrCreate(
+                    context = this@MainActivity,
+                    documentId = LastOpen.load(this@MainActivity)?.documentId,
+                    surface = currentSurface(),
+                )
+            }.getOrNull() ?: return@launch
+
+            session = opened
+            LastOpen.save(
+                this@MainActivity,
+                LastOpen.Pointer(LastOpen.Kind.SKETCHBOOK, opened.documentId, opened.pageId),
+            )
+            binding.canvas.onOpCommitted = { opened.record(it) }
+            binding.canvas.onUndone = { opened.recordUndo() }
+            binding.canvas.onRedone = { opened.recordRedo() }
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        val open = session ?: return
+        // Application-scoped and non-cancellable: leaving the screen must not be
+        // able to cut a write in half. Phase 13 makes this a full seal.
+        applicationScope.launch { open.flush() }
     }
 
     private fun hideSystemBars() {

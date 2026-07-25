@@ -181,10 +181,10 @@ class SketchbookRepositoryTest {
     }
 
     @Test
-    fun `a page carries its resolved surface so nothing has to replay history`() {
+    fun `a page records the surface it was created on`() {
         repo.createDocument("x")
         val page = repo.pages().single().id
-        repo.setPageSurface(page, "WOOD", "#FFBA9C78", 12345L, Params.of("grain" to 0.34f))
+        repo.setInitialSurface(page, "WOOD", "#FFBA9C78", 12345L, Params.of("grain" to 0.34f))
 
         val stored = repo.pages().single()
         assertEquals("WOOD", stored.kind)
@@ -382,5 +382,70 @@ class SketchbookRepositoryTest {
             assertEquals(SchemaSql.SCRATCHPAD_TABLE, scratch.table)
             assertEquals(1, pad.committedOps(layer).size)
         }
+    }
+
+    // --- The resolved surface -----------------------------------------------
+
+    /**
+     * The bug this replaces: the page row used to cache "the current surface",
+     * which undo then silently invalidated — the page reloaded on the wrong paper.
+     * Now the page holds only what it was created on and the answer is derived.
+     */
+    @Test
+    fun `the current surface follows the undo frontier`() {
+        repo.createDocument("x", surfaceKind = "PAPER")
+        val page = repo.pages().single().id
+        val layer = repo.contentLayer(page)!!.id
+
+        assertEquals("PAPER", repo.resolvedSurface(page)!!.kind)
+
+        repo.appendOp(layer, SoilObject(id = "", parentId = "", type = SoilType.SURFACE_OP, kind = "CANVAS"))
+        assertEquals("CANVAS", repo.resolvedSurface(page)!!.kind)
+
+        repo.undo(layer)
+        assertEquals("undo puts the old paper back", "PAPER", repo.resolvedSurface(page)!!.kind)
+
+        repo.redo(layer)
+        assertEquals("CANVAS", repo.resolvedSurface(page)!!.kind)
+    }
+
+    @Test
+    fun `the newest surface change wins`() {
+        repo.createDocument("x", surfaceKind = "PAPER")
+        val page = repo.pages().single().id
+        val layer = repo.contentLayer(page)!!.id
+
+        for (kind in listOf("CANVAS", "WOOD", "STONE")) {
+            repo.appendOp(layer, SoilObject(id = "", parentId = "", type = SoilType.SURFACE_OP, kind = kind))
+        }
+        assertEquals("STONE", repo.resolvedSurface(page)!!.kind)
+
+        repo.undo(layer)
+        assertEquals("WOOD", repo.resolvedSurface(page)!!.kind)
+    }
+
+    /** The page keeps the one surface fact that never changes. */
+    @Test
+    fun `the page row is not rewritten by a surface change`() {
+        repo.createDocument("x", surfaceKind = "PAPER")
+        val page = repo.pages().single().id
+        val layer = repo.contentLayer(page)!!.id
+
+        repo.appendOp(layer, SoilObject(id = "", parentId = "", type = SoilType.SURFACE_OP, kind = "METAL"))
+
+        assertEquals("PAPER", repo.pages().single().kind)
+    }
+
+    /** A stroke after a surface change must not be mistaken for one. */
+    @Test
+    fun `only surface ops resolve the surface`() {
+        repo.createDocument("x", surfaceKind = "PAPER")
+        val page = repo.pages().single().id
+        val layer = repo.contentLayer(page)!!.id
+
+        repo.appendOp(layer, SoilObject(id = "", parentId = "", type = SoilType.SURFACE_OP, kind = "WOOD"))
+        repo.appendOp(layer, op())
+
+        assertEquals("WOOD", repo.resolvedSurface(page)!!.kind)
     }
 }

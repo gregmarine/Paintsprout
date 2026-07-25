@@ -606,7 +606,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 7 | Object model: universal row, columnar mapping, subtree helpers | no | ✅ |
 | 8 | Binary codecs: stroke format B, masks, matrix, wet state | no | ✅ |
 | 9 | Document repository: pages, layers, ops, undoDepth, cache, palette | no | ✅ |
-| 10 | Editor save — strokes + surface ops | **yes** | ⬜ |
+| 10 | Editor save — strokes + surface ops | **yes** | ✅ |
 | 11 | Editor save — selection ops, clips, wet state, palette | **yes** | ⬜ |
 | 12 | Editor load — raster cache fast path, cross-session undo/redo | **yes** | ⬜ |
 | 13 | Autosave, lifecycle, seal, crash safety | **yes** | ⬜ |
@@ -1038,12 +1038,67 @@ scratchpad reuses it verbatim.
 One test-authoring slip caught by the suite: `assertEquals(2, blob.single())` compares a boxed
 `Integer` to a boxed `Byte` and fails. No product implication.
 
-## Phase 10 — Editor save: strokes + surface 🧪
+## Phase 10 — Editor save: strokes + surface ✅ 🧪
 `DocumentSession` owns the open document for the editor. `PaintCanvasView` gains a persistence
 callback: each committed `StrokeOp` and `SurfaceOp` is serialized and appended (debounced,
 coalesced, off the UI thread). Page row's resolved surface written in the same transaction as its
 `surface_op`.
 **Device test:** paint a page, leave, pull the file, confirm rows and point counts.
+
+**As built.** `ArgbHex`, `SurfaceParamsCodec`, `OpRows`, `DocumentSession`, five persistence hooks
+in `PaintCanvasView`, and the editor now opens a real document. 19 tests; 344 in the module.
+
+> ### ⚠️ The plan's design for the page surface was wrong, and the device proved it
+>
+> The plan said the page row holds the **resolved** surface, written in the same transaction as the
+> `surface_op` that changed it — so a thumbnail never has to replay history. That is exactly what
+> Phase 10 built, and the device test then did: paint, change the surface to Canvas, undo.
+>
+> The result was six ops with the frontier at five — the undo *had* registered — and a page row still
+> saying `CANVAS`. Undo moves the history; it cannot move a cached answer. On reload the page would
+> have rendered on the wrong paper, and no unit test would have caught it because both halves were
+> individually correct.
+>
+> **The page row now holds the surface the page was _created_ on and is never rewritten.** The
+> current surface is derived: `resolvedSurface()` takes the last `surface_op` at or below the undo
+> frontier, falling back to the page. There is no cached answer, so there is nothing to keep in sync.
+> The cost is one indexed lookup on page open, which is nothing next to loading the ops.
+
+Other notes:
+
+- **`DocumentSession` debounces with a floor, not a cancel-and-reschedule.** A flush is scheduled
+  when the queue goes from empty to non-empty and later ops do not push it back — rescheduling would
+  mean an unbroken sequence of strokes never writes at all.
+- **A `desynced` latch guards the phase boundary.** Selection ops arrive in Phase 11; until then, one
+  reaching the session stops all further writing for that document. A file visibly missing its tail
+  is recoverable, whereas a file with a hole in the middle of its op sequence claims to be a painting
+  it is not.
+- **All seven surface parameter structs are stored on every surface op**, because a user's canvas
+  tuning is still theirs while they work on wood, and switching back has to find it.
+- **`ArgbHex` formats with the root locale**, with a test that sets the default locale to `ar-EG` and
+  `fa-IR` — `%08X` under those writes Eastern-Arabic digits, and every colour in the file would decode
+  to the default the day the user changed their device language.
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| Painting creates a document under `Garden/<uuid>.soil` | ✅ |
+| Five pencil strokes → five `stroke` rows at `order` 0–4 | ✅ |
+| Columns carry the scalars | ✅ `PENCIL`, `#FF000000`, width 2.71 px (0.3 mm calibrated), distinct seeds |
+| Geometry in the blob | ✅ 858–1238 bytes per stroke |
+| Surface change → a `surface_op` row | ✅ `kind = CANVAS` |
+| All seven param structs in the bag | ✅ |
+| Undo moves the frontier, deletes nothing | ✅ 4 ops, frontier 3 |
+| Page keeps its creation surface after an undo | ✅ `PAPER` (**this is the bug above, fixed**) |
+| Stock `sqlcipher` reads it all back | ✅ |
+| Crashes | ✅ none |
+
+**Testing note.** `adb shell input swipe` sends *touch* events and the canvas is stylus-only, so the
+first run produced a document with zero strokes. `adb shell input stylus swipe` is the one that
+draws. Per the injected-vs-real-input lesson this validates the *mechanism* only — that a stroke
+becomes a row with the right columns — and says nothing about feel, which is the correct use of
+injected input.
 
 ## Phase 11 — Editor save: selection ops, clips, wet state, palette 🧪
 `FillOp` / `EraseOp` / `MoveOp` with cropped masks; `StrokeOp.clip` as a `stroke_clip` child;

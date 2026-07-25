@@ -73,6 +73,9 @@ class SketchbookRepository(
 
     fun root(): SoilObject? = store.byId(rootId)
 
+    /** Runs [body] atomically — several rows that must land together, or not. */
+    fun <T> transaction(body: () -> T): T = store.transaction(body)
+
     /** Everything a new document needs: a root, a first page, its layer, a palette. */
     fun createDocument(
         title: String,
@@ -136,14 +139,18 @@ class SketchbookRepository(
     }
 
     /**
-     * Records the surface a page is on.
+     * The surface a page was *created* on.
      *
-     * The page row holds the *resolved* surface, written in the same transaction
-     * as the `surface_op` that changed it. That denormalisation is deliberate: a
-     * page thumbnail and a page open must not have to replay the op history to
-     * find out what the paper looks like.
+     * Deliberately not "the surface it is on now". The current surface is whatever
+     * the last committed `surface_op` says, and undo moves that — so a page row
+     * that tried to cache the answer would be wrong the moment someone undid a
+     * surface change, and would then render the wrong paper on reload. (It did,
+     * on device, which is how this ended up written down.)
+     *
+     * So the page keeps the one fact that never changes, [resolvedSurface] derives
+     * the one that does, and there is nothing to keep in sync.
      */
-    fun setPageSurface(
+    fun setInitialSurface(
         pageId: String,
         surfaceKind: String?,
         plainColor: String?,
@@ -160,6 +167,20 @@ class SketchbookRepository(
                 updatedAt = now(),
             ),
         )
+    }
+
+    /**
+     * What the paper actually looks like right now: the last surface change at or
+     * below the undo frontier, or the page's own surface when there has been none.
+     *
+     * Returns the row to read `kind` / `color` / `params` from — a `surface_op` or
+     * the `page` itself. The per-artwork seed always comes from the page, because
+     * it belongs to the sheet rather than to a moment in its history.
+     */
+    fun resolvedSurface(pageId: String): SoilObject? {
+        val page = store.byId(pageId) ?: return null
+        val layer = contentLayer(pageId) ?: return page
+        return committedOps(layer.id).lastOrNull { it.type == SoilType.SURFACE_OP } ?: page
     }
 
     fun setPageSize(pageId: String, bufferWidth: Float, bufferHeight: Float) {
