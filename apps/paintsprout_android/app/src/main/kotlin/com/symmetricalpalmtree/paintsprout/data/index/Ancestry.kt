@@ -21,7 +21,7 @@ object Ancestry {
     /**
      * The folders containing [id], **ordered root → immediate parent**. Does not
      * include the row itself. The same order `folderPath` uses in the portable
-     * `notebook_meta` record, so an importer can walk it forwards and recreate
+     * `sketchbook_meta` record, so an importer can walk it forwards and recreate
      * missing folders as it goes.
      */
     fun pathTo(id: String, lookup: (String) -> IndexObject?): List<IndexObject> {

@@ -36,7 +36,7 @@ class IndexObjectTest {
         )
         assertTrue(
             "its own passphrase",
-            book(IndexObject.FLAG_ENCRYPTED, KeyScope.NOTEBOOK.name).isPrivateScope,
+            book(IndexObject.FLAG_ENCRYPTED, KeyScope.SKETCHBOOK.name).isPrivateScope,
         )
     }
 

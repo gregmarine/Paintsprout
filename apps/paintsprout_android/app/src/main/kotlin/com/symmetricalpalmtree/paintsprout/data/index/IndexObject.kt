@@ -62,7 +62,7 @@ data class IndexObject(
     /** Sketchbook bitfield: bit 0 = encrypted. */
     val flags: Int? = null,
 
-    /** Sketchbook: `GLOBAL` or `NOTEBOOK`, non-null only when encrypted. */
+    /** Sketchbook: `GLOBAL` or `SKETCHBOOK`, non-null only when encrypted. */
     val keyScope: String? = null,
 
     /** Sketchbook: `FULL_SCREEN` or `PRINT`. */
@@ -91,7 +91,7 @@ data class IndexObject(
     val isEncrypted: Boolean get() = (flags ?: 0) and FLAG_ENCRYPTED != 0
 
     /** A private-passphrase document: no cover may be cached for it, at any time. */
-    val isPrivateScope: Boolean get() = isEncrypted && keyScope == KEY_SCOPE_NOTEBOOK
+    val isPrivateScope: Boolean get() = isEncrypted && keyScope == KEY_SCOPE_SKETCHBOOK
 
     /**
      * Identity is [id]; the generated equals would compare [blob] by reference and
@@ -105,7 +105,7 @@ data class IndexObject(
         const val FLAG_ENCRYPTED = 1
 
         const val KEY_SCOPE_GLOBAL = "GLOBAL"
-        const val KEY_SCOPE_NOTEBOOK = "NOTEBOOK"
+        const val KEY_SCOPE_SKETCHBOOK = "SKETCHBOOK"
     }
 }
 

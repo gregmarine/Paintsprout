@@ -29,7 +29,7 @@ object SchemaSql {
     const val INDEX_SCHEMA_VERSION = 1
 
     /**
-     * The *container's* format version, carried in `notebook_meta`. Not a
+     * The *container's* format version, carried in `sketchbook_meta`. Not a
      * content-type marker — content type is declared by which object table the
      * file has. Bump only if the container contract itself changes.
      */
@@ -51,11 +51,13 @@ object SchemaSql {
     const val CLIPBOARD_TABLE = "clipboard"
 
     /**
-     * The container's identity table. Keeps Notesprout's name deliberately: it
-     * belongs to the container, not to Notesprout, and a shared reader must find
-     * it at a fixed name.
+     * The identity table: what this document says about itself.
+     *
+     * Named for what it describes, like the object table beside it. A reader has
+     * to find it at a fixed name, so the name is part of the format — see
+     * `docs/soil-format.md` §5.
      */
-    const val META_TABLE = "notebook_meta"
+    const val META_TABLE = "sketchbook_meta"
 
     /** The index's object table: folders, sketchbooks, lists, singletons. */
     const val INDEX_OBJECTS_TABLE = "objects"
@@ -183,7 +185,7 @@ object SchemaSql {
             "`order` INTEGER, " + // reserved: user-draggable tree order
             "`pageCount` INTEGER, " +
             "`flags` INTEGER, " + // bit 0 = encrypted
-            "`keyScope` TEXT, " + // 'GLOBAL' | 'NOTEBOOK'
+            "`keyScope` TEXT, " + // 'GLOBAL' | 'SKETCHBOOK'
             "`canvasKind` TEXT, " + // 'FULL_SCREEN' | 'PRINT'
             "`canvasW` REAL, " + // inches, PRINT only — the card's aspect ratio
             "`canvasH` REAL, " +

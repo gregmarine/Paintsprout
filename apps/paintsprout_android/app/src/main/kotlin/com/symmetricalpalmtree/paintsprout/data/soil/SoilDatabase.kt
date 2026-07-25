@@ -45,18 +45,18 @@ class SoilDatabase private constructor(
 
     // --- The identity record ------------------------------------------------
 
-    fun readMeta(): NotebookMeta? =
+    fun readMeta(): SketchbookMeta? =
         db.query("SELECT json FROM ${SchemaSql.META_TABLE} WHERE id = 0").use { cursor ->
             if (!cursor.moveToFirst()) return null
             // A damaged record must degrade to "no metadata", never to an
             // unopenable document — the content is what matters and it is fine.
-            runCatching { SoilJson.decodeFromString<NotebookMeta>(cursor.getString(0)) }.getOrNull()
+            runCatching { SoilJson.decodeFromString<SketchbookMeta>(cursor.getString(0)) }.getOrNull()
         }
 
-    fun writeMeta(meta: NotebookMeta) {
+    fun writeMeta(meta: SketchbookMeta) {
         db.execSQL(
             "INSERT OR REPLACE INTO ${SchemaSql.META_TABLE} (id, json) VALUES (0, ?)",
-            arrayOf(SoilJson.encodeToString(NotebookMeta.serializer(), meta)),
+            arrayOf(SoilJson.encodeToString(SketchbookMeta.serializer(), meta)),
         )
     }
 
@@ -80,7 +80,7 @@ class SoilDatabase private constructor(
      * sessions belong in this sequence too, and arrive with the phases that create
      * something to flush, convert or purge.
      */
-    fun seal(refresh: (NotebookMeta) -> NotebookMeta = { it }) {
+    fun seal(refresh: (SketchbookMeta) -> SketchbookMeta = { it }) {
         // Baked in before the file goes cold, which is what lets export stay a
         // prompt-free copy: the embedded metadata is already current.
         runCatching { readMeta()?.let { writeMeta(refresh(it)) } }
@@ -121,7 +121,7 @@ class SoilDatabase private constructor(
             file: File,
             documentId: String,
             factory: SupportSQLiteOpenHelper.Factory,
-            meta: NotebookMeta,
+            meta: SketchbookMeta,
         ): SoilDatabase {
             if (file.exists()) throw IOException("Refusing to overwrite ${file.name}")
             val soil = SoilDatabase(documentId, file, helper(context, file, factory))

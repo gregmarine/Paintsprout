@@ -4,10 +4,11 @@ This describes what is actually on disk after Phases 1–25, not what was planne
 Where the two differ, the difference is called out. The plan and its reasoning
 live in [`file-format-plan.md`](file-format-plan.md); this is the reference.
 
-Paintsprout is one member of the Sprout family container contract, and the parts
-that are the *container's* rather than Paintsprout's keep the container's names —
-`notebook_meta`, `notebookId`, `folderPath` — so a reader from another app in the
-family finds what it expects where it expects it.
+Paintsprout is one member of the Sprout family container contract: the *shape* is
+the family's — one document per SQLite file, a universal wide-sparse object row, an
+identity record beside it, `folderPath` ancestry — while the names say what this
+app actually holds. A `.soil` written here carries a `sketchbook` table and a
+`sketchbook_meta` record, and nothing in it is called a notebook.
 
 ---
 
@@ -64,7 +65,7 @@ byte. There is never a moment at which a plaintext index exists.
 
 - **`GLOBAL`** — the device's own passphrase, minted at first launch as a `PSPT-`
   recovery key (160 bits, Crockford base32, 8 groups of 4). Opens silently.
-- **`NOTEBOOK`** — the document's own passphrase. Asked for every time it opens;
+- **`SKETCHBOOK`** — the document's own passphrase. Asked for every time it opens;
   the derived key lives in RAM until the process ends and **never touches disk**.
   No cover may be cached for such a document, at any time: the index is encrypted
   with the *global* key, and a thumbnail there would cross exactly the boundary
@@ -102,7 +103,7 @@ rotation resumes from an ordinary launch.
 Two tables.
 
 ```sql
-CREATE TABLE IF NOT EXISTS notebook_meta
+CREATE TABLE IF NOT EXISTS sketchbook_meta
     (id INTEGER PRIMARY KEY CHECK (id = 0), json TEXT NOT NULL);
 ```
 
@@ -263,17 +264,17 @@ modification.
 
 ---
 
-## 5. `notebook_meta` — the identity record
+## 5. `sketchbook_meta` — the identity record
 
-JSON, one row. This is what makes a `.soil` self-describing, and therefore what
-makes **export a plain byte copy**: everything an importing device needs is
+JSON, one row, in the `sketchbook_meta` table. This is what makes a `.soil`
+self-describing, and therefore what makes **export a plain byte copy**: everything an importing device needs is
 already inside the file, so exporting never opens it and therefore never has to
 unlock it.
 
 ```json
 {
   "formatVersion": 1,
-  "notebookId": "590f9749-703d-4e57-92a6-87d3ae166046",
+  "sketchbookId": "590f9749-703d-4e57-92a6-87d3ae166046",
   "name": "Rope and tide",
   "createdAt": 1785004491281,
   "updatedAt": 1785010727409,
@@ -336,7 +337,7 @@ the user left a page must not crash the app, and must not stop the steps after i
 ```
 flush pending ops
   → write the raster cache
-  → refresh notebook_meta (name and ancestry from the index)
+  → refresh sketchbook_meta (name and ancestry from the index)
   → refresh the index row (page count, cover, updatedAt)
   → purge rows tombstoned in PRIOR sessions, and stale raster caches
   → VACUUM, only if something actually went
@@ -352,7 +353,7 @@ document was open is still this session's business.
 
 The rules that are load-bearing. Each has a scar behind it.
 
-1. One document = one SQLite file; the file is self-describing via `notebook_meta`.
+1. One document = one SQLite file; the file is self-describing via `sketchbook_meta`.
 2. **Never hold zero copies.** Every replacement is verify → rename aside → rename
    in → delete aside, and launch-time repair runs before any probe.
 3. **Never open a document with a create-capable helper without checking the file

@@ -66,7 +66,7 @@ object SoilImport {
         /** Identified and openable. [collision] says what the library already has. */
         class Ready(
             val staged: File,
-            val meta: NotebookMeta,
+            val meta: SketchbookMeta,
             val collision: ImportPlan.Collision,
             val passphrase: String?,
             val plaintext: Boolean,
@@ -149,8 +149,8 @@ object SoilImport {
         }
         val replacing = ready.collision == ImportPlan.Collision.EXISTS &&
             resolution == ImportPlan.Resolution.REPLACE
-        val documentId = if (replacing) ready.meta.notebookId else {
-            if (ready.collision == ImportPlan.Collision.NONE) ready.meta.notebookId else newId()
+        val documentId = if (replacing) ready.meta.sketchbookId else {
+            if (ready.collision == ImportPlan.Collision.NONE) ready.meta.sketchbookId else newId()
         }
 
         val index = IndexGate.awaitReady()
@@ -195,7 +195,7 @@ object SoilImport {
             }
 
             // Everything the library shows, from the file that just landed.
-            refreshAfterInstall(context, documentId, ready, name, ready.meta.notebookId)
+            refreshAfterInstall(context, documentId, ready, name, ready.meta.sketchbookId)
             documentId
         } catch (t: Throwable) {
             null
@@ -253,7 +253,7 @@ object SoilImport {
             discard(staged)
             return Step.Refused(checked.verdict, checked.badId)
         }
-        val id = checked.meta!!.notebookId
+        val id = checked.meta!!.sketchbookId
         val index = IndexGate.awaitReady()
         return Step.Ready(
             staged = staged,
@@ -269,14 +269,14 @@ object SoilImport {
      *
      * Whatever opened the file, opens the file — this phase converts nothing.
      * A file that took the device's own passphrase is `GLOBAL` and opens
-     * silently; one that took a different passphrase is `NOTEBOOK`, which means
+     * silently; one that took a different passphrase is `SKETCHBOOK`, which means
      * "ask every time", and that is the truth about it. Changing which key a
      * document uses is a `sqlcipher_export` round-trip and belongs to Phase 24's
      * one shared helper, not to a second copy of it here.
      */
     private fun scopeOf(context: Context, ready: Step.Ready): KeyScope {
         val global = PassphraseVault(CryptoStores.secrets(context)).globalOrNull()
-        return if (ready.passphrase != null && ready.passphrase == global) KeyScope.GLOBAL else KeyScope.NOTEBOOK
+        return if (ready.passphrase != null && ready.passphrase == global) KeyScope.GLOBAL else KeyScope.SKETCHBOOK
     }
 
     /**
@@ -297,7 +297,7 @@ object SoilImport {
             val soil = SketchbookStore.open(
                 context,
                 documentId,
-                keyScope = if (ready.passphrase == null) KeyScope.GLOBAL else KeyScope.NOTEBOOK,
+                keyScope = if (ready.passphrase == null) KeyScope.GLOBAL else KeyScope.SKETCHBOOK,
                 passphrase = ready.passphrase,
             )
             try {
@@ -313,7 +313,7 @@ object SoilImport {
                 // sits, so a re-export from here is already true.
                 val refresh = MetaUpkeep.from(documentId)
                 soil.readMeta()?.let {
-                    soil.writeMeta(refresh(it).copy(notebookId = documentId, name = name))
+                    soil.writeMeta(refresh(it).copy(sketchbookId = documentId, name = name))
                 }
             } finally {
                 soil.seal()

@@ -7,7 +7,7 @@ import com.symmetricalpalmtree.paintsprout.data.index.IndexObject
 /**
  * Keeping a document's embedded record true.
  *
- * `notebook_meta` is what makes a `.soil` self-describing, and self-describing is
+ * `sketchbook_meta` is what makes a `.soil` self-describing, and self-describing is
  * what makes **export a plain file copy**: everything an importing device needs
  * is already inside the file, so exporting never has to open it — and therefore
  * never has to unlock it. A book with its own passphrase exports as ciphertext
@@ -40,13 +40,13 @@ object MetaUpkeep {
      * not be handed a picture of what is inside it.
      */
     fun refresh(
-        meta: NotebookMeta,
+        meta: SketchbookMeta,
         row: IndexObject?,
         folderPath: List<FolderRef>,
         cover: String? = null,
         now: Long,
         appVersionCode: Int? = meta.appVersionCode,
-    ): NotebookMeta = meta.copy(
+    ): SketchbookMeta = meta.copy(
         name = row?.name?.takeIf { it.isNotBlank() } ?: meta.name,
         folderPath = folderPath,
         updatedAt = now,
@@ -69,7 +69,7 @@ object MetaUpkeep {
         documentId: String,
         now: Long = System.currentTimeMillis(),
         appVersionCode: Int = BuildConfig.VERSION_CODE,
-    ): (NotebookMeta) -> NotebookMeta {
+    ): (SketchbookMeta) -> SketchbookMeta {
         val index = IndexGate.awaitReady()
         val row = index.byId(documentId)
         val folders = MetaUpkeep.folderPathOf(index.ancestryOf(documentId))

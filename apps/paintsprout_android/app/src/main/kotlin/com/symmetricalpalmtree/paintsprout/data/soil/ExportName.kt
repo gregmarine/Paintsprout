@@ -8,7 +8,7 @@ import com.symmetricalpalmtree.paintsprout.data.SoilFiles
  * In the library a document is a UUID; outside it, it is whatever the user called
  * it — a file in a share sheet, an email attachment, a thing in Downloads with a
  * name they have to recognise months later. So the name travels, and the id stays
- * behind in [NotebookMeta] where it belongs.
+ * behind in [SketchbookMeta] where it belongs.
  *
  * Every rule here is about the *outside*, where the filename becomes a path in
  * somebody else's storage:

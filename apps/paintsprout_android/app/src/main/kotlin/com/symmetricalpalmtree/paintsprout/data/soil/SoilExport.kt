@@ -14,7 +14,7 @@ import java.io.IOException
  * Sending a sketchbook out of the app, as a file.
  *
  * It is a **byte-for-byte copy**, and that is the whole design. The document is
- * self-describing — [NotebookMeta] carries its id, its name, its ancestry and how
+ * self-describing — [SketchbookMeta] carries its id, its name, its ancestry and how
  * it is keyed — and [MetaUpkeep] has kept that record current every time the file
  * was open. So export never opens the document, which means it never has to
  * unlock one: a book with its own passphrase exports as ciphertext, silently,

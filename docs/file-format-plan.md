@@ -52,11 +52,17 @@ Answered by the user during planning (2026-07-24), plus the technical calls that
 
 - **Extension `.soil`, object table `sketchbook`.** Same container family. A single file may one day
   carry both a `notebook` and a `sketchbook` table; nothing here ever drops a table it doesn't own.
-- **The identity table keeps the name `notebook_meta`.** It belongs to the container, not to
-  Notesprout (spec invariant #6), and its field set is copied verbatim including `folderPath`.
-- **`keyScope` values stay `GLOBAL` / `NOTEBOOK`.** `NOTEBOOK` means "this document's own
-  passphrase". Renaming it to `SKETCHBOOK` would fork the portable `notebook_meta` vocabulary for
-  no gain.
+- **The identity table is `sketchbook_meta`, and its id field is `sketchbookId`.** Named for what
+  they describe, like the object table beside them. The field *set* is the container's — `folderPath`
+  and the rest are copied verbatim — but the vocabulary of the record is this app's.
+  > **Corrected after Phase 25.** These shipped as `notebook_meta` / `notebookId` / `NOTEBOOK`,
+  > carried over from the source spec on the reasoning that the identity table belonged to the
+  > container rather than to any one app. That was an oversight, not a decision: nothing in
+  > Paintsprout is a notebook. Renamed throughout, with no compatibility path, because no file
+  > written by the old naming exists outside the one dev device — whose three documents were
+  > corrected in place.
+- **`keyScope` values are `GLOBAL` / `SKETCHBOOK`.** `SKETCHBOOK` means "this sketchbook's own
+  passphrase".
 - **No `data` / `boundingBox` legacy columns.** Greenfield; the spec says to omit them.
 - **A small `params TEXT` JSON payload is permitted on exactly three types** (`page`,
   `surface_op`, `palette`) for closed, never-queried parameter bags — surface parameter structs and
@@ -123,7 +129,7 @@ CREATE TABLE objects (
 
     pageCount   INTEGER,                        -- sketchbook
     flags       INTEGER,                        -- sketchbook bitfield
-    keyScope    TEXT,                           -- 'GLOBAL' | 'NOTEBOOK'
+    keyScope    TEXT,                           -- 'GLOBAL' | 'SKETCHBOOK'
     canvasKind  TEXT,                           -- 'FULL_SCREEN' | 'PRINT'
     canvasW     REAL,  canvasH  REAL,           -- inches, PRINT only — card aspect ratio
     refId       TEXT,                           -- list_item → member id
@@ -197,7 +203,7 @@ All are `00000000-0000-0000-0000-<group>`, created by idempotent `ensure…Exist
 
 # Part 4 — The document container (`<uuid>.soil`)
 
-Room, SQLCipher, schema **v1**. Tables: `sketchbook` (object table), `notebook_meta` (identity).
+Room, SQLCipher, schema **v1**. Tables: `sketchbook` (object table), `sketchbook_meta` (identity).
 
 ## The object table
 
@@ -241,7 +247,7 @@ CREATE INDEX IF NOT EXISTS idx_sketchbook_parent_order
 ```
 
 ```sql
-CREATE TABLE IF NOT EXISTS notebook_meta
+CREATE TABLE IF NOT EXISTS sketchbook_meta
     (id INTEGER PRIMARY KEY CHECK (id = 0), json TEXT NOT NULL);
 ```
 
@@ -270,7 +276,7 @@ sketchbook            (root meta row, parentId = "")
 
 | Field | Column | Notes |
 |---|---|---|
-| title | `text` | Mirrored into `notebook_meta` and the index row |
+| title | `text` | Mirrored into `sketchbook_meta` and the index row |
 | last opened page | `refId` | Restored on open |
 | canvas kind | `kind` | `FULL_SCREEN` \| `PRINT` |
 | canvas size | `width`, `height` | **Inches**, `PRINT` only. Book-level (decision 5) |
@@ -466,10 +472,10 @@ Identical to the Notesprout model — see `soil-file-format.md` Part VII. What i
 |---|---|
 | Recovery key prefix | `PSPT-` + 8 Crockford-base32 groups of 4 (160 bits) |
 | Index raw-key cache id | `__paintsprout_index__` |
-| Key scopes | `GLOBAL` (cached, prompted once per device) · `NOTEBOOK` (per-document, prompted every open, **never persisted**) |
+| Key scopes | `GLOBAL` (cached, prompted once per device) · `SKETCHBOOK` (per-document, prompted every open, **never persisted**) |
 | KDF | Stock: PBKDF2-HMAC-SHA512, 256,000 iterations, AES-256, 16-byte header salt. No `kdf_iter` override, no page-size override |
 | Passphrase encoding | UTF-8, always |
-| Cover caching | Unencrypted → yes. `GLOBAL` scope → **yes** (the index is encrypted under that same key). `NOTEBOOK` scope → **never**; converting to private scope clears any existing cover in the same write, and the card renders a lock |
+| Cover caching | Unencrypted → yes. `GLOBAL` scope → **yes** (the index is encrypted under that same key). `SKETCHBOOK` scope → **never**; converting to private scope clears any existing cover in the same write, and the card renders a lock |
 | Rate limiting | Per-document buckets + `"GLOBAL"` + `"IMPORT"`; 3 fails → 30 s, 5 → 5 min, ≥10 → 1 hr. Cancel does not count. Nothing about attempts is ever logged |
 
 **Acceptance test for every phase that touches keying:**
@@ -515,7 +521,7 @@ the library — a stale pointer otherwise mints an empty ghost document through 
 ## Library
 
 - Sections: **Pinned** → **Recents** → current folder's contents (folders first, then sketchbooks).
-- Card: cover + name + page count; lock glyph instead of a cover for `NOTEBOOK`-scope books.
+- Card: cover + name + page count; lock glyph instead of a cover for `SKETCHBOOK`-scope books.
 - Actions: create, rename, move, duplicate, delete, pin/unpin, export.
 - **Search is filename-only** (`objects.name`) — by construction, since no content ever reaches the
   index. A future "search inside artwork" is therefore forced to be an explicit design decision.
@@ -532,7 +538,7 @@ the library — a stale pointer otherwise mints an empty ghost document through 
   application-scoped non-cancellable coroutine:
 
 ```
-flush pending ops → write raster cache → refresh notebook_meta → refresh the index row
+flush pending ops → write raster cache → refresh sketchbook_meta → refresh the index row
   (pageCount, cover, updatedAt) → hard-delete rows tombstoned in PRIOR sessions
   → incremental_vacuum → wal_checkpoint(TRUNCATE) → close → delete stray -journal
 ```
@@ -562,7 +568,7 @@ page reaches a sketchbook via *send to sketchbook*.
 
 Check every phase against this. Each line is a real bug someone already paid for.
 
-1. One document = one SQLite file; the file is self-describing via `notebook_meta`.
+1. One document = one SQLite file; the file is self-describing via `sketchbook_meta`.
 2. Everything is an object in one wide sparse table; `type` is a plain string.
 3. Stable UUIDs, assigned at creation, never reassigned. Copy is the only operation that mints new ones.
 4. Soft deletes only; hard deletion happens in a deliberate compaction pass (and for list edges).
@@ -602,7 +608,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 3 | Crypto core: keystore stores, key mint, KDF cache, rate limiter | no | ✅ |
 | 4 | Global index DB: Room entities, DAOs, repository, sentinels | no | ✅ |
 | 5 | Bootstrap gate + unlock UI + launch routing | **yes** | ✅ |
-| 6 | `.soil` container: schema, `notebook_meta`, create/open/seal, registry | **yes** | ✅ |
+| 6 | `.soil` container: schema, `sketchbook_meta`, create/open/seal, registry | **yes** | ✅ |
 | 7 | Object model: universal row, columnar mapping, subtree helpers | no | ✅ |
 | 8 | Binary codecs: stroke format B, masks, matrix, wet state | no | ✅ |
 | 9 | Document repository: pages, layers, ops, undoDepth, cache, palette | no | ✅ |
@@ -618,7 +624,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 19 | Lasso tool | **yes** | ✅ |
 | 20 | Clipboard: copy/paste whole objects | **yes** | ✅ |
 | 21 | Send to scratchpad / send to sketchbook | **yes** | ✅ |
-| 22 | Export `.soil` + `notebook_meta` upkeep | **yes** | ✅ |
+| 22 | Export `.soil` + `sketchbook_meta` upkeep | **yes** | ✅ |
 | 23 | Import `.soil` | **yes** | ✅ |
 | 24 | Encryption UX: per-document passphrase, rotation, lock states | **yes** | ✅ |
 | 25 | Compaction, VACUUM, size/perf measurement, leak audit | **yes** | ✅ |
@@ -854,13 +860,13 @@ this app produces that error, which is why `NonDestructiveOpenHelperFactory` had
 key did.
 
 ## Phase 6 — `.soil` container ✅ 🧪
-`sketchbook` + `notebook_meta` tables, document Room DB, create/open/seal, the open-document
+`sketchbook` + `sketchbook_meta` tables, document Room DB, create/open/seal, the open-document
 registry, per-document key scope resolution. A temporary debug menu item creates and deletes a
 sketchbook file so the container can be exercised before any UI exists.
 **Device test:** create a file, `adb pull`, open it in the stock `sqlcipher` CLI with the recovery
 key, confirm the table set and that no `-wal`/`-shm` survives a clean close.
 
-**As built.** `NotebookMeta` (+ `FolderRef`, `SoilJson`), `SoilDatabase`, `OpenDocuments`,
+**As built.** `SketchbookMeta` (+ `FolderRef`, `SoilJson`), `SoilDatabase`, `OpenDocuments`,
 `SketchbookStore`, and a temporary long-press-Save hook in the editor. 11 tests; 231 in the module.
 
 > ### ⚠️ Decision 12 narrowed: the document container does **not** use Room
@@ -903,14 +909,14 @@ Other notes:
 |---|---|
 | File created at `Garden/<uuid>.soil` | ✅ `ed233d18-…-13f68c5e52b5.soil`, 20480 bytes |
 | Encrypted from the first byte | ✅ no `SQLite format 3\0` header |
-| Table set is exactly ours | ✅ `notebook_meta`, `sketchbook` — and nothing else |
+| Table set is exactly ours | ✅ `sketchbook_meta`, `sketchbook` — and nothing else |
 | `sketchbook` DDL on device | ✅ the 26-column universal row, `order` quoted, PK last |
 | Its index | ✅ `index_sketchbook_parentId_order_deletedAt` |
 | `user_version` | ✅ 1 |
 | **No sidecars survive a clean seal** | ✅ "Sidecars after seal: none" |
 | Open-document registry empties on seal | ✅ 0 open |
 | Index row and file created together | ✅ 1 file, 1 index row |
-| `notebook_meta` JSON | ✅ family field set, `notebookId` (not `sketchbookId`), `folderPath: []` |
+| `sketchbook_meta` JSON | ✅ family field set, `sketchbookId` (not `sketchbookId`), `folderPath: []` |
 | Stock `sqlcipher` CLI opens it with the global key | ✅ |
 | `CHECK (id = 0)` is genuinely enforced | ✅ inserting `id=1` fails with a constraint error |
 | Delete removes the file and the row | ✅ Garden empty afterwards |
@@ -1702,7 +1708,7 @@ for Phase 9's decision to parameterise the repository rather than write a second
 | The source page after sending | ✅ still there, unchanged |
 
 ## Phase 22 — Export ✅ 🧪
-`notebook_meta` continuous upkeep (create / open / close), then export as a raw file copy named
+`sketchbook_meta` continuous upkeep (create / open / close), then export as a raw file copy named
 `<Sketchbook Name>.soil` (sanitized `[^a-zA-Z0-9_\-. ]`, UUID fallback, spaces preserved),
 `application/octet-stream`, via the share sheet. Encrypted books export silently as ciphertext.
 **Device test:** export plaintext and encrypted books; open the exported file in the `sqlcipher` CLI.
@@ -1800,7 +1806,7 @@ every exit, success and refusal and cancel alike. 503 tests.
   conversation about it; "Harbour (2)" beside "Harbour" says what happened more clearly than a dialog
   they would have to remember answering.
 - **No keying chooser, deliberately.** Whatever opened the file, opens the file: a document that took
-  this device's passphrase is `GLOBAL`, one that took a different passphrase is `NOTEBOOK` — "ask
+  this device's passphrase is `GLOBAL`, one that took a different passphrase is `SKETCHBOOK` — "ask
   every time", which is the truth about it. *Changing* which key a document uses is a
   `sqlcipher_export` round-trip, and the plan's own rule is that there is one of those, in one shared
   helper, arriving in Phase 24. A second copy of it here is exactly what that rule forbids.
@@ -1852,7 +1858,7 @@ Per-document passphrase (set / change / remove) with in-place `sqlcipher_export`
 never-zero-copies swap; global passphrase rotation as a crash-resumable batch re-key (marker written
 before the first file, per-file verify-then-skip, quarantine a mislabeled file and continue, cached
 global passphrase updated only when `pendingIds` is empty); lock glyphs and cover suppression for
-`NOTEBOOK` scope.
+`SKETCHBOOK` scope.
 **Device test:** encrypt a book privately, relaunch and unlock, rotate the global key with several
 books present, kill mid-rotation and confirm resumption. **Carried forward from Phase 22:** decrypt a
 book in place, export it, and open *that* file in the stock `sqlcipher` CLI — the plaintext half of
@@ -1893,7 +1899,7 @@ correctly; the toast said so and nothing else did. It is a `rawQuery`, and it ha
 a cursor that is never read is an export that never runs.
 
 **A private book bounced straight back to the library.** `SketchbookStore.open` resolved the
-passphrase before it consulted the cached key, so a `NOTEBOOK` open with no passphrase threw — even
+passphrase before it consulted the cached key, so a `SKETCHBOOK` open with no passphrase threw — even
 with a perfectly good key already derived. The cache is consulted first now, and the passphrase is
 only needed when it misses.
 
@@ -1916,7 +1922,7 @@ embedded cover on the way through.
 | The converted file, in stock `sqlcipher` | ✅ opens with the book's passphrase, **`user_version` = 1**, 11 rows |
 | Relaunch and unlock | ✅ after two fixes; wrong passphrase → *"That didn't open it"*, right one → the page, intact |
 | **Decrypt in place** | ✅ header is `SQLite format 3`, opens in **stock `sqlite3` with no key**, `user_version` = 1 |
-| **Export the decrypted book** (Phase 22's carried-forward half) | ✅ the exported copy opens in `sqlite3`; manifest readable, `notebookId` / `folderPath` verbatim |
+| **Export the decrypted book** (Phase 22's carried-forward half) | ✅ the exported copy opens in `sqlite3`; manifest readable, `sketchbookId` / `folderPath` verbatim |
 | Back to the device key | ✅ encrypted again, `sqlite3` refuses it |
 | **Kill mid-rotation** | ✅ two documents converted, one pending, index untouched — the half-and-half state by design |
 | **Resume on the next launch** | ✅ the pending document *and* the index converted, library opened normally |
@@ -2013,9 +2019,9 @@ bricked real Notesprout files. Put it in the one shared export helper and nowher
 - **Layer UI** — columns exist (`opacity`, `blendMode`, `flags`), compositing does not.
 - **Raster / tiled pixel objects** — reserved type, no implementation. Needed if a photo-import or
   smudge-bake feature ever lands.
-- **Cross-app import semantics.** If Paintsprout is handed a file with only a `notebook` table:
-  reject cleanly? Import as an unopenable shell? Undecided in the source spec too, and it must be
-  settled before Phase 23 ships an importer that can receive Notesprout files. **Proposed answer for
-  Phase 23: reject cleanly with a clear message, and never modify the file.**
+- **Cross-app import semantics.** Settled by what shipped: a file is a Paintsprout sketchbook if it
+  carries `sketchbook_meta`, and anything else is refused cleanly without being modified. A file with
+  only a `notebook` table therefore reads as "not a Paintsprout sketchbook" — which is the same
+  answer the proposal reached, now reached by construction rather than by a special case.
 - **Who owns a mixed file's index row** — one row, one `type`. Not reachable until both apps can
   write one file; not solved here.

@@ -25,12 +25,11 @@ enum class KeyScope {
      * open; the raw key lives in RAM and is dropped on close. Never persisted,
      * anywhere — that is the entire difference between the two scopes.
      *
-     * The name is deliberately `NOTEBOOK` rather than `SKETCHBOOK`: it is written
-     * into the portable `notebook_meta` record, where the vocabulary belongs to
-     * the container and has to read the same in every Sprout app. It means
-     * "the document's own key".
+     * Written verbatim into the portable `sketchbook_meta` record and into the
+     * index's `keyScope` column, so the name is part of the format rather than an
+     * implementation detail. It means "the sketchbook's own key".
      */
-    NOTEBOOK;
+    SKETCHBOOK;
 
     companion object {
         /** Lenient parse — an unknown or absent value is treated as global. */

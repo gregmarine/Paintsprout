@@ -14,8 +14,8 @@ import org.junit.Test
  */
 class MetaUpkeepTest {
 
-    private val meta = NotebookMeta(
-        notebookId = "doc-1",
+    private val meta = SketchbookMeta(
+        sketchbookId = "doc-1",
         name = "Old name",
         createdAt = 100,
         updatedAt = 200,
@@ -70,13 +70,13 @@ class MetaUpkeepTest {
      */
     @Test
     fun `identity and keying are never taken from the index`() {
-        val encrypted = meta.copy(encrypted = true, keyScope = "NOTEBOOK")
+        val encrypted = meta.copy(encrypted = true, keyScope = "SKETCHBOOK")
         val out = MetaUpkeep.refresh(encrypted, row("Harbour"), emptyList(), now = 900)
 
-        assertEquals("doc-1", out.notebookId)
+        assertEquals("doc-1", out.sketchbookId)
         assertEquals(100, out.createdAt)
         assertEquals(true, out.encrypted)
-        assertEquals("NOTEBOOK", out.keyScope)
+        assertEquals("SKETCHBOOK", out.keyScope)
         assertEquals(1, out.formatVersion)
     }
 
@@ -116,16 +116,16 @@ class MetaUpkeepTest {
 
     /** What upkeep writes has to survive the JSON it is written as. */
     @Test
-    fun `a refreshed record round-trips through the container's JSON`() {
+    fun `a refreshed record round-trips through the stored JSON`() {
         val out = MetaUpkeep.refresh(
             meta,
             row("Harbour", parentId = "f1"),
             MetaUpkeep.folderPathOf(listOf(folder("f1", "Sketches"))),
             now = 900,
         )
-        val json = SoilJson.encodeToString(NotebookMeta.serializer(), out)
-        assertEquals(out, SoilJson.decodeFromString<NotebookMeta>(json))
-        assertEquals("the container's field name, not ours", true, json.contains("\"notebookId\""))
+        val json = SoilJson.encodeToString(SketchbookMeta.serializer(), out)
+        assertEquals(out, SoilJson.decodeFromString<SketchbookMeta>(json))
+        assertEquals("the record names what it holds", true, json.contains("\"sketchbookId\""))
         assertEquals(true, json.contains("\"folderPath\""))
     }
 }

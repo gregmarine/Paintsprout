@@ -99,7 +99,7 @@ object DocumentKeying {
 
         val scope = when (to) {
             Keying.DEVICE -> KeyScope.GLOBAL
-            Keying.PRIVATE -> KeyScope.NOTEBOOK
+            Keying.PRIVATE -> KeyScope.SKETCHBOOK
             Keying.NONE -> null
         }
 

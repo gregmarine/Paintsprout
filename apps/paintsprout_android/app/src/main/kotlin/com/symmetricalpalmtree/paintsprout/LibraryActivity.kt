@@ -311,7 +311,7 @@ class LibraryActivity : AppCompatActivity() {
      * Opens a book, asking for its passphrase first when it has its own.
      *
      * The passphrase never travels: it is turned into a derived key held **in
-     * RAM only** for this process, which is what `NOTEBOOK` scope means, and the
+     * RAM only** for this process, which is what `SKETCHBOOK` scope means, and the
      * editor finds it there. Nothing about a private book is written anywhere the
      * global key could reach it — not a cover, not a cached key, not a pointer.
      */

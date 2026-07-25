@@ -23,7 +23,7 @@ import java.util.UUID
  *
  * The two key scopes differ here and only here. A `GLOBAL` document opens with
  * the device's own passphrase and its derived key is cached on disk, so opening
- * is fast from the second time onwards. A `NOTEBOOK` document is prompted for
+ * is fast from the second time onwards. A `SKETCHBOOK` document is prompted for
  * every single time and its derived key lives in RAM until the document closes —
  * the user chose a separate passphrase precisely so that content is not reachable
  * with the global key, and a persisted derived key would quietly undo that.
@@ -39,7 +39,7 @@ object SketchbookStore {
     /**
      * Creates a new sketchbook file, encrypted from its first byte.
      *
-     * [passphrase] is required for [KeyScope.NOTEBOOK] and ignored for
+     * [passphrase] is required for [KeyScope.SKETCHBOOK] and ignored for
      * [KeyScope.GLOBAL], which mints or reuses the device key.
      */
     fun create(
@@ -61,8 +61,8 @@ object SketchbookStore {
             // does not exist yet, so there is nothing to derive from until after
             // this call. The derivation happens behind the user, below.
             factory = SoilCrypto.roomFactory(secret),
-            meta = NotebookMeta(
-                notebookId = documentId,
+            meta = SketchbookMeta(
+                sketchbookId = documentId,
                 name = name,
                 createdAt = now,
                 updatedAt = now,
@@ -141,7 +141,7 @@ object SketchbookStore {
     private fun secretFor(context: Context, keyScope: KeyScope, passphrase: String?): String =
         when (keyScope) {
             KeyScope.GLOBAL -> PassphraseVault(CryptoStores.secrets(context)).ensureGlobal()
-            KeyScope.NOTEBOOK -> passphrase
+            KeyScope.SKETCHBOOK -> passphrase
                 ?: throw IllegalArgumentException("A private sketchbook needs its own passphrase")
         }
 
@@ -162,7 +162,7 @@ object SketchbookStore {
                 val keys = RawKeyCache(CryptoStores.derivedKeys(context))
                 when (keyScope) {
                     KeyScope.GLOBAL -> keys.global(documentId, file, secret)
-                    KeyScope.NOTEBOOK -> keys.ephemeral(documentId, file, secret)
+                    KeyScope.SKETCHBOOK -> keys.ephemeral(documentId, file, secret)
                 }
             }
         }

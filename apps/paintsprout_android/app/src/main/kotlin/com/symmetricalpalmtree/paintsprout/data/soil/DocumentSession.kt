@@ -669,7 +669,7 @@ class DocumentSession private constructor(
             // arriving here without it simply fails to open, which is the correct
             // outcome for a locked document nobody has unlocked.
             val scope = if (IndexGate.awaitReady().byId(id)?.isPrivateScope == true) {
-                KeyScope.NOTEBOOK
+                KeyScope.SKETCHBOOK
             } else {
                 KeyScope.GLOBAL
             }

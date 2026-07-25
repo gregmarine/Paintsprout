@@ -17,7 +17,7 @@ import net.zetetic.database.sqlcipher.SQLiteDatabase as CipherDb
  *
  * Every factory here is wrapped in [NonDestructiveOpenHelperFactory], with no
  * exceptions and no "this path can't hit an encrypted file" reasoning — that
- * reasoning is exactly what destroyed a notebook in the app this format comes
+ * reasoning is exactly what destroyed a document in the app this format comes
  * from. And every open is exists-guarded, because the underlying opens are
  * create-capable and an empty encrypted database will happily "verify" any
  * passphrase it is handed.

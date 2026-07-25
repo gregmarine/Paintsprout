@@ -10,11 +10,11 @@ import kotlinx.serialization.json.Json
  * plain file copy: everything an importing device needs is already inside the
  * file, so exporting never has to open — and therefore never has to unlock — it.
  *
- * **The table name and the field names are the container's, not Paintsprout's.**
- * `notebook_meta`, `notebookId`, `folderPath` — all kept verbatim from the Sprout
- * contract so that a reader from another app in the family finds what it expects
- * at the name it expects. Renaming any of them to something more paint-flavoured
- * would fork the format for no gain.
+ * **These names are the format**, not an implementation detail: they are what a
+ * reader finds inside a file it did not write, so they are pinned by a test.
+ * `sketchbook_meta` and `sketchbookId` say what the document is; the *shape* —
+ * `folderPath` and the rest of the field set — is the Sprout contract's, carried
+ * verbatim.
  *
  * [folderPath] is the clever part and the reason it is carried at all: it holds
  * the *stable UUIDs* of every ancestor folder, ordered root → immediate parent.
@@ -23,12 +23,12 @@ import kotlinx.serialization.json.Json
  * converges on an identical hierarchy — no sync, no server, no merge.
  */
 @Serializable
-data class NotebookMeta(
+data class SketchbookMeta(
     /** The container's schema version, not the content's. Nothing branches on it yet. */
     val formatVersion: Int = 1,
 
     /** The document's stable UUID — the same one its filename is built from. */
-    val notebookId: String,
+    val sketchbookId: String,
 
     /** Display name at last refresh. */
     val name: String,
@@ -38,7 +38,7 @@ data class NotebookMeta(
 
     val encrypted: Boolean = false,
 
-    /** `GLOBAL` or `NOTEBOOK`; null when not encrypted. */
+    /** `GLOBAL` or `SKETCHBOOK`; null when not encrypted. */
     val keyScope: String? = null,
 
     /**

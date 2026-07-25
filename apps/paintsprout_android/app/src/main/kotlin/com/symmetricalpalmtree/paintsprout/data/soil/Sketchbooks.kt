@@ -98,7 +98,7 @@ object Sketchbooks {
                 reidentify(soil, sourceId, newId)
                 soil.writeMeta(
                     (soil.readMeta() ?: return@withContext null).copy(
-                        notebookId = newId,
+                        sketchbookId = newId,
                         name = name,
                         updatedAt = System.currentTimeMillis(),
                     ),
@@ -186,7 +186,7 @@ object Sketchbooks {
     /**
      * Takes a private book's passphrase and holds its derived key **in RAM**.
      *
-     * That is the whole of what unlocking one means: `NOTEBOOK` scope is exactly
+     * That is the whole of what unlocking one means: `SKETCHBOOK` scope is exactly
      * "the key lives in memory until the process ends", so the passphrase is
      * verified against the file, derived once, and never written down. Returns
      * false for a wrong answer, which the caller counts.

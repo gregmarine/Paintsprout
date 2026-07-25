@@ -26,7 +26,7 @@ object ImportPlan {
     enum class Verdict {
         OK,
 
-        /** No `notebook_meta`, or a record that would not decode. */
+        /** No `sketchbook_meta`, or a record that would not decode. */
         NO_MANIFEST,
 
         /** An id in the manifest is not a UUID. Nothing further is trusted. */
@@ -62,17 +62,17 @@ object ImportPlan {
 
     class Checked(
         val verdict: Verdict,
-        val meta: NotebookMeta?,
+        val meta: SketchbookMeta?,
         val badId: String? = null,
     ) {
         val isOk: Boolean get() = verdict == Verdict.OK && meta != null
     }
 
     /** The manifest, validated. [meta] is null when the file carried none. */
-    fun check(meta: NotebookMeta?): Checked {
+    fun check(meta: SketchbookMeta?): Checked {
         if (meta == null) return Checked(Verdict.NO_MANIFEST, null)
-        if (!SoilFiles.isDocumentId(meta.notebookId)) {
-            return Checked(Verdict.BAD_ID, null, meta.notebookId)
+        if (!SoilFiles.isDocumentId(meta.sketchbookId)) {
+            return Checked(Verdict.BAD_ID, null, meta.sketchbookId)
         }
         for (folder in meta.folderPath) {
             if (!SoilFiles.isDocumentId(folder.id)) return Checked(Verdict.BAD_ID, null, folder.id)

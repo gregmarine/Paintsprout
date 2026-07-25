@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * The two scopes differ in exactly one respect, and it is the whole point of
  * having two: a [KeyScope.GLOBAL] key is persisted so cold launches are fast, and
- * a [KeyScope.NOTEBOOK] key never touches disk. The user chose a separate
+ * a [KeyScope.SKETCHBOOK] key never touches disk. The user chose a separate
  * passphrase precisely so that content is not reachable with the global key;
  * persisting its derived key would quietly undo that.
  *

@@ -7,7 +7,7 @@ import java.io.IOException
  * What can go wrong opening a database, said out loud.
  *
  * Each of these replaces a failure mode that is worse than an exception: a
- * fabricated empty database, a deleted notebook, or ciphertext read as garbage.
+ * fabricated empty database, a deleted sketchbook, or ciphertext read as garbage.
  * Callers that legitimately treat "cannot read this" as "nothing to show" —
  * pickers, thumbnails, library cards — catch these and degrade; nobody ignores
  * them.

@@ -23,7 +23,7 @@ class ImportPlanTest {
         id: String = docId,
         name: String = "Harbour",
         path: List<FolderRef> = emptyList(),
-    ) = NotebookMeta(notebookId = id, name = name, createdAt = 1, updatedAt = 2, folderPath = path)
+    ) = SketchbookMeta(sketchbookId = id, name = name, createdAt = 1, updatedAt = 2, folderPath = path)
 
     private fun folder(id: String, name: String = "Sketches", parentId: String? = null) =
         IndexObject(id = id, type = IndexType.FOLDER, name = name, parentId = parentId, createdAt = 1, updatedAt = 1)

@@ -203,7 +203,7 @@ class IndexRepository(
      */
     suspend fun setEncryption(id: String, encrypted: Boolean, keyScope: KeyScope?) =
         edit(id, IndexEdit.ENCRYPTION_CHANGE) { row ->
-            val private = encrypted && keyScope == KeyScope.NOTEBOOK
+            val private = encrypted && keyScope == KeyScope.SKETCHBOOK
             row.copy(
                 flags = if (encrypted) {
                     (row.flags ?: 0) or IndexObject.FLAG_ENCRYPTED

@@ -6,10 +6,10 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class NotebookMetaTest {
+class SketchbookMetaTest {
 
-    private val meta = NotebookMeta(
-        notebookId = "3f2a1b8c-4d5e-4f60-8a91-b2c3d4e5f607",
+    private val meta = SketchbookMeta(
+        sketchbookId = "3f2a1b8c-4d5e-4f60-8a91-b2c3d4e5f607",
         name = "Harbour studies",
         createdAt = 1_000,
         updatedAt = 2_000,
@@ -24,25 +24,27 @@ class NotebookMetaTest {
 
     @Test
     fun `it round-trips`() {
-        val json = SoilJson.encodeToString(NotebookMeta.serializer(), meta)
-        assertEquals(meta, SoilJson.decodeFromString(NotebookMeta.serializer(), json))
+        val json = SoilJson.encodeToString(SketchbookMeta.serializer(), meta)
+        assertEquals(meta, SoilJson.decodeFromString(SketchbookMeta.serializer(), json))
     }
 
     /**
-     * The field names belong to the container, not to Paintsprout. A reader from
-     * another app in the family has to find what it expects at the name it
-     * expects — which is also why `notebookId` is not `sketchbookId`.
+     * The record says what it holds: a **sketchbook**.
+     *
+     * These names are the format, not an implementation detail — they are what a
+     * reader finds inside a file it did not write — so they are pinned here
+     * rather than left to whatever the data class happens to be called.
      */
     @Test
-    fun `the wire field names are the family's`() {
-        val json = SoilJson.encodeToString(NotebookMeta.serializer(), meta)
+    fun `the wire field names say sketchbook`() {
+        val json = SoilJson.encodeToString(SketchbookMeta.serializer(), meta)
         for (field in listOf(
-            "formatVersion", "notebookId", "name", "createdAt", "updatedAt",
+            "formatVersion", "sketchbookId", "name", "createdAt", "updatedAt",
             "encrypted", "keyScope", "folderPath",
         )) {
             assertTrue("missing \"$field\"", json.contains("\"$field\""))
         }
-        assertFalse(json.contains("sketchbookId"))
+        assertFalse("no trace of the old vocabulary", json.contains("notebook"))
     }
 
     /**
@@ -60,10 +62,10 @@ class NotebookMetaTest {
     @Test
     fun `unknown fields are ignored`() {
         val fromTheFuture = """
-            {"formatVersion":2,"notebookId":"x","name":"n","createdAt":1,"updatedAt":2,
+            {"formatVersion":2,"sketchbookId":"x","name":"n","createdAt":1,"updatedAt":2,
              "encrypted":true,"keyScope":"GLOBAL","canvasFinish":"matte","layerCount":7}
         """.trimIndent()
-        val decoded = SoilJson.decodeFromString(NotebookMeta.serializer(), fromTheFuture)
+        val decoded = SoilJson.decodeFromString(SketchbookMeta.serializer(), fromTheFuture)
         assertEquals("n", decoded.name)
         assertEquals(2, decoded.formatVersion)
     }
@@ -71,8 +73,8 @@ class NotebookMetaTest {
     /** And a field this build expects but an older writer omitted must default. */
     @Test
     fun `missing optional fields default`() {
-        val minimal = """{"notebookId":"x","name":"n","createdAt":1,"updatedAt":2}"""
-        val decoded = SoilJson.decodeFromString(NotebookMeta.serializer(), minimal)
+        val minimal = """{"sketchbookId":"x","name":"n","createdAt":1,"updatedAt":2}"""
+        val decoded = SoilJson.decodeFromString(SketchbookMeta.serializer(), minimal)
         assertEquals(1, decoded.formatVersion)
         assertFalse(decoded.encrypted)
         assertNull(decoded.keyScope)

@@ -156,12 +156,12 @@ class SchemaSqlTest {
 
     /** "There is exactly one" is a database invariant here, not a convention. */
     @Test
-    fun `notebook_meta admits row zero and refuses any other`() {
+    fun `sketchbook_meta admits row zero and refuses any other`() {
         exec(SchemaSql.META_TABLE_DDL)
-        exec("INSERT INTO `notebook_meta` (`id`,`json`) VALUES (0,'{}')")
+        exec("INSERT INTO `sketchbook_meta` (`id`,`json`) VALUES (0,'{}')")
         var refused = false
         try {
-            exec("INSERT INTO `notebook_meta` (`id`,`json`) VALUES (1,'{}')")
+            exec("INSERT INTO `sketchbook_meta` (`id`,`json`) VALUES (1,'{}')")
         } catch (e: Exception) {
             refused = true
         }
@@ -215,10 +215,10 @@ class SchemaSqlTest {
         assertEquals(1, SchemaSql.CONTAINER_FORMAT_VERSION)
     }
 
-    /** The container's identity table keeps its family name, not an app-specific one. */
+    /** Both tables are named for what they hold. A reader finds them at fixed names. */
     @Test
-    fun `the identity table is notebook_meta and the object table is sketchbook`() {
-        assertEquals("notebook_meta", SchemaSql.META_TABLE)
+    fun `the identity table is sketchbook_meta and the object table is sketchbook`() {
+        assertEquals("sketchbook_meta", SchemaSql.META_TABLE)
         assertEquals("sketchbook", SchemaSql.SKETCHBOOK_TABLE)
     }
 }
