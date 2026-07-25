@@ -608,7 +608,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 9 | Document repository: pages, layers, ops, undoDepth, cache, palette | no | ✅ |
 | 10 | Editor save — strokes + surface ops | **yes** | ✅ |
 | 11 | Editor save — selection ops, clips, wet state, palette | **yes** | ✅ |
-| 12 | Editor load — raster cache fast path, cross-session undo/redo | **yes** | ⬜ |
+| 12 | Editor load — raster cache fast path, cross-session undo/redo | **yes** | ✅ |
 | 13 | Autosave, lifecycle, seal, crash safety | **yes** | ⬜ |
 | 14 | Library screen (flat): create, open, rename, delete, covers | **yes** | ⬜ |
 | 15 | Folders, move, sort, name search | **yes** | ⬜ |
@@ -1184,13 +1184,59 @@ composite's orphaned children are harmless — excluded from every read by the p
 reclaimed by the compactor's orphan sweep (Phase 25). It is the first time that state has actually
 been observed, and it confirms the sweep has real work to do.
 
-## Phase 12 — Editor load 🧪
+## Phase 12 — Editor load ✅ 🧪
 Open a page: restore canvas size (book), surface kind/params/seed/plain colour (page), palette and
 brush load, then the raster cache fast path (decode → `paintBmp`), with op replay as the fallback
 when `opCount != undoDepth` or the cache is missing/corrupt. Ops load lazily for undo. Cross-session
 undo/redo through `undoDepth`.
 **Device test:** the full round trip — paint, leave, relaunch, confirm pixel-identical restore, then
 undo back past the session boundary and redo forward again.
+
+**As built.** `OpRows.readOp` / `readSurfaceOp`, `DocumentSession.load()` + `writeCache()`,
+`PaintCanvasView.restore()`, and `applyPage()` in the editor. 10 tests; 375 in the module.
+
+- **`restore()` takes both sides of the frontier.** Committed ops and undone ops arrive together, so
+  the canvas's history *is* the stored history — undo can walk back past the moment the document was
+  closed and redo can walk forward again. Storage hands the undone ops over oldest-first; the view
+  pops its redo stack from the end, so they are reversed on the way in.
+- **It is safe to call before layout.** A page can be handed over before the view has been measured;
+  the restore is held and replayed from `onSizeChanged`, because until the buffers exist there is
+  nothing to draw onto.
+- **A cache from a differently-sized buffer is ignored**, not scaled. Wrong pixels are worse than a
+  replay.
+- **Loading happens before the persistence hooks are wired**, so restoring a page does not read back
+  as a fresh burst of edits to write straight out again.
+- **`surfaceSeed` and the tray got named restore entry points** (`restoreSurfaceSeed`,
+  `restorePots`, `restoreMixture`) rather than public setters — these are load-time operations, and
+  nothing else should be able to re-roll a piece's paper out from under it. `restorePots` ignores an
+  empty list: a document written before the tray was persisted is *silent* about pots, and wiping the
+  standard palette would be the wrong reading of silence.
+
+### Device test results (Movink 11, 2026-07-25)
+
+Run against the real artwork from the Phase 11 sessions — 19 ops including fills, a move, friskets
+and washes.
+
+| Check | Result |
+|---|---|
+| Force-stop → relaunch restores the page | ✅ via **op replay** (no cache existed yet) |
+| Surface, seed and palette come back | ✅ the rail's swatch returns yellow — the brush load |
+| Cross-session redo | ✅ the undone `fill` was still redoable after a cold start |
+| Cross-session undo | ✅ three undos walked back past the session boundary |
+| Background writes the cache | ✅ `opCount=16`, `2200×1440`, 526 KB PNG, `order=-1` |
+| Relaunch takes the cache path | ✅ 557 ms to first frame |
+| **Pixel-identical restore** | ✅ **0 of 3,168,000 pixels differ** |
+| Redo still works off the cached path | ✅ frontier 16 → 19 |
+| The cache goes stale rather than wrong | ✅ `opCount=16` against frontier 19 — next open replays |
+
+The pixel diff is the phase's real result: the screen before the process was killed and the screen
+after it was restarted are **bit-for-bit the same image**.
+
+**A size number for Phase 25 to chew on.** The cached raster is 526 KB for a *sparse* page, and it
+took the file from 65 KB to 606 KB — the pixels are 87% of the document. That is the risk the plan
+flagged at the outset, now measured rather than guessed, and on a page with a lot of white. Cropping
+the cache to painted bounds and keeping caches only for recently-opened pages both look necessary
+rather than optional.
 
 ## Phase 13 — Autosave, lifecycle, crash safety 🧪
 Debounce/coalesce policy, `onPause` seal, application-scoped non-cancellable close with a per-step

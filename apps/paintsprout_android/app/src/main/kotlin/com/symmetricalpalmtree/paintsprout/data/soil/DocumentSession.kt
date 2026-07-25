@@ -7,6 +7,7 @@ import com.symmetricalpalmtree.paintsprout.data.SoilFiles
 import com.symmetricalpalmtree.paintsprout.data.index.IndexGate
 import com.symmetricalpalmtree.paintsprout.data.soil.codec.Params
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import com.symmetricalpalmtree.paintsprout.paint.BrushLoad
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
@@ -174,6 +175,95 @@ class DocumentSession private constructor(
      */
     private fun maskOf(bitmap: Bitmap): MaskBitmaps.Cropped? =
         runCatching { MaskBitmaps.encode(bitmap) }.getOrNull()
+
+    // --- Loading ------------------------------------------------------------
+
+    /**
+     * Everything needed to put this page back on the canvas.
+     *
+     * One read of the layer's ops, one batched read of their children, and — if
+     * it is still current — the composited raster, so the common case is a decode
+     * rather than a replay.
+     */
+    class PageSnapshot(
+        val surface: SurfaceOp,
+        val surfaceSeed: Long?,
+        val committed: List<PaintOp>,
+        val undone: List<PaintOp>,
+        val cachedPaint: Bitmap?,
+        val pots: List<Pot>,
+        val mixture: Recipe,
+        val load: BrushLoad,
+    )
+
+    suspend fun load(): PageSnapshot = withContext(Dispatchers.IO) {
+        lock.withLock {
+            val page = repo.pages().firstOrNull { it.id == pageId }
+
+            // The surface a page is *on* is the last committed surface change,
+            // falling back to the one it was created with. Never a cached answer —
+            // an undo moves the history and would leave a cache behind.
+            val resolved = repo.resolvedSurface(pageId)
+            val surface = resolved?.let(OpRows::readSurfaceOp)
+                ?: SurfaceOp(SurfaceKind.PAPER, 0xFFFFFFFF.toInt())
+
+            val committedRows = repo.committedOps(layerId)
+            val undoneRows = repo.redoableOps(layerId)
+            val attachments = repo.attachmentsOf((committedRows + undoneRows).map { it.id })
+                .groupBy { it.parentId }
+
+            fun rebuild(rows: List<SoilObject>) =
+                rows.mapNotNull { OpRows.readOp(it, attachments[it.id].orEmpty()) }
+
+            PageSnapshot(
+                surface = surface,
+                surfaceSeed = page?.seed,
+                committed = rebuild(committedRows),
+                undone = rebuild(undoneRows),
+                cachedPaint = decodeCache(),
+                pots = repo.pots().map {
+                    Pot(
+                        name = it.text.orEmpty(),
+                        color = ArgbHex.decode(it.color, 0),
+                        custom = it.hasFlag(SoilFlags.POT_CUSTOM),
+                    )
+                },
+                mixture = OpRows.readMixture(repo.paletteState()),
+                load = OpRows.readLoad(repo.paletteState()),
+            )
+        }
+    }
+
+    /** The cache, only when it describes the history as it currently stands. */
+    private fun decodeCache(): Bitmap? {
+        val row = repo.cache(layerId) ?: return null
+        val bytes = row.blob ?: return null
+        // Bounded decode: these bytes are as much "a file on disk" as any other,
+        // and a hostile or merely enormous one must not be an OOM on open.
+        val options = BitmapFactory.Options().apply { inMutable = true }
+        return runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) }.getOrNull()
+    }
+
+    /**
+     * Stores the composited paint so the next open is a decode.
+     *
+     * Written at the frontier it was composited at, and read back only while that
+     * still matches — so an undo makes it stale rather than wrong.
+     */
+    suspend fun writeCache(paint: Bitmap) = lock.withLock {
+        withContext(NonCancellable + Dispatchers.IO) {
+            runCatching {
+                val bytes = java.io.ByteArrayOutputStream().use { out ->
+                    // Lossless: paint pixels are dense and user-authored, and a
+                    // lossy round-trip on every save is not something to do to
+                    // somebody's painting. Phase 25 measures PNG against raw+zlib.
+                    paint.compress(Bitmap.CompressFormat.PNG, 100, out)
+                    out.toByteArray()
+                }
+                repo.writeCache(layerId, bytes, paint.width.toFloat(), paint.height.toFloat())
+            }
+        }
+    }
 
     // --- Page bookkeeping ---------------------------------------------------
 

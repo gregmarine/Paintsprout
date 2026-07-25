@@ -5,7 +5,13 @@ import com.symmetricalpalmtree.paintsprout.data.soil.codec.MoveCodec
 import com.symmetricalpalmtree.paintsprout.data.soil.codec.Params
 import com.symmetricalpalmtree.paintsprout.data.soil.codec.StrokeCodec
 import com.symmetricalpalmtree.paintsprout.data.soil.codec.WetStateCodec
+import android.graphics.Matrix
 import com.symmetricalpalmtree.paintsprout.paint.BrushLoad
+import com.symmetricalpalmtree.paintsprout.paint.EraseOp
+import com.symmetricalpalmtree.paintsprout.paint.FillOp
+import com.symmetricalpalmtree.paintsprout.paint.MoveOp
+import com.symmetricalpalmtree.paintsprout.paint.PaintOp
+import com.symmetricalpalmtree.paintsprout.paint.StrokeOp
 import com.symmetricalpalmtree.paintsprout.paint.Recipe
 import com.symmetricalpalmtree.paintsprout.paint.Stroke
 import com.symmetricalpalmtree.paintsprout.paint.SurfaceOp
@@ -211,6 +217,65 @@ object OpRows {
         recipe = RecipeCodec.decode(params.string("load", "")),
         capacity = params.float("capacity", BrushLoad.DEFAULT_CAPACITY),
     )
+
+    // --- Ops, back into the objects the canvas replays ----------------------
+
+    /**
+     * Rebuilds one op, or returns null if its payload is unreadable.
+     *
+     * Null is a dropped op, never a failed page: one damaged blob costs the mark
+     * it describes and nothing else. [attachments] are the op's own children,
+     * already fetched in a batch by the caller rather than one query per op.
+     */
+    fun readOp(row: SoilObject, attachments: List<SoilObject>): PaintOp? = when (row.type) {
+        SoilType.STROKE -> readStroke(row)?.let { stroke ->
+            attachments.firstOrNull { it.type == SoilType.WET_STATE }
+                ?.let(::readWetState)
+                ?.let { wet ->
+                    stroke.wetSchedule.addAll(wet.schedule.toList())
+                    stroke.wetCrop = wet.crop?.let { c ->
+                        android.graphics.Rect(c[0], c[1], c[2], c[3])
+                    }
+                    stroke.dryFreeze = wet.dryFreeze
+                }
+            val clip = attachments.firstOrNull { it.type == SoilType.STROKE_CLIP }
+                ?.let(::readMask)
+                ?.let(MaskBitmaps::decode)
+            StrokeOp(stroke, clip)
+        }
+
+        SoilType.FILL -> readMask(row)?.let {
+            FillOp(MaskBitmaps.decode(it), ArgbHex.decode(row.color, DEFAULT_COLOR))
+        }
+
+        SoilType.ERASE -> readMask(row)?.let { EraseOp(MaskBitmaps.decode(it)) }
+
+        SoilType.MOVE -> readMask(row)?.let { mask ->
+            val values = readMatrix(row) ?: return null
+            MoveOp(MaskBitmaps.decode(mask), Matrix().apply { setValues(values) })
+        }
+
+        SoilType.SURFACE_OP -> readSurfaceOp(row)
+
+        // A raster cache is not an op, and neither is anything a future build
+        // adds that this one has not heard of. Skipping beats guessing.
+        else -> null
+    }
+
+    fun readSurfaceOp(row: SoilObject): SurfaceOp {
+        val params = Params.decode(row.params)
+        return SurfaceOp(
+            kind = SurfaceParamsCodec.kindOf(row.kind),
+            plainColor = ArgbHex.decode(row.color, 0xFFFFFFFF.toInt()),
+            canvas = SurfaceParamsCodec.canvas(params),
+            watercolor = SurfaceParamsCodec.watercolor(params),
+            wood = SurfaceParamsCodec.wood(params),
+            stone = SurfaceParamsCodec.stone(params),
+            concrete = SurfaceParamsCodec.concrete(params),
+            metal = SurfaceParamsCodec.metal(params),
+            chalkboard = SurfaceParamsCodec.chalkboard(params),
+        )
+    }
 
     private const val DEFAULT_COLOR = 0xFF000000.toInt()
 }

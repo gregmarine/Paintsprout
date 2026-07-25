@@ -251,6 +251,17 @@ class PaintCanvasView @JvmOverloads constructor(
         private set
 
     /**
+     * Puts a saved page's seed back.
+     *
+     * A named entry point rather than a public setter, because this is a
+     * load-time operation and nothing else should be able to re-roll a piece's
+     * paper out from under it.
+     */
+    fun restoreSurfaceSeed(seed: Long) {
+        surfaceSeed = seed
+    }
+
+    /**
      * The surface/background at the base of the undo timeline — the state restored
      * when every [SurfaceOp] has been undone. Re-based on [clear].
      */
@@ -827,6 +838,9 @@ class PaintCanvasView @JvmOverloads constructor(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         reconfigureBuffers(w, h)
+        // A page can be handed over before the view has been measured; now that
+        // there are buffers to draw onto, put it up.
+        pendingRestore?.let { (ops, undone, cached) -> restore(ops, undone, cached) }
     }
 
     /**
@@ -3559,6 +3573,67 @@ class PaintCanvasView @JvmOverloads constructor(
         }
         return cur
     }
+
+    // --- Restoring a saved page ---------------------------------------------
+
+    /** Buffer dimensions, so a cached raster can be checked against this device. */
+    val bufferWidth: Int get() = bufW
+    val bufferHeight: Int get() = bufH
+
+    /**
+     * A copy of the composited paint, for the raster cache. Null before layout.
+     */
+    fun paintSnapshot(): Bitmap? = paintBmp?.copy(Bitmap.Config.ARGB_8888, false)
+
+    /**
+     * Puts a saved page back on the canvas.
+     *
+     * [committedOps] and [undoneOps] together are the layer's whole history: the
+     * frontier sits between them, so undo can walk backwards past the moment the
+     * document was last closed and redo can walk forwards again.
+     *
+     * [cached] is the composited result of [committedOps], if it was saved and is
+     * still current. When it is present this is a decode rather than a replay —
+     * which for a page of a few hundred strokes is the difference between opening
+     * and waiting. When it is absent, or its dimensions do not match this device's
+     * buffer, the ops are replayed instead: a degradation, never a failure.
+     *
+     * Safe to call before layout. The work is deferred until the buffers exist,
+     * because until then there is nothing to draw onto.
+     */
+    fun restore(committedOps: List<PaintOp>, undoneOps: List<PaintOp>, cached: Bitmap?) {
+        if (bufW <= 0 || bufH <= 0) {
+            pendingRestore = Triple(committedOps, undoneOps, cached)
+            return
+        }
+        pendingRestore = null
+
+        for (op in committed) op.recycle()
+        for (op in redoStack) op.recycle()
+        committed.clear()
+        redoStack.clear()
+        recycleCheckpoints()
+
+        committed.addAll(committedOps)
+        // The view pops the redo stack from its end, so the op nearest the
+        // frontier has to be last; storage hands them over oldest-first.
+        redoStack.addAll(undoneOps.reversed())
+
+        val usable = cached?.takeIf { it.width == bufW && it.height == bufH }
+        if (usable != null) {
+            paintBmp?.recycle()
+            paintBmp = usable.copy(Bitmap.Config.ARGB_8888, true)
+            storeCheckpoint(committed.size, paintBmp!!)
+            invalidate()
+            onHistoryChanged?.invoke()
+        } else {
+            cached?.recycle()
+            rebuild()
+        }
+    }
+
+    /** Set when [restore] arrives before the buffers exist; replayed on layout. */
+    private var pendingRestore: Triple<List<PaintOp>, List<PaintOp>, Bitmap?>? = null
 
     fun undo() {
         // A settling wash commits first (it becomes the newest op — so the FIRST

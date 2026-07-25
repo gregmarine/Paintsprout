@@ -217,10 +217,48 @@ class MainActivity : AppCompatActivity() {
                 this@MainActivity,
                 LastOpen.Pointer(LastOpen.Kind.SKETCHBOOK, opened.documentId, opened.pageId),
             )
+
+            // Load before wiring the hooks, so restoring a page does not read back
+            // as a fresh burst of edits to write straight out again.
+            runCatching { opened.load() }.getOrNull()?.let(::applyPage)
+
             binding.canvas.onOpCommitted = { opened.record(it) }
             binding.canvas.onUndone = { opened.recordUndo() }
             binding.canvas.onRedone = { opened.recordRedo() }
         }
+    }
+
+    /** Puts a saved page back: its paper, its palette, and its whole history. */
+    private fun applyPage(page: DocumentSession.PageSnapshot) {
+        val s = page.surface
+        surfaceIndex = AVAILABLE_SURFACES.indexOf(s.kind).coerceAtLeast(0)
+        plainColor = s.plainColor
+        canvasParams = s.canvas
+        watercolorParams = s.watercolor
+        woodParams = s.wood
+        stoneParams = s.stone
+        concreteParams = s.concrete
+        metalParams = s.metal
+        chalkboardParams = s.chalkboard
+
+        // The seed is the sheet's own: it is what makes this page's paper this
+        // paper, and regenerating it would quietly change the artwork's ground.
+        page.surfaceSeed?.let { binding.canvas.restoreSurfaceSeed(it) }
+        binding.canvas.setInitialSurface(
+            s.kind, s.plainColor, s.canvas, s.watercolor, s.wood, s.stone,
+            s.concrete, s.metal, s.chalkboard,
+        )
+
+        tray.restorePots(page.pots)
+        tray.restoreMixture(page.mixture)
+        binding.tray.tray = tray
+        if (!page.load.recipe.isEmpty) {
+            binding.canvas.loadBrush(page.load)
+            color = page.load.color
+        }
+
+        binding.canvas.restore(page.committed, page.undone, page.cachedPaint)
+        updateRail()
     }
 
     /**
@@ -237,9 +275,15 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         val open = session ?: return
+        // The snapshot is taken here, on the main thread, while the bitmap is
+        // still guaranteed to be alive; the write happens after.
+        val paint = binding.canvas.paintSnapshot()
         // Application-scoped and non-cancellable: leaving the screen must not be
         // able to cut a write in half. Phase 13 makes this a full seal.
-        applicationScope.launch { open.flush() }
+        applicationScope.launch {
+            open.flush()
+            paint?.let { open.writeCache(it) }
+        }
     }
 
     private fun hideSystemBars() {
