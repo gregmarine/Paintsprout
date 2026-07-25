@@ -604,7 +604,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 5 | Bootstrap gate + unlock UI + launch routing | **yes** | ✅ |
 | 6 | `.soil` container: schema, `notebook_meta`, create/open/seal, registry | **yes** | ✅ |
 | 7 | Object model: universal row, columnar mapping, subtree helpers | no | ✅ |
-| 8 | Binary codecs: stroke format B, masks, matrix, wet state | no | ⬜ |
+| 8 | Binary codecs: stroke format B, masks, matrix, wet state | no | ✅ |
 | 9 | Document repository: pages, layers, ops, undoDepth, cache, palette | no | ⬜ |
 | 10 | Editor save — strokes + surface ops | **yes** | ⬜ |
 | 11 | Editor save — selection ops, clips, wet state, palette | **yes** | ⬜ |
@@ -955,11 +955,50 @@ all: an op appends at the layer's `undoDepth`, where `order` genuinely is the in
 is compared against and must stay dense — which holds because a truncated redo tail is *hard*-deleted,
 so an op is never a tombstone. Both halves are now written down in the code.
 
-## Phase 8 — Binary codecs
+## Phase 8 — Binary codecs ✅
 Format B encoder/decoder with the Paintsprout channel profile, mask codec, matrix header, wet-state
 codec, lenient `params` JSON. Zero-progress inflate guard. Per-row decode guards.
 **Verify:** JVM round-trip tests for every op type; corrupt-input tests (truncated blob, bad zlib
 header, unknown flag bits) assert *degradation*, never a hang or a throw that escapes.
+
+**As built.** `Deflate`, `StrokeCodec`, `MaskCodec`, `MoveCodec`, `WetStateCodec`, `Params`.
+46 tests; 304 in the module.
+
+- **The optional channels are genuinely optional.** A pen stroke has density 1, no per-point colour
+  and a full brush throughout, so those three channels are omitted and it costs 12 bytes a point
+  instead of 24. The defaults are **fixed constants of the format**, not values read from the row: a
+  codec that depended on what `strokeWidth` currently means would decode old blobs differently the
+  day that meaning shifted. Width is always written — there is no constant it could default to, and
+  zlib flattens a column of identical floats anyway.
+- **Pressure and tilt are deliberately never written**, despite owning bits 0 and 1. They are already
+  spent: width and density are resolved from them at capture, and re-deriving a mark from raw
+  pressure at paint time would mean re-running the brush and hoping to land on the same answer.
+- **The unknown-channel test is the forward-compatibility promise, exercised.** A blob is
+  hand-assembled with a channel this build has never heard of, and the decoder steps over it and
+  still lands the known channels in the right fields. That is what `stride = 8 + 4 × popcount(flags)`
+  buys, and it is why every channel is exactly four bytes.
+- **`MoveCodec` puts the transform in the blob, not in `params`.** Nine floats through decimal JSON
+  on every save is a transform that can drift in its last bits, which re-lays the lifted paint a hair
+  off where the user put it — every replay, cumulatively.
+- **`WetStateCodec` is what makes a wall-clock effect replayable.** Tick schedule, final crop and the
+  per-point dry freeze, so an interrupted wash commits as the screen showed it rather than snapping
+  crisp. Its degradation is graceful and worth knowing: without wet state a wash still replays, just
+  fully dried.
+- **`Params` reads totally.** Every accessor takes a default and returns it for a missing key, a
+  wrong-typed value, or a payload that is not JSON at all.
+
+**The damage tests are the point of the phase.** Every codec answers hostile input with null rather
+than an exception — including a 300-iteration fuzz over all four. Two carry real teeth:
+
+- `a stream that can never make progress returns instead of spinning` has a 5-second timeout and
+  feeds an FDICT-flagged zlib header, the case where `inflate()` returns zero bytes forever without
+  reporting "finished". Unguarded, that test does not fail — it never returns.
+- `an absurd size in the header is refused rather than allocated` covers the other shape of the same
+  problem: a corrupt length that becomes a 40 GB allocation instead of one unreadable selection.
+
+**Not measured yet:** the compression ratio on real strokes. Notesprout's 5.0× is for handwriting
+with no channels; ours carries width and sometimes three more. Phase 25 measures it against real
+artwork, which is the first point at which the number would mean anything.
 
 ## Phase 9 — Document repository
 `SketchbookRepository`: create sketchbook (meta row + page + layer + palette), page CRUD/reorder,
