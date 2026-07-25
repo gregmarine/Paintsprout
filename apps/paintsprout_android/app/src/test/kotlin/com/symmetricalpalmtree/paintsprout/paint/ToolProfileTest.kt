@@ -16,11 +16,17 @@ class ToolProfileTest {
         }
     }
 
+    /** The selectors produce a mask; everything else produces a mark. */
     @Test
-    fun onlyWandIsNonDrawing() {
-        assertFalse(Tool.WAND.isDrawing)
-        for (t in Tool.entries.filter { it != Tool.WAND }) {
+    fun onlyTheSelectorsAreNonDrawing() {
+        assertEquals(setOf(Tool.WAND, Tool.LASSO), Tool.SELECTORS)
+        for (t in Tool.SELECTORS) {
+            assertFalse("$t should not draw", t.isDrawing)
+            assertTrue("$t should select", t.isSelector)
+        }
+        for (t in Tool.entries.filter { it !in Tool.SELECTORS }) {
             assertTrue("$t should be a drawing tool", t.isDrawing)
+            assertFalse("$t should not be a selector", t.isSelector)
         }
     }
 

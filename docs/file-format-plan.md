@@ -615,7 +615,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 16 | Pinned + recents | **yes** | ✅ |
 | 17 | Multi-page UI: page strip, add/duplicate/delete/reorder | **yes** | ✅ |
 | 18 | Scratchpad | **yes** | ✅ |
-| 19 | Lasso tool | **yes** | ⬜ |
+| 19 | Lasso tool | **yes** | ✅ |
 | 20 | Clipboard: copy/paste whole objects | **yes** | ⬜ |
 | 21 | Send to scratchpad / send to sketchbook | **yes** | ⬜ |
 | 22 | Export `.soil` + `notebook_meta` upkeep | **yes** | ⬜ |
@@ -1536,11 +1536,65 @@ that is all it decides.
 | No file minted for the pad | ✅ `Garden/` unchanged; `paintsprout.db` grew 143 KB → 217 KB |
 | The pad's own tray | ✅ opens with its own pots and a clean well |
 
-## Phase 19 — Lasso tool 🧪
+## Phase 19 — Lasso tool ✅ 🧪
 New `Tool.LASSO` + icon + rail entry: freehand closed loop → mask → the existing selection
 machinery (fill, erase, move/scale/rotate, frisket-constrained painting). Available in both the
 sketchbook editor and the scratchpad.
 **Device test:** lasso a region, all four operations, and a frisket stroke inside it.
+
+**As built.** The lasso is a different way of *arriving* at a mask and nothing more. Everything
+downstream — fill, erase, lift-and-transform, the frisket a stroke captures at pen-down, the codec
+that writes any of those to a page — is the wand's, unchanged, because the mask it produces is the
+wand's mask in every respect that matters: same half-buffer resolution, same white-is-selected
+convention. 434 tests.
+
+- **`Tool.SELECTORS`** replaced `!= WAND`. Three separate places asked "is this the wand?" when what
+  they meant was "does this tool select rather than mark" — the size button, `isDrawing`, and the
+  bake-on-tool-switch rule. A set with two members in it now, and a name that says which question is
+  being asked.
+- **The loop is rasterised antialiased**, unlike the wand's. The wand traces edges that are already
+  in the paint, so a hard mask lands on a hard boundary. A lasso cuts across whatever is under it,
+  and a stair-stepped edge at half resolution is a stair-stepped cut in the artwork.
+- **It shares the wand's transform handles deliberately.** Once a region is selected, how it was
+  selected stops mattering; a corner that scales under one tool and does nothing under the other is
+  the kind of inconsistency you only find by being caught out by it. The cost is that a drag *inside*
+  an existing selection moves it rather than starting a new loop — same as the wand, and Deselect is
+  on the rail.
+- **A cancelled gesture selects nothing.** A pointer the system took away was not a decision the user
+  made.
+
+### Every drag encloses something
+
+A lasso closes itself, so the "did they select anything?" question always has an answer — including
+for the drag where the pen skidded across the page. Selecting a sliver the user did not draw is worse
+than selecting nothing, because the *next* stroke they paint is then silently clipped to it and they
+have no idea why.
+
+[`LassoLoop`](../apps/paintsprout_android/app/src/main/kotlin/com/symmetricalpalmtree/paintsprout/paint/LassoLoop.kt)
+answers it by enclosed **area** (shoelace), not path length — a scribble back and forth over its own
+tracks covers a lot of ground and encloses almost none, which is exactly the case a length threshold
+waves through. Below ~900 square px the drag reads as a slip of the hand and clears the selection
+instead. A figure eight's halves cancel in the signed sum, so an ambiguous shape errs towards "not a
+selection", which is the recoverable mistake. It works over a flat `[x0, y0, x1, y1, …]` array rather
+than `PointF`s so the whole rule is testable without a canvas.
+
+### Device test results (Movink 11, 2026-07-25)
+
+Injected `input stylus swipe` only draws straight lines, which enclose exactly zero area — so these
+loops were built out of `input stylus motionevent DOWN/MOVE/UP` sequences, twenty points around a
+circle.
+
+| Check | Result |
+|---|---|
+| Lasso a region | ✅ ants follow the drawn loop, outside dimmed |
+| Fill | ✅ toothed fill, clipped to the loop, clean antialiased edge |
+| Erase inside | ✅ paint gone inside, untouched outside |
+| Move | ✅ lifts and drags, leaving the rest of the stroke behind |
+| Scale | ✅ corner handle, ~1.5× about the pivot |
+| Rotate | ✅ top knob, frame and content together |
+| **Frisket stroke** | ✅ a pencil line across the boundary lands **only inside the loop** |
+| A straight drag selects nothing | ✅ selection cleared, no mark drawn |
+| Available in both surfaces | ✅ scratchpad rail (6 tools) and sketchbook rail (13) |
 
 ## Phase 20 — Clipboard 🧪
 Copy ops wholly inside the selection into the `clipboard` table (fresh ids), paste into any page

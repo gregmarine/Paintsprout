@@ -27,9 +27,9 @@ class ScratchpadTest {
     // --- The tool set -------------------------------------------------------
 
     @Test
-    fun `the offered tools are dry, inked, wet, an eraser and a selector`() {
+    fun `the offered tools are dry, inked, wet, an eraser and the two selectors`() {
         assertEquals(
-            listOf(Tool.PENCIL, Tool.PEN, Tool.BRUSH, Tool.ERASER, Tool.WAND),
+            listOf(Tool.PENCIL, Tool.PEN, Tool.BRUSH, Tool.ERASER, Tool.WAND, Tool.LASSO),
             Scratchpad.TOOLS,
         )
     }
@@ -54,7 +54,7 @@ class ScratchpadTest {
     @Test
     fun `every offered tool draws or selects, and none is listed twice`() {
         assertEquals(Scratchpad.TOOLS.size, Scratchpad.TOOLS.toSet().size)
-        for (t in Scratchpad.TOOLS) assertTrue(t.isDrawing || t == Tool.WAND)
+        for (t in Scratchpad.TOOLS) assertTrue(t.isDrawing || t.isSelector)
     }
 
     // --- The pad itself -----------------------------------------------------

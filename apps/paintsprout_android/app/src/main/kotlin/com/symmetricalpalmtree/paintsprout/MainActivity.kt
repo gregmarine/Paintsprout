@@ -651,7 +651,8 @@ class MainActivity : AppCompatActivity() {
         waterBtn.visibility = if (tool == Tool.WATERCOLOR) View.VISIBLE else View.GONE
         waterBtn.background = if (waterMode) selectedBg() else rippleBg()
 
-        sizeBtn.visibility = if (tool == Tool.WAND) View.GONE else View.VISIBLE
+        // Neither selector has a size; only the wand has a tolerance to set.
+        sizeBtn.visibility = if (tool.isSelector) View.GONE else View.VISIBLE
         sizeBtn.text = formatMm(sizes[tool] ?: tool.defaultSizeMm)
         toleranceBtn.visibility = if (tool == Tool.WAND) View.VISIBLE else View.GONE
         toleranceBtn.text = "${(wandTolerance * 100).roundToInt()}%"
@@ -1667,6 +1668,7 @@ class MainActivity : AppCompatActivity() {
         Tool.SPRAY -> R.drawable.ic_tool_spray
         Tool.ERASER -> R.drawable.ic_tool_eraser
         Tool.WAND -> R.drawable.ic_tool_wand
+        Tool.LASSO -> R.drawable.ic_tool_lasso
     }
 
     private fun surfaceIcon(s: SurfaceKind): Int = when (s) {

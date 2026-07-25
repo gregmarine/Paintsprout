@@ -30,14 +30,15 @@ object Scratchpad {
      * The tools a scratch page offers.
      *
      * A deliberate subset, not a technical limit: the scratchpad is for trying a
-     * mark out, and a rail of twelve tools is the sketchbook's business. Pencil,
+     * mark out, and a rail of thirteen tools is the sketchbook's business. Pencil,
      * pen and brush cover dry, inked and wet; the eraser takes them back; the wand
-     * selects. The lasso joins them in Phase 19.
+     * and the lasso select.
      *
      * The shape tools are the pointed omission — a line you plotted with handles
      * is something you meant, and something you meant belongs in a book.
      */
-    val TOOLS: List<Tool> = listOf(Tool.PENCIL, Tool.PEN, Tool.BRUSH, Tool.ERASER, Tool.WAND)
+    val TOOLS: List<Tool> =
+        listOf(Tool.PENCIL, Tool.PEN, Tool.BRUSH, Tool.ERASER, Tool.WAND, Tool.LASSO)
 
     /** What the rail falls back to when the current tool is not on offer here. */
     val DEFAULT_TOOL: Tool = Tool.PENCIL

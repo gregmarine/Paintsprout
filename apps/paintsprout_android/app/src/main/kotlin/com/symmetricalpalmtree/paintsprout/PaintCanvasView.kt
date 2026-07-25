@@ -32,6 +32,7 @@ import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.GalleryExport
 import com.symmetricalpalmtree.paintsprout.paint.GpuRender
+import com.symmetricalpalmtree.paintsprout.paint.LassoLoop
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
 import com.symmetricalpalmtree.paintsprout.paint.PageTurn
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
@@ -98,15 +99,21 @@ class PaintCanvasView @JvmOverloads constructor(
 ) : View(context, attrs, defStyleAttr) {
 
     /**
-     * The active drawing tool. Leaving the wand while a move is floating bakes it;
-     * leaving the line tool while a line is still being edited bakes that line.
+     * The active drawing tool. Leaving a selector while a move is floating bakes
+     * it; leaving the line tool while a line is still being edited bakes that line.
      */
     var tool: Tool = Tool.PEN
         set(value) {
             val old = field
             field = value
             if (old != value) {
-                if (old == Tool.WAND && isFloating) scope.launch { commitFloating() }
+                if (old.isSelector && isFloating) scope.launch { commitFloating() }
+                if (old == Tool.LASSO) {
+                    // A half-drawn loop is not a selection and must not become one
+                    // the next time the lasso is picked up.
+                    lassoPts.clear()
+                    lassoPointerId = INVALID_POINTER
+                }
                 if (old == Tool.LINE && hasPendingLine) commitPendingLine()
                 if (old == Tool.ARC && hasPendingArc) commitPendingArc()
                 if (old == Tool.POLYLINE && hasPendingPolyline) commitPendingPolyline()
@@ -497,6 +504,11 @@ class PaintCanvasView @JvmOverloads constructor(
     private var floatRotation = 0f // radians
     private var lifting = false
     private val isFloating: Boolean get() = floating != null
+
+    // Lasso-gesture tracking: the loop being drawn, as flat x,y pairs in canvas
+    // coordinates. Empty except while a loop is in progress.
+    private var lassoPointerId = INVALID_POINTER
+    private val lassoPts = mutableListOf<Float>()
 
     // Wand-gesture tracking (single stylus pointer).
     private var wandPointerId = INVALID_POINTER
@@ -1200,6 +1212,7 @@ class PaintCanvasView @JvmOverloads constructor(
         drawPendingPolyline(canvas)
         drawPendingPolyarc(canvas)
         drawSelectionOverlay(canvas)
+        drawLassoInProgress(canvas)
     }
 
     /** Previews the editable line (as it will bake) plus its grab handles. */
@@ -1918,6 +1931,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     handleWandDown(event, actionIndex)
                     return true
                 }
+                if (tool == Tool.LASSO) {
+                    handleLassoDown(event, actionIndex)
+                    return true
+                }
                 if (tool == Tool.LINE) {
                     handleLineDown(event, actionIndex)
                     return true
@@ -1982,6 +1999,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     handleWandMove(event)
                     return true
                 }
+                if (tool == Tool.LASSO) {
+                    handleLassoMove(event)
+                    return true
+                }
                 if (tool == Tool.LINE) {
                     handleLineMove(event)
                     return true
@@ -2019,6 +2040,10 @@ class PaintCanvasView @JvmOverloads constructor(
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (tool == Tool.WAND) {
                     handleWandUp(event, actionIndex)
+                    return true
+                }
+                if (tool == Tool.LASSO) {
+                    handleLassoUp(event, actionIndex)
                     return true
                 }
                 if (tool == Tool.LINE) {
@@ -2253,6 +2278,77 @@ class PaintCanvasView @JvmOverloads constructor(
             wandMoved = false
             if (!moved && pos != null) scope.launch { runWandSelection(pos) }
         }
+    }
+
+    // --- Lasso gestures -----------------------------------------------------
+
+    /**
+     * The lasso shares the wand's transform handles deliberately: once a region is
+     * selected, how it was selected stops mattering, and a corner that scales
+     * under one tool and does nothing under the other would be the kind of
+     * inconsistency you only notice by being caught out by it.
+     */
+    private fun handleLassoDown(e: MotionEvent, ai: Int) {
+        val p = PointF(e.getX(ai), e.getY(ai))
+        val mode = hitTransform(p)
+        if (mode != null) {
+            movePointerId = e.getPointerId(ai)
+            moveLastPos.set(p)
+            xformMode = mode
+            if (!isFloating && !lifting) scope.launch { liftSelection() }
+            return
+        }
+        lassoPointerId = e.getPointerId(ai)
+        lassoPts.clear()
+        lassoPts.add(p.x)
+        lassoPts.add(p.y)
+        invalidate()
+    }
+
+    private fun handleLassoMove(e: MotionEvent) {
+        if (movePointerId != INVALID_POINTER) {
+            handleWandMove(e) // the transform drag, unchanged
+            return
+        }
+        if (lassoPointerId == INVALID_POINTER) return
+        val pi = e.findPointerIndex(lassoPointerId)
+        if (pi < 0) return
+        // Every historical sample, so a fast loop is a loop rather than a polygon.
+        for (h in 0 until e.historySize) {
+            addLassoPoint(e.getHistoricalX(pi, h), e.getHistoricalY(pi, h))
+        }
+        addLassoPoint(e.getX(pi), e.getY(pi))
+        invalidate()
+    }
+
+    private fun addLassoPoint(x: Float, y: Float) {
+        val n = lassoPts.size
+        if (n >= 2 && hypot(x - lassoPts[n - 2], y - lassoPts[n - 1]) < LASSO_SPACING) return
+        lassoPts.add(x)
+        lassoPts.add(y)
+    }
+
+    private fun handleLassoUp(e: MotionEvent, ai: Int) {
+        val pid = e.getPointerId(ai)
+        if (pid == movePointerId) {
+            movePointerId = INVALID_POINTER
+            xformMode = null
+            return
+        }
+        if (pid != lassoPointerId) return
+        lassoPointerId = INVALID_POINTER
+        val loop = lassoPts.toFloatArray()
+        lassoPts.clear()
+        invalidate()
+        // A gesture the system took away was not a decision the user made.
+        if (e.actionMasked == MotionEvent.ACTION_CANCEL) return
+        // A loop that encloses nothing clears the selection rather than making a
+        // sliver of one: a tap with the lasso should mean "never mind".
+        if (!LassoLoop.encloses(loop)) {
+            clearSelection()
+            return
+        }
+        scope.launch { runLassoSelection(loop) }
     }
 
     // --- Line-tool gestures -------------------------------------------------
@@ -3807,6 +3903,75 @@ class PaintCanvasView @JvmOverloads constructor(
         invalidate()
     }
 
+    /**
+     * Turns a freehand loop into a selection.
+     *
+     * The mask is the wand's mask in every respect that matters — same half-buffer
+     * resolution, same white-is-selected convention — because everything
+     * downstream of here is shared: fill, erase, lift-and-transform, the frisket a
+     * stroke captures, and the codec that writes any of those to a page. The lasso
+     * is a different way of *arriving* at a mask, and nothing more.
+     *
+     * Drawn antialiased, unlike the wand's. The wand traces edges that are already
+     * in the paint, so a hard mask lands on a hard boundary; a lasso cuts across
+     * whatever is under it, and a stair-stepped edge at half resolution is a
+     * stair-stepped cut in the artwork.
+     */
+    private suspend fun runLassoSelection(loop: FloatArray) {
+        commitFloating()
+        if (bufW <= 0 || bufH <= 0) return
+        val ds = WandFloodFill.DOWNSAMPLE.toFloat()
+        val w = (bufW + WandFloodFill.DOWNSAMPLE - 1) / WandFloodFill.DOWNSAMPLE
+        val h = (bufH + WandFloodFill.DOWNSAMPLE - 1) / WandFloodFill.DOWNSAMPLE
+        val scale = SUPER_SAMPLE / ds
+
+        val path = Path().apply {
+            moveTo(loop[0] * scale, loop[1] * scale)
+            for (i in 1 until loop.size / 2) lineTo(loop[2 * i] * scale, loop[2 * i + 1] * scale)
+            close()
+        }
+        val maskBmp = createBitmap(w, h)
+        Canvas(maskBmp).drawPath(
+            path,
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.WHITE
+                style = Paint.Style.FILL
+            },
+        )
+
+        val bounds = LassoLoop.bounds(loop) ?: return
+        val old = selectionMask
+        selectionMask = maskBmp
+        // Clamped to the sheet: the loop may well have run off the edge of it, and
+        // a selection frame floating out in the mat has nothing to grab.
+        selRect.set(
+            (bounds[0] * SUPER_SAMPLE).coerceIn(0f, bufW.toFloat()),
+            (bounds[1] * SUPER_SAMPLE).coerceIn(0f, bufH.toFloat()),
+            (bounds[2] * SUPER_SAMPLE).coerceIn(0f, bufW.toFloat()),
+            (bounds[3] * SUPER_SAMPLE).coerceIn(0f, bufH.toFloat()),
+        )
+        floatTranslate.set(0f, 0f)
+        floatScale = 1f
+        floatRotation = 0f
+        old?.recycle()
+        startAnts()
+        onSelectionChanged?.invoke(true)
+        invalidate()
+    }
+
+    /** The loop as it is being drawn: a thin dashed line that closes itself. */
+    private fun drawLassoInProgress(canvas: Canvas) {
+        if (lassoPts.size < 4) return
+        val path = Path().apply {
+            moveTo(lassoPts[0], lassoPts[1])
+            for (i in 1 until lassoPts.size / 2) lineTo(lassoPts[2 * i], lassoPts[2 * i + 1])
+            // Shown closed while it is still open, so what will be enclosed is
+            // never a surprise at the moment the pen lifts.
+            close()
+        }
+        canvas.drawPath(path, lassoGuidePaint)
+    }
+
     /** Fills the current selection with [color] (toothed), as one undoable op. */
     fun fillSelection(@ColorInt color: Int) {
         scope.launch {
@@ -4648,6 +4813,13 @@ class PaintCanvasView @JvmOverloads constructor(
         const val POLY_TAP_SLOP = 26f
         const val POLY_CLOSE_DIST = 24f
 
+        /**
+         * Minimum spacing between recorded lasso points (px). Dense enough that
+         * the loop follows the hand, sparse enough that a slow careful outline
+         * does not become ten thousand points to rasterise.
+         */
+        const val LASSO_SPACING = 2.5f
+
         // Finger history gestures (undo/redo double-tap) and the page turn.
         const val TOUCH_TAP_SLOP_DP = 18f
 
@@ -4663,6 +4835,14 @@ class PaintCanvasView @JvmOverloads constructor(
         fun isStylus(toolType: Int): Boolean =
             toolType == MotionEvent.TOOL_TYPE_STYLUS ||
                 toolType == MotionEvent.TOOL_TYPE_ERASER
+    }
+
+    /** The loop while it is being drawn. Dashed, so it reads as a guide, not a mark. */
+    private val lassoGuidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1.6f
+        color = 0xCC2E7D32.toInt()
+        pathEffect = DashPathEffect(floatArrayOf(9f, 7f), 0f)
     }
 
     // Reusable mask-compositing paints.
