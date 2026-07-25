@@ -603,7 +603,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 4 | Global index DB: Room entities, DAOs, repository, sentinels | no | ✅ |
 | 5 | Bootstrap gate + unlock UI + launch routing | **yes** | ✅ |
 | 6 | `.soil` container: schema, `notebook_meta`, create/open/seal, registry | **yes** | ✅ |
-| 7 | Object model: universal row, columnar mapping, subtree helpers | no | ⬜ |
+| 7 | Object model: universal row, columnar mapping, subtree helpers | no | ✅ |
 | 8 | Binary codecs: stroke format B, masks, matrix, wet state | no | ⬜ |
 | 9 | Document repository: pages, layers, ops, undoDepth, cache, palette | no | ⬜ |
 | 10 | Editor save — strokes + surface ops | **yes** | ⬜ |
@@ -920,11 +920,40 @@ One incidental finding: the tool rail is taller than the Movink's screen, so Sav
 Calibrate/Clear sit below the fold and need a scroll to reach. It is inside a `ScrollView` so nothing
 is unreachable, and it predates this work — noting it rather than fixing it mid-phase.
 
-## Phase 7 — Object model
+## Phase 7 — Object model ✅
 `SoilObject` universal row data class + a columnar mapper shared by the document table, the
 scratchpad table and the clipboard table. `collectDescendants`, `deepCopySubtree`, and the single
 shared `remapDescendantIds`. Soft-delete and order helpers.
 **Verify:** JVM unit tests, including "remap on both insert and replace".
+
+**As built.** `SoilObject` (+ `SoilType`, `SoilFlags`), `SoilObjectMapper` (+ `RowReader`),
+`Subtrees`, `ObjectTable` (+ `ObjectSql`). 27 tests; 258 in the module.
+
+- **The mapper is tested against real SQLite through the real DDL.** `RowReader` is an interface
+  rather than a `Cursor`, so the same `SoilObjectMapper.read/write` the app uses round-trips a
+  fully-populated row through **all three** document tables on the JVM. A column that exists in the
+  mapper but not the schema fails the build; a `PRAGMA table_info` comparison asserts the two column
+  lists are equal, in order.
+- **Nulls are written, not skipped.** A writer that omits its nulls can only ever add information —
+  clearing a field would silently leave the old value. There is a test for exactly that.
+- **`Subtrees.remapIds` is the single shared helper** the plan asked for, and the test that matters
+  is "paste the same subtree twice": two disjoint id sets, each internally consistent, neither
+  reusing the source. It also rewires `refId` when it points *inside* the subtree and leaves it alone
+  when it points out.
+- **`collect` batches by level** — one lookup per depth, asserted by counting calls — and is bounded
+  by both a depth cap and a seen-set, because a parent cycle in a file we did not write would
+  otherwise hang the page-load path.
+- **`ObjectSql` is separate from `ObjectTable`** for the same reason as Phase 4's `IndexSql`: the
+  tests execute the very strings the app runs.
+
+**A design question a failing test surfaced.** `nextOrder` originally skipped tombstoned siblings.
+That is wrong: delete page 2 of three, add a page, then undo the delete — the resurrected page and
+the new one both claim position 1, and their relative order becomes whatever the query planner felt
+like. It now counts tombstones, leaving a gap, and a gap is free because `order` sorts siblings
+rather than indexing them. **Ops under a layer are the deliberate exception** and do not use this at
+all: an op appends at the layer's `undoDepth`, where `order` genuinely is the index the undo frontier
+is compared against and must stay dense — which holds because a truncated redo tail is *hard*-deleted,
+so an op is never a tombstone. Both halves are now written down in the code.
 
 ## Phase 8 — Binary codecs
 Format B encoder/decoder with the Paintsprout channel profile, mask codec, matrix header, wet-state
