@@ -1147,7 +1147,7 @@ and the resulting file was pulled and taken apart:
 | `fill` rows | ✅ 2, colour `#FF1B1BB3`, crop `(381, 236)` in a `1100×720` field at downsample `2` |
 | `move` row | ✅ 1, blob `463` bytes = 37-byte transform header + the 426-byte mask, exactly |
 | `stroke_clip` children | ✅ 3, on an `ERASER` and a `BRUSH` stroke — friskets |
-| `wet_state` child | ✅ on a `WATERCOLOR` stroke |
+| `wet_state` child | ✅ on a `WATERCOLOR` stroke — from the *injected* run, not the hand-run |
 | Frontier | ✅ 17 of 17 ops |
 
 Every blob was then decoded **independently, in Python**, rather than trusted because it was present:
@@ -1162,11 +1162,16 @@ Every blob was then decoded **independently, in Python**, rather than trusted be
 
 **Two things worth recording.**
 
-`erase` is still the one op type never written on device. The eraser was used as a *tool inside a
-selection* — which is the `ERASER` stroke at order 13 with its own `stroke_clip`, a different and
-also-correct path — rather than through the "Erase inside selection" button that produces an
-`EraseOp`. Its encoding is unit-tested and its row shape is `fill` minus the colour, so the risk is
-low, but it is untested on glass and should be ticked off during Phase 12's device pass.
+`erase` is still the one op type never written on device, and the reason is a small interaction trap
+rather than anything in the storage layer. Row timestamps separate the two sessions cleanly — the
+injected run ends at 11:04, the hand-run starts at 11:10 — and the hand-run contains an `ERASER`
+*stroke* at 11:12:14, not an `erase` op. `deleteSelection()` definitely writes an `EraseOp`, and
+nothing in the code selects the eraser on its own, so what happened is that the **eraser tool** was
+tapped while looking for the **"Erase inside selection"** button. Those two are easy to confuse: one
+is a tool near the top of the rail, the other appears *mid-rail only while a selection is live*,
+shifting everything below it as it comes and goes. Worth remembering when the library and page UI
+start adding to that rail. `EraseOp`'s encoding is unit-tested and its row shape is `fill` minus the
+colour, so the risk is low — but it is untested on glass and should be ticked off in Phase 12's pass.
 
 One of the three `stroke_clip` rows has **no live parent**. That is the format working as designed,
 not a leak: a redo tail is hard-deleted when a new op replaces it, and the spec's rule is that a
