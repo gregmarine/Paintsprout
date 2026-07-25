@@ -816,7 +816,7 @@ and a manifest change making the gate the launcher entry. 14 tests; 220 in the m
 | Lockout survives a reinstall | ✅ |
 | Correct recovery key opens the index | ✅ |
 | Any crash, anywhere | ✅ none in logcat |
-| Stock `sqlcipher` CLI opens the file | ⏳ **not run** — CLI is not installed on this Mac |
+| Stock `sqlcipher` CLI opens the file | ✅ see below |
 
 **A real bug the device test found.** The soft keyboard covered the Unlock button: the screen was
 edge-to-edge like the canvas screens, so the layout never resized. Three "attempts" in the first run
@@ -825,9 +825,33 @@ went into the text field instead of being submitted. Fixed by *not* making this 
 `IME_ACTION_GO` so the flow never depends on the button being reachable at all. This is exactly the
 class of thing no unit test would have caught.
 
-**Still outstanding:** the family's acceptance test — opening a Paintsprout file in a stock
-`sqlcipher` CLI with the same passphrase — has not been run, because the CLI isn't installed here.
-It should be run before Phase 6 ships a document container that has to satisfy the same contract.
+### The family acceptance test — passed
+
+Run against the live index pulled off the device, in a **stock `sqlcipher` 4.17.0** CLI (the app
+links 4.6.1 — different builds, same file):
+
+```
+sqlcipher paintsprout.db
+PRAGMA key = '<the recovery key>';
+SELECT count(*) FROM sqlite_master;   →  14      (an integer, not an error)
+```
+
+What that one command proves, and what the follow-up queries confirmed:
+
+| | |
+|---|---|
+| Portability | A build we don't ship opens the file with nothing but the passphrase |
+| Stock KDF | `kdf_iter` = **256000**, `cipher_page_size` = **4096** — untouched defaults, which is the whole contract |
+| `user_version` | **1**, matching `INDEX_SCHEMA_VERSION` — the value `sqlcipher_export` silently drops, and the one that bricks a file when it's wrong |
+| Schema | All four tables and all five indices present, index names exactly as `SchemaSql` and Room both spell them |
+| Document row shape | `scratchpad`'s DDL on device is the 26-column universal row, in order, `order` quoted, PK last |
+| Sentinels | Both rows present, right ids, `parentId` NULL |
+| Actually keyed | A wrong passphrase — and no passphrase — both give `file is not a database` |
+
+That last line is worth sitting with: `file is not a database` is precisely what the framework's
+default corruption handler reacts to by **deleting and recreating the file**. Every wrong-key open in
+this app produces that error, which is why `NonDestructiveOpenHelperFactory` had to exist before any
+key did.
 
 ## Phase 6 — `.soil` container 🧪
 `sketchbook` + `notebook_meta` tables, document Room DB, create/open/seal, the open-document
