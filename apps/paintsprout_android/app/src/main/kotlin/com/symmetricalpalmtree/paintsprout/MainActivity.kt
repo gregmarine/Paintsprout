@@ -267,13 +267,19 @@ class MainActivity : AppCompatActivity() {
                 if (wantsScratch) {
                     Scratchpad.open()
                 } else {
-                    DocumentSession.openOrCreate(
-                        context = this@MainActivity,
-                        documentId = pointer?.documentId,
-                        surface = currentSurface(),
-                    )
+                    DocumentSession.openExisting(this@MainActivity, pointer?.documentId)
                 }
-            }.getOrNull() ?: return@launch
+            }.getOrNull()
+
+            // Nothing to edit — the book this pointer named has been deleted, or
+            // was never there. The library is the answer to that; minting a
+            // replacement book is not.
+            if (opened == null) {
+                LastOpen.clear(this@MainActivity)
+                openLibrary()
+                finish()
+                return@launch
+            }
 
             session = opened
             LastOpen.save(

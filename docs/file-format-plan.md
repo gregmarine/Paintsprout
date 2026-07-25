@@ -619,7 +619,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 20 | Clipboard: copy/paste whole objects | **yes** | ✅ |
 | 21 | Send to scratchpad / send to sketchbook | **yes** | ✅ |
 | 22 | Export `.soil` + `notebook_meta` upkeep | **yes** | ✅ |
-| 23 | Import `.soil` | **yes** | ⬜ |
+| 23 | Import `.soil` | **yes** | ✅ |
 | 24 | Encryption UX: per-document passphrase, rotation, lock states | **yes** | ⬜ |
 | 25 | Compaction, VACUUM, size/perf measurement, leak audit | **yes** | ⬜ |
 
@@ -1764,7 +1764,7 @@ Two things this test could **not** establish, both on purpose:
   first byte, and nothing can produce a plaintext one until Phase 24's decrypt-in-place. That half of
   this device test is carried forward to Phase 24.
 
-## Phase 23 — Import 🧪
+## Phase 23 — Import ✅ 🧪
 The full pipeline: copy to cache → probe → unlock (`IMPORT` bucket) → read manifest with **UUID
 alphabet validation on every id** → collision (replace / keep both / cancel) → placement with
 **create-only** folder recreation from `folderPath` → name conflict → keying chooser → install by
@@ -1772,6 +1772,80 @@ alphabet validation on every id** → collision (replace / keep both / cancel) �
 commit** → refresh embedded meta → cleanup on every exit path including cancels.
 **Device test:** import a file exported in Phase 22 on a clean install, then again for each collision
 branch; refuse to replace an open document; attempt a crafted bad id.
+
+**As built.** Import is the only path where the app acts on a file it did not write, and the shape
+follows from that: nothing touches the library until the file has been copied somewhere safe,
+identified, opened, and had **every id in its manifest checked** — and the staged copy is deleted on
+every exit, success and refusal and cancel alike. 503 tests.
+
+- **The decisions are pure.**
+  [`ImportPlan`](../apps/paintsprout_android/app/src/main/kotlin/com/symmetricalpalmtree/paintsprout/data/soil/ImportPlan.kt)
+  answers "is this manifest trustworthy, does it collide, where would it land" with no side effects
+  at all, because the alternative is finding out on somebody's library.
+- **A document id must be a plain UUID**, and so must every folder id and parent id in the ancestry.
+  `Garden/<id>.soil` is built from the first and the others become index keys; one shared shape check
+  covers all of them, and a file that fails it is refused with nothing written.
+- **The order at the end is the load-bearing part**: install the file, then write the index row, and
+  only then retire what was replaced. Backwards, a failed install leaves a card that opens onto
+  nothing — which is how an empty ghost gets minted.
+- **A replaced document keeps its row**, updated in place rather than deleted and recreated: the pins
+  and the history pointing at it are not the incoming file's to discard.
+- **Keep-both mints a new id and re-identifies the copy**, through the same helper `duplicate` uses.
+  The root row carries the document's id, so a copy that kept the original's would insist it *was*
+  the original.
+- **Folder recreation is create-only.** A folder already here is used as it stands, never renamed or
+  moved to match somebody else's library — and an id that is a *sketchbook* here is not adopted as a
+  folder, because rewriting what a row is on the word of a file is not an import's job.
+- **The name conflict is suffixed, not prompted.** The user asked to import a file, not to hold a
+  conversation about it; "Harbour (2)" beside "Harbour" says what happened more clearly than a dialog
+  they would have to remember answering.
+- **No keying chooser, deliberately.** Whatever opened the file, opens the file: a document that took
+  this device's passphrase is `GLOBAL`, one that took a different passphrase is `NOTEBOOK` — "ask
+  every time", which is the truth about it. *Changing* which key a document uses is a
+  `sqlcipher_export` round-trip, and the plan's own rule is that there is one of those, in one shared
+  helper, arriving in Phase 24. A second copy of it here is exactly what that rule forbids.
+
+### Three things the device found
+
+**A deleted book collided with itself.** Deleting is soft and `byId` answers for tombstones — that is
+what makes an undelete possible — so re-importing a book the user had deleted offered to "replace"
+something that was not there, and would then have crashed on an `INSERT` onto a live primary key.
+Collisions and folder recreation now both test `isAlive`, and the index's create-with-id path revives
+a tombstone instead of inserting over it, keeping the original `createdAt` because that is when the
+thing was made.
+
+**A 60-byte text file asked for a passphrase.** `DbProbe` says ENCRYPTED for anything without the
+SQLite magic, correctly: it cannot tell encrypted from damaged without a key. But a file shorter than
+one page is not a database of any kind, and import can say so. The check lives in import rather than
+in the shared probe on purpose — the probe also decides whether the *index* is a fresh install, where
+INVALID means "create an empty library", and a truncated index must keep asking for a passphrase
+rather than be declared absent.
+
+**The editor minted an empty ghost book.** Deleting the book that was last open and relaunching
+produced a new "Sketchbook" nobody asked for: `openOrCreate` created a document when the pointer no
+longer resolved. That was right when the editor predated the library and had to be editing
+*something*; it stopped being right in Phase 14 and nothing noticed until a phase came along that
+deletes books. It is `openExisting` now, and null means the library.
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| Import a Phase 22 export, id already present | ✅ collision dialog: Replace / Keep both / Cancel |
+| **Keep both** | ✅ fresh id in the garden, "Rope and tide (2)" in the library, opens with identical content (3,641 dark px) |
+| **Cancel** | ✅ nothing changed, staged copy deleted |
+| **Replace** | ✅ file overwritten, the stroke added since the export is gone, no `.new` or `.old.bak` left behind |
+| Fresh import, no collision | ❌ **a deleted book still collided** — fixed, then ✅ |
+| **Folder recreation** | ✅ "Voyages", deleted beforehand, recreated from `folderPath` with the book inside it |
+| **Crafted bad id** (`../../../etc/passwd`) | ✅ *"That file names something that isn't a valid id. It has not been imported."* — nothing written |
+| A 60-byte text file named `.soil` | ❌ **asked for a passphrase** — fixed, then ✅ *"That file isn't a Paintsprout sketchbook"* |
+| Cancelling the unlock prompt | ✅ staged copy discarded |
+| Relaunch after deleting the last-open book | ❌ **minted an empty book** — fixed, then ✅ opens the library, garden unchanged |
+
+**Not exercised on device: refusing to replace an *open* document.** The editor seals and unregisters
+when it stops, so by the time the library is in front of the user nothing is open — the guard covers
+the milliseconds while an asynchronous seal is still running, which cannot be hit by hand. It is unit
+tested (`collisionOf(row, isOpen = true)`), and `toSketchbook` in Phase 21 refuses the same way.
 
 ## Phase 24 — Encryption UX 🧪
 Per-document passphrase (set / change / remove) with in-place `sqlcipher_export` conversion and the

@@ -81,6 +81,13 @@ data class IndexObject(
     /** Cover image bytes. Governed by key scope; never any other content. */
     val blob: ByteArray? = null,
 ) {
+    /**
+     * NULL [deletedAt] is alive. Worth a name because [IndexDao.byId] answers for
+     * tombstones as well — that is what makes an undelete possible — so every
+     * caller that means "is this *in* the library" has to say so.
+     */
+    val isAlive: Boolean get() = deletedAt == null
+
     val isEncrypted: Boolean get() = (flags ?: 0) and FLAG_ENCRYPTED != 0
 
     /** A private-passphrase document: no cover may be cached for it, at any time. */

@@ -637,28 +637,30 @@ class DocumentSession private constructor(
          * document that creates itself on first paint is better than an editor
          * that silently discards work.
          */
-        suspend fun openOrCreate(
-            context: Context,
-            documentId: String?,
-            defaultName: String = "Sketchbook",
-            surface: SurfaceKind = SurfaceKind.PAPER,
-        ): DocumentSession = withContext(Dispatchers.IO) {
-            val index = IndexGate.awaitReady()
-            val existing = documentId
-                ?.takeIf { SoilFiles.isDocumentId(it) }
-                // Both the row and the file, before anything opens either: a stale
-                // pointer handed to a create-capable open mints an empty ghost.
-                ?.takeIf { index.byId(it) != null && SoilFiles.soilFile(context, it).exists() }
-
-            if (existing != null) open(context, existing) else create(context, defaultName, surface)
-        }
-
-        /** Creates the sketchbook, then opens it — one construction path, not two. */
-        private suspend fun create(
-            context: Context,
-            name: String,
-            surface: SurfaceKind,
-        ): DocumentSession = open(context, Sketchbooks.create(context, name, surface = surface).id)
+        /**
+         * Opens what the pointer names, or **nothing**.
+         *
+         * Null means "there is nothing to edit", and the caller's answer to that
+         * is the library — not a new document. It used to be a new document: the
+         * editor predated the library and had to be editing *something*, so a
+         * pointer that no longer resolved created a book. Found on device long
+         * after that stopped being true, by deleting the book that was last open:
+         * the next launch minted an empty "Sketchbook" nobody asked for.
+         *
+         * Both halves are checked before anything opens either — the index row
+         * *and* the file — because the open underneath is create-capable, and a
+         * stale pointer handed to it fabricates the ghost it was looking for.
+         */
+        suspend fun openExisting(context: Context, documentId: String?): DocumentSession? =
+            withContext(Dispatchers.IO) {
+                val index = IndexGate.awaitReady()
+                val existing = documentId
+                    ?.takeIf { SoilFiles.isDocumentId(it) }
+                    ?.takeIf {
+                        index.byId(it)?.isAlive == true && SoilFiles.soilFile(context, it).exists()
+                    }
+                existing?.let { open(context, it) }
+            }
 
         private suspend fun open(context: Context, id: String): DocumentSession {
             val soil = SketchbookStore.open(context, id)

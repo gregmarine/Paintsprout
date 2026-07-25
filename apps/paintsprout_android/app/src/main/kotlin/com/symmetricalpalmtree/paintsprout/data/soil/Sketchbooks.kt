@@ -92,14 +92,7 @@ object Sketchbooks {
 
             val soil = SketchbookStore.open(context, newId)
             try {
-                soil.db.execSQL(
-                    "UPDATE `${SchemaSql.SKETCHBOOK_TABLE}` SET `parentId` = ? WHERE `parentId` = ?",
-                    arrayOf<Any?>(newId, sourceId),
-                )
-                soil.db.execSQL(
-                    "UPDATE `${SchemaSql.SKETCHBOOK_TABLE}` SET `id` = ? WHERE `id` = ?",
-                    arrayOf<Any?>(newId, sourceId),
-                )
+                reidentify(soil, sourceId, newId)
                 soil.writeMeta(
                     (soil.readMeta() ?: return@withContext null).copy(
                         notebookId = newId,
@@ -164,6 +157,27 @@ object Sketchbooks {
         } else {
             CanvasSize.FullScreen
         }
+    }
+
+    /**
+     * Makes an open document claim [newId] as its own.
+     *
+     * The root row carries the document's id — that is what makes a `.soil`
+     * self-identifying — so a copy that keeps the original's id insists it *is*
+     * the original. Both callers that create a document out of another one's
+     * bytes come through here: duplicate, and an import kept alongside what it
+     * collided with. Its pages, layers and ops keep their ids, which is safe:
+     * they are private to this file and nothing outside it refers to them.
+     */
+    internal fun reidentify(soil: SoilDatabase, oldId: String, newId: String) {
+        soil.db.execSQL(
+            "UPDATE `${SchemaSql.SKETCHBOOK_TABLE}` SET `parentId` = ? WHERE `parentId` = ?",
+            arrayOf<Any?>(newId, oldId),
+        )
+        soil.db.execSQL(
+            "UPDATE `${SchemaSql.SKETCHBOOK_TABLE}` SET `id` = ? WHERE `id` = ?",
+            arrayOf<Any?>(newId, oldId),
+        )
     }
 
     /** Opens, refreshes the embedded record against the library, and seals again. */

@@ -80,4 +80,20 @@
     <string name="send_done">Sent to %1$s</string>
     <string name="send_failed">That didn\'t send</string>
     <string name="send_no_books">There\'s no other sketchbook to send it to</string>
+    <string name="library_import">Import a sketchbook…</string>
+    <string name="import_title">Import</string>
+    <string name="import_unlock_title">This sketchbook is locked</string>
+    <string name="import_unlock_body">Enter the passphrase it was encrypted with.</string>
+    <string name="import_unlock">Unlock</string>
+    <string name="import_wrong_key">That didn\'t open it</string>
+    <string name="import_locked">Too many attempts. Try again in %1$d minutes.</string>
+    <string name="import_not_a_sketchbook">That file isn\'t a Paintsprout sketchbook</string>
+    <string name="import_bad_id">That file names something that isn\'t a valid id. It has not been imported.</string>
+    <string name="import_exists_title">You already have this sketchbook</string>
+    <string name="import_exists_body">“%1$s” is already in your library. Replacing it overwrites what\'s there.</string>
+    <string name="import_replace">Replace</string>
+    <string name="import_keep_both">Keep both</string>
+    <string name="import_open_elsewhere">That sketchbook is open. Close it first.</string>
+    <string name="import_done">Imported “%1$s”</string>
+    <string name="import_failed">That didn\'t import</string>
 </resources>

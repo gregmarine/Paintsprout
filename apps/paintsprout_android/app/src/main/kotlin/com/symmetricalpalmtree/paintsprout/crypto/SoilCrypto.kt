@@ -36,6 +36,18 @@ object SoilCrypto {
     fun roomFactory(passphrase: String): SupportSQLiteOpenHelper.Factory =
         NonDestructiveOpenHelperFactory(SupportOpenHelperFactory(keyBytes(passphrase)))
 
+    /**
+     * Opens a file that carries no key at all.
+     *
+     * Only import has one of those: a `.soil` that arrived from somewhere else and
+     * probed as plaintext. Everything the app *creates* is encrypted from its
+     * first byte, so this is a reader, never a writer of new documents — and it
+     * keeps the non-destructive wrapper, because an unopenable file must not be
+     * deleted by the platform's default handler whatever it was keyed with.
+     */
+    fun plaintextFactory(): SupportSQLiteOpenHelper.Factory =
+        NonDestructiveOpenHelperFactory(androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory())
+
     /** Opens with a pre-derived key, skipping the KDF. The common path. */
     fun roomFactoryRawKey(rawKey: ByteArray): SupportSQLiteOpenHelper.Factory =
         NonDestructiveOpenHelperFactory(

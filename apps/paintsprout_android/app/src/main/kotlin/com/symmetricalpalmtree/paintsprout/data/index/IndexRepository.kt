@@ -94,14 +94,41 @@ class IndexRepository(
 
     // --- Creation -----------------------------------------------------------
 
-    suspend fun createFolder(name: String, parentId: String? = null): IndexObject {
+    /**
+     * [id] is a parameter for one caller: import, recreating the ancestry an
+     * incoming document names. The ids are the same on every device, which is what
+     * makes importing one file onto three of them converge on the same tree — so
+     * the folder has to be created *as* that id, not as a fresh one with the same
+     * name.
+     */
+    suspend fun createFolder(name: String, parentId: String? = null, id: String = newId()): IndexObject {
         val at = now()
         val row = IndexObject(
-            id = newId(), type = IndexType.FOLDER, name = name,
+            id = id, type = IndexType.FOLDER, name = name,
             parentId = parentId, createdAt = at, updatedAt = at,
         )
-        objects.insert(row)
-        return row
+        return write(row)
+    }
+
+    /**
+     * Insert, or bring a tombstone back.
+     *
+     * Only a caller that supplies an id can land on an existing row, and there is
+     * one: import, recreating what a document names. Deleting is soft, so the id
+     * it names may still be here as a tombstone — and an `INSERT` onto a primary
+     * key that exists is a crash, not a no-op. The revived row keeps its original
+     * `createdAt`, because that is when the thing was made; everything else is
+     * what is arriving now.
+     */
+    private suspend fun write(row: IndexObject): IndexObject {
+        val existing = objects.byId(row.id)
+        if (existing == null) {
+            objects.insert(row)
+            return row
+        }
+        val revived = row.copy(createdAt = existing.createdAt)
+        objects.upsert(revived)
+        return revived
     }
 
     suspend fun createSketchbook(
@@ -129,8 +156,7 @@ class IndexRepository(
             canvasW = canvasW,
             canvasH = canvasH,
         )
-        objects.insert(row)
-        return row
+        return write(row)
     }
 
     // --- Modification -------------------------------------------------------

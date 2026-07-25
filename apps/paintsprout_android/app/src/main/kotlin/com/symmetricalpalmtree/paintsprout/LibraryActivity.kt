@@ -29,7 +29,10 @@ import com.symmetricalpalmtree.paintsprout.data.index.IndexGate
 import com.symmetricalpalmtree.paintsprout.data.index.IndexObject
 import com.symmetricalpalmtree.paintsprout.data.index.IndexType
 import com.symmetricalpalmtree.paintsprout.data.index.LibrarySort
+import android.net.Uri
 import com.symmetricalpalmtree.paintsprout.data.soil.ExportName
+import com.symmetricalpalmtree.paintsprout.data.soil.ImportPlan
+import com.symmetricalpalmtree.paintsprout.data.soil.SoilImport
 import com.symmetricalpalmtree.paintsprout.data.soil.Sketchbooks
 import com.symmetricalpalmtree.paintsprout.data.soil.SoilExport
 import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
@@ -340,6 +343,125 @@ class LibraryActivity : AppCompatActivity() {
         }
     }
 
+    // --- Import ---------------------------------------------------------------
+
+    /**
+     * The system picker, rather than a browser of our own.
+     *
+     * A `.soil` can arrive from anywhere — Downloads, Drive, a message — and the
+     * picker is the one thing that can reach all of them. Every MIME type is
+     * offered, because the extension is ours and no MIME database has heard of
+     * it: the file is identified by what is inside it, not by what it is called.
+     */
+    private fun pickImport() {
+        runCatching {
+            importFile.launch(arrayOf("*/*"))
+        }.onFailure { toast(getString(R.string.import_failed)) }
+    }
+
+    private val importFile = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri -> if (uri != null) beginImport(uri) }
+
+    private fun beginImport(uri: Uri) {
+        lifecycleScope.launch {
+            when (val step = runCatching { SoilImport.inspect(this@LibraryActivity, uri) }.getOrNull()) {
+                is SoilImport.Step.Ready -> resolve(step)
+                is SoilImport.Step.NeedsKey -> promptImportKey(step)
+                is SoilImport.Step.Refused -> toast(refusal(step))
+                null -> toast(getString(R.string.import_failed))
+            }
+        }
+    }
+
+    private fun refusal(step: SoilImport.Step.Refused): String = when (step.reason) {
+        ImportPlan.Verdict.BAD_ID -> getString(R.string.import_bad_id)
+        else -> getString(R.string.import_not_a_sketchbook)
+    }
+
+    /**
+     * A locked file, and the one prompt this flow has.
+     *
+     * Cancelling discards the staged copy rather than leaving it in the cache for
+     * later: the user said no, and a copy of somebody\'s artwork should not
+     * outlive that.
+     */
+    private fun promptImportKey(step: SoilImport.Step.NeedsKey) {
+        if (step.lockedUntil > System.currentTimeMillis()) {
+            val minutes = ((step.lockedUntil - System.currentTimeMillis()) / 60_000) + 1
+            toast(getString(R.string.import_locked, minutes))
+            SoilImport.discard(step.staged)
+            return
+        }
+        val field = EditText(this).apply {
+            hint = getString(R.string.import_unlock)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.import_unlock_title)
+            .setMessage(R.string.import_unlock_body)
+            .setView(padded(field))
+            .setNegativeButton(android.R.string.cancel) { _, _ -> SoilImport.discard(step.staged) }
+            .setOnCancelListener { SoilImport.discard(step.staged) }
+            .setPositiveButton(R.string.import_unlock) { _, _ ->
+                lifecycleScope.launch {
+                    when (val next = SoilImport.unlock(this@LibraryActivity, step.staged, field.text.toString())) {
+                        is SoilImport.Step.Ready -> resolve(next)
+                        is SoilImport.Step.NeedsKey -> {
+                            toast(getString(R.string.import_wrong_key))
+                            promptImportKey(next)
+                        }
+                        is SoilImport.Step.Refused -> toast(refusal(next))
+                    }
+                }
+            }
+            .show()
+    }
+
+    /** Asks about a collision, or installs straight away when there isn\'t one. */
+    private fun resolve(ready: SoilImport.Step.Ready) {
+        when (ready.collision) {
+            ImportPlan.Collision.NONE -> finishImport(ready, ImportPlan.Resolution.KEEP_BOTH)
+
+            // Never behind the editor\'s back: the open document has state this
+            // copy does not include, and overwriting the file under it corrupts
+            // both.
+            ImportPlan.Collision.EXISTS_AND_OPEN -> {
+                toast(getString(R.string.import_open_elsewhere))
+                SoilImport.discard(ready.staged)
+            }
+
+            ImportPlan.Collision.EXISTS -> MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.import_exists_title)
+                .setMessage(getString(R.string.import_exists_body, ready.meta.name))
+                .setNeutralButton(android.R.string.cancel) { _, _ ->
+                    finishImport(ready, ImportPlan.Resolution.CANCEL)
+                }
+                .setOnCancelListener { finishImport(ready, ImportPlan.Resolution.CANCEL) }
+                .setNegativeButton(R.string.import_keep_both) { _, _ ->
+                    finishImport(ready, ImportPlan.Resolution.KEEP_BOTH)
+                }
+                .setPositiveButton(R.string.import_replace) { _, _ ->
+                    finishImport(ready, ImportPlan.Resolution.REPLACE)
+                }
+                .show()
+        }
+    }
+
+    private fun finishImport(ready: SoilImport.Step.Ready, resolution: ImportPlan.Resolution) {
+        lifecycleScope.launch {
+            val id = SoilImport.install(this@LibraryActivity, ready, resolution)
+            if (resolution == ImportPlan.Resolution.CANCEL) return@launch
+            if (id == null) {
+                toast(getString(R.string.import_failed))
+                return@launch
+            }
+            refresh()
+            val name = IndexGate.awaitReady().byId(id)?.name ?: ready.meta.name
+            toast(getString(R.string.import_done, name))
+        }
+    }
+
     private fun folderActions(folder: IndexObject) = MaterialAlertDialogBuilder(this)
         .setTitle(folder.name)
         .setItems(
@@ -612,8 +734,15 @@ class LibraryActivity : AppCompatActivity() {
                                 arrayOf(
                                     getString(R.string.library_new_sketchbook),
                                     getString(R.string.library_new_folder),
+                                    getString(R.string.library_import),
                                 ),
-                            ) { _, which -> if (which == 0) promptNewSketchbook() else promptNewFolder() }
+                            ) { _, which ->
+                                when (which) {
+                                    0 -> promptNewSketchbook()
+                                    1 -> promptNewFolder()
+                                    else -> pickImport()
+                                }
+                            }
                             .show()
                     }
                 },
