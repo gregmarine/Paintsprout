@@ -618,7 +618,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 19 | Lasso tool | **yes** | ✅ |
 | 20 | Clipboard: copy/paste whole objects | **yes** | ✅ |
 | 21 | Send to scratchpad / send to sketchbook | **yes** | ✅ |
-| 22 | Export `.soil` + `notebook_meta` upkeep | **yes** | ⬜ |
+| 22 | Export `.soil` + `notebook_meta` upkeep | **yes** | ✅ |
 | 23 | Import `.soil` | **yes** | ⬜ |
 | 24 | Encryption UX: per-document passphrase, rotation, lock states | **yes** | ⬜ |
 | 25 | Compaction, VACUUM, size/perf measurement, leak audit | **yes** | ⬜ |
@@ -1701,11 +1701,68 @@ for Phase 9's decision to parameterise the repository rather than write a second
 | "To the scratchpad" while in the scratchpad | ✅ not offered |
 | The source page after sending | ✅ still there, unchanged |
 
-## Phase 22 — Export 🧪
+## Phase 22 — Export ✅ 🧪
 `notebook_meta` continuous upkeep (create / open / close), then export as a raw file copy named
 `<Sketchbook Name>.soil` (sanitized `[^a-zA-Z0-9_\-. ]`, UUID fallback, spaces preserved),
 `application/octet-stream`, via the share sheet. Encrypted books export silently as ciphertext.
 **Device test:** export plaintext and encrypted books; open the exported file in the `sqlcipher` CLI.
+
+**As built.** Export is a **byte-for-byte copy**, and everything else in this phase exists to earn
+that. The document is self-describing, so exporting never opens it — which means it never has to
+*unlock* one, so a book with its own passphrase leaves as ciphertext with nobody asked for anything.
+486 tests.
+
+- **Upkeep runs at create, open and close**, never at export. The library is where a book is renamed
+  and moved, and the library never opens the file to do it, so the two drift apart between sessions;
+  each of those three moments is a point where the file is open anyway. On *open* as well as close,
+  because a crash before the seal should still leave the embedded name current.
+- **[`MetaUpkeep`](../apps/paintsprout_android/app/src/main/kotlin/com/symmetricalpalmtree/paintsprout/data/soil/MetaUpkeep.kt)
+  is a merge rule, and it is one-directional.** The index owns the name and the ancestry — library
+  business. The file owns its id, when it was made, and how it is keyed, and none of that is ever
+  taken from the index, which is a separate database that could be restored from a different backup
+  than the document beside it. A missing or blank index row leaves the name alone rather than
+  blanking it.
+- **The cover travels only for a plaintext document.** A reader holding an encrypted file it cannot
+  open must not be handed a picture of what is inside it.
+- **`exportedAt` is deliberately not stamped.** Writing it would mean opening the copy, and opening
+  means unlocking; the field stays in the record for an exporter that has the key, and ours doesn't
+  ask for one.
+- **The filename is the outside world's problem.**
+  [`ExportName`](../apps/paintsprout_android/app/src/main/kotlin/com/symmetricalpalmtree/paintsprout/data/soil/ExportName.kt)
+  keeps spaces (it is the name the user typed), drops everything outside `[A-Za-z0-9_\-. ]` (a slash
+  is a path separator everywhere and a name is not worth a traversal), collapses the runs stripping
+  leaves behind, trims leading dots (hidden on unix) and trailing ones (dropped on Windows), and
+  falls back to the UUID when a title sanitises to nothing — emoji-only names are real, and `.soil`
+  is not a filename.
+- **Shared by content URI, from a swept staging directory.** A `file://` URI to another app is an
+  exception, and a world-readable copy of somebody's artwork is not the alternative. One export's
+  worth lives in the cache at a time.
+- **Export refuses an open document.** The bytes on disk are the whole story only once the file is
+  sealed; a live connection can be holding the last strokes in a `-wal` the copy would not include.
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| Export from the library | ✅ share sheet: **"Sharing 1 file — Scratch study.soil"** |
+| The copy vs the original | ✅ **identical MD5** — `d229c6a5…` on both the staged file and `Garden/590f9749….soil` |
+| Rename, reopen, export again | ✅ exports as **"Rope and tide.soil"**, still byte-identical to the source |
+| Content survived the meta rewrite | ✅ the book still renders 3,641 dark pixels, exactly as before |
+| Staging swept between exports | ✅ one file in `cache/export/`, the previous name gone |
+| Sidecars after open + close | ✅ none beside the `.soil` |
+| Stock `sqlcipher` 4.17.0, no key | ✅ `file is not a database` |
+| …with a wrong key | ✅ same — an unopenable database is indistinguishable from a corrupt one, which is why the non-destructive open helper exists |
+| The header | ✅ 16 bytes of salt, not `SQLite format 3` — ciphertext from the first byte |
+
+Two things this test could **not** establish, both on purpose:
+
+- **The exported file was not decrypted in the CLI.** The global key lives in the device's keystore
+  and is not extractable — that is the design working, not a gap in it. What stands in for it is
+  stronger than a CLI session anyway: the copy is byte-identical to the file the app demonstrably
+  opens, so it opens with exactly what opens the original.
+- **There is no plaintext book to export yet.** Decision 2 made every document encrypted from its
+  first byte, and nothing can produce a plaintext one until Phase 24's decrypt-in-place. That half of
+  this device test is carried forward to Phase 24.
 
 ## Phase 23 — Import 🧪
 The full pipeline: copy to cache → probe → unlock (`IMPORT` bucket) → read manifest with **UUID
@@ -1723,7 +1780,9 @@ before the first file, per-file verify-then-skip, quarantine a mislabeled file a
 global passphrase updated only when `pendingIds` is empty); lock glyphs and cover suppression for
 `NOTEBOOK` scope.
 **Device test:** encrypt a book privately, relaunch and unlock, rotate the global key with several
-books present, kill mid-rotation and confirm resumption.
+books present, kill mid-rotation and confirm resumption. **Carried forward from Phase 22:** decrypt a
+book in place, export it, and open *that* file in the stock `sqlcipher` CLI — the plaintext half of
+the export test, which nothing before this phase can produce a document for.
 
 ## Phase 25 — Compaction, measurement, leak audit 🧪
 Compactor sweep (guarded per row, `VACUUM` only if something actually changed, `updatedAt`

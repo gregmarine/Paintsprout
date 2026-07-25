@@ -667,6 +667,11 @@ class DocumentSession private constructor(
             // rather than failing in front of the user.
             if (repo.pages().isEmpty()) repo.createDocument(title = repo.root()?.text ?: "")
             IndexGate.awaitReady().recordOpened(id)
+            // Upkeep on the way in as well as on the way out. A document renamed
+            // or moved in the library carries a stale record until the file is
+            // next open, and this is that moment — so a crash before the seal
+            // still leaves the embedded name current.
+            runCatching { soil.writeMeta(MetaUpkeep.from(id).invoke(soil.readMeta() ?: return@runCatching)) }
             return on(SoilHome(id, soil), repo)
         }
 

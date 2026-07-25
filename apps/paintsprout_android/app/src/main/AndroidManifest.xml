@@ -47,6 +47,21 @@
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density"
             android:screenOrientation="sensorLandscape" />
 
+        <!--
+            Staged export copies are shared by content URI rather than by path:
+            a file:// URI to another app is a FileUriExposedException, and a
+            world-readable copy of somebody's artwork is not the alternative.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
     </application>
 
 </manifest>

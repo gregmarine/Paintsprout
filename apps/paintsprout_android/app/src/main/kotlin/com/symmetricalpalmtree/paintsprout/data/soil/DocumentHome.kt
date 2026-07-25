@@ -43,9 +43,17 @@ class SoilHome(override val documentId: String, private val soil: SoilDatabase) 
 
     override suspend fun close(changed: Boolean, cover: Bitmap?, pageCount: Int) {
         if (changed) runCatching { refreshIndexRow(cover, pageCount) }
+        // What the library knows about this document, baked into the document —
+        // fetched before the seal, because the seal is where the file goes cold
+        // and a suspending index read inside it would be a read on a closing
+        // database. Null when the index is unavailable, which leaves the embedded
+        // record as it was rather than overwriting it with guesses.
+        val upkeep = runCatching { MetaUpkeep.from(documentId) }.getOrNull()
         // The seal proper: refresh the embedded identity record, vacuum, truncate
         // the WAL, close, and leave no sidecars behind.
-        runCatching { soil.seal { it.copy(updatedAt = System.currentTimeMillis()) } }
+        runCatching {
+            soil.seal { meta -> upkeep?.invoke(meta) ?: meta.copy(updatedAt = System.currentTimeMillis()) }
+        }
     }
 
     /**

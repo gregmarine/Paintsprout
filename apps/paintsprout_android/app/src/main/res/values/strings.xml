@@ -51,6 +51,7 @@
     <string name="library_default_name">Sketchbook</string>
     <string name="library_rename">Rename</string>
     <string name="library_duplicate">Duplicate</string>
+    <string name="library_export">Export</string>
     <string name="library_delete">Delete</string>
     <string name="library_copy_of">%1$s copy</string>
     <string name="library_delete_title">Delete “%1$s”?</string>

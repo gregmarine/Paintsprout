@@ -29,7 +29,9 @@ import com.symmetricalpalmtree.paintsprout.data.index.IndexGate
 import com.symmetricalpalmtree.paintsprout.data.index.IndexObject
 import com.symmetricalpalmtree.paintsprout.data.index.IndexType
 import com.symmetricalpalmtree.paintsprout.data.index.LibrarySort
+import com.symmetricalpalmtree.paintsprout.data.soil.ExportName
 import com.symmetricalpalmtree.paintsprout.data.soil.Sketchbooks
+import com.symmetricalpalmtree.paintsprout.data.soil.SoilExport
 import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -299,6 +301,7 @@ class LibraryActivity : AppCompatActivity() {
                         getString(R.string.library_rename),
                         getString(R.string.library_move),
                         getString(R.string.library_duplicate),
+                        getString(R.string.library_export),
                         getString(R.string.library_delete),
                     ),
                 ) { _, which ->
@@ -310,10 +313,30 @@ class LibraryActivity : AppCompatActivity() {
                         1 -> promptRename(book)
                         2 -> promptMove(book)
                         3 -> duplicate(book)
-                        4 -> confirmDeleteBook(book)
+                        4 -> export(book)
+                        5 -> confirmDeleteBook(book)
                     }
                 }
                 .show()
+        }
+    }
+
+    /**
+     * Hands the sketchbook to whatever the user picks from the share sheet.
+     *
+     * A byte copy under the book's own name — see [SoilExport]. An encrypted book
+     * leaves as ciphertext without a word about it, which is the correct amount
+     * of ceremony: the user asked for their file, and their file is encrypted.
+     */
+    private fun export(book: IndexObject) {
+        lifecycleScope.launch {
+            val name = ExportName.of(book.name, book.id)
+            val uri = runCatching { SoilExport.stage(this@LibraryActivity, book.id, book.name) }.getOrNull()
+            if (uri == null) {
+                toast(getString(R.string.library_failed))
+                return@launch
+            }
+            startActivity(SoilExport.shareIntent(uri, name))
         }
     }
 

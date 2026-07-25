@@ -59,7 +59,13 @@ object Sketchbooks {
             canvasW = print?.wIn,
             canvasH = print?.hIn,
             keyScope = KeyScope.GLOBAL,
-        ).also { index.setPageCount(id, 1) }
+        ).also {
+            index.setPageCount(id, 1)
+            // Where it was filed, into the file, at the moment it is filed. A book
+            // created inside a folder and exported before it is ever opened still
+            // carries the ancestry an importer needs to put it back.
+            if (parentId != null) runCatching { stampFolderPath(context, id) }
+        }
     }
 
     /**
@@ -157,6 +163,17 @@ object Sketchbooks {
             CanvasSize.Print(w, h, CanvasSize.PRESETS.firstOrNull { it.wIn == w && it.hIn == h }?.label ?: "$w × $h in")
         } else {
             CanvasSize.FullScreen
+        }
+    }
+
+    /** Opens, refreshes the embedded record against the library, and seals again. */
+    private suspend fun stampFolderPath(context: Context, id: String) {
+        val refresh = MetaUpkeep.from(id)
+        val soil = SketchbookStore.open(context, id)
+        try {
+            soil.readMeta()?.let { soil.writeMeta(refresh(it)) }
+        } finally {
+            soil.seal()
         }
     }
 
