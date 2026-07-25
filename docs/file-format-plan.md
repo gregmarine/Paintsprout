@@ -601,7 +601,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 2 | Non-destructive opens, probe, swap repair | no | ✅ |
 | 3 | Crypto core: keystore stores, key mint, KDF cache, rate limiter | no | ✅ |
 | 4 | Global index DB: Room entities, DAOs, repository, sentinels | no | ✅ |
-| 5 | Bootstrap gate + unlock UI + launch routing | **yes** | ⬜ |
+| 5 | Bootstrap gate + unlock UI + launch routing | **yes** | ✅ |
 | 6 | `.soil` container: schema, `notebook_meta`, create/open/seal, registry | **yes** | ⬜ |
 | 7 | Object model: universal row, columnar mapping, subtree helpers | no | ⬜ |
 | 8 | Binary codecs: stroke format B, masks, matrix, wet state | no | ⬜ |
@@ -775,7 +775,7 @@ closes. And the JDBC test helper bound `:name` parameters positionally, which si
 argument after a repeated name — `SOFT_DELETE` uses `:at` twice. It now binds by name, the way Room
 does.
 
-## Phase 5 — Bootstrap gate + unlock UI 🧪
+## Phase 5 — Bootstrap gate + unlock UI ✅ 🧪
 The open state machine: `repair → probe → (Invalid: mint key, create ENCRYPTED, derive+cache) |
 (Encrypted: cached key → verify → open, else NEEDS_UNLOCK)`. One mutex serializes every open,
 unlock, re-key and seal. `awaitReady()` latch that every consumer suspends on.
@@ -783,6 +783,51 @@ unlock, re-key and seal. `awaitReady()` latch that every consumer suspends on.
 screen. Launch routing to last-open surface (falls back to library).
 **Device test:** fresh install (key minted, recovery key shown), cold relaunch (fast raw-key open),
 force-stop mid-open, wrong passphrase × N (lockout), verify with the stock `sqlcipher` CLI.
+
+**As built.** `IndexOpenPlan` + `IndexOpenPlanner` (the decision, as a pure function),
+`IndexGate` (the singleton state machine), `LastOpen` (the ids-only pointer), `BootstrapActivity`,
+and a manifest change making the gate the launcher entry. 14 tests; 220 in the module.
+
+- **The open decision is a function, not control flow.** `IndexOpenPlanner.plan()` is a truth table
+  over `(probe, cached passphrase?, cached raw key?)`, so the case that would destroy a library —
+  INVALID meaning "fresh install" — is looked at directly rather than inferred from a coroutine.
+  A **plaintext** index is `REFUSE_PLAINTEXT`: this app has never created one, so a plaintext file at
+  that path is somebody else's or is damage, and adopting it would destroy whatever it actually is.
+- **A cached raw key without a cached passphrase still prompts.** Exercised on-device (below) and in
+  a test, because it is the state a partial store wipe leaves behind.
+- **Sentinel creation is awaited inside the open**, not fired off. "Ready" has to mean the sentinels
+  exist, or the first consumer through the gate races the bootstrap that creates them.
+- **Recovery-key acknowledgement is persisted**, so the key is re-shown on every launch until the
+  user confirms — rather than being a one-shot that a force-quit loses. (Until Phase 24 ships a
+  "show my recovery key" screen, that flag is the only thing keeping the key reachable.)
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| Fresh install mints a key and shows it | ✅ `PSPT-` + 8 groups of 4 rendered |
+| Index created encrypted from the first byte | ✅ header is not `SQLite format 3\0` |
+| Acknowledge → routes to the editor | ✅ |
+| Cold relaunch takes the raw-key fast path | ✅ 542–594 ms to first frame, straight through |
+| Derived key cached in the keystore-backed store | ✅ one entry in `paintsprout_keys.xml` |
+| Neither secret store holds the key in cleartext | ✅ `grep PSPT` → 0 in both |
+| No cached passphrase → prompt (raw key still cached) | ✅ |
+| 3 wrong attempts → 30 s lockout, counting down | ✅ button disabled, field cleared |
+| Lockout survives a reinstall | ✅ |
+| Correct recovery key opens the index | ✅ |
+| Any crash, anywhere | ✅ none in logcat |
+| Stock `sqlcipher` CLI opens the file | ⏳ **not run** — CLI is not installed on this Mac |
+
+**A real bug the device test found.** The soft keyboard covered the Unlock button: the screen was
+edge-to-edge like the canvas screens, so the layout never resized. Three "attempts" in the first run
+went into the text field instead of being submitted. Fixed by *not* making this screen edge-to-edge
+(it is a form, not a canvas), adding `windowSoftInputMode="adjustResize"`, and giving the field an
+`IME_ACTION_GO` so the flow never depends on the button being reachable at all. This is exactly the
+class of thing no unit test would have caught.
+
+**Still outstanding:** the family's acceptance test — opening a Paintsprout file in a stock
+`sqlcipher` CLI with the same passphrase — has not been run, because the CLI isn't installed here.
+It should be run before Phase 6 ships a document container that has to satisfy the same contract.
 
 ## Phase 6 — `.soil` container 🧪
 `sketchbook` + `notebook_meta` tables, document Room DB, create/open/seal, the open-document

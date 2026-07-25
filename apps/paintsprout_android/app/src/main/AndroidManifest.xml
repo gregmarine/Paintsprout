@@ -9,9 +9,15 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Paintsprout">
 
+        <!--
+            The launcher entry is the bootstrap gate, not the editor: the index can
+            need a key derivation, an unlock prompt or a first-run mint before
+            anything is allowed to read it.
+        -->
         <activity
-            android:name=".MainActivity"
+            android:name=".BootstrapActivity"
             android:exported="true"
+            android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density"
             android:screenOrientation="sensorLandscape"
             android:launchMode="singleTop">
@@ -20,6 +26,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density"
+            android:screenOrientation="sensorLandscape"
+            android:launchMode="singleTop" />
 
         <activity
             android:name=".CalibrationActivity"

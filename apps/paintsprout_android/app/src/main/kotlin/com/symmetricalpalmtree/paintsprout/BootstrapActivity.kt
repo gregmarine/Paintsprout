@@ -1,0 +1,287 @@
+package com.symmetricalpalmtree.paintsprout
+
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.Typeface
+import android.os.Bundle
+import android.text.InputType
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.view.inputmethod.EditorInfo
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
+import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
+import com.google.android.material.button.MaterialButton
+import com.symmetricalpalmtree.paintsprout.data.LastOpen
+import com.symmetricalpalmtree.paintsprout.data.index.IndexGate
+import com.symmetricalpalmtree.paintsprout.data.index.IndexStatus
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
+
+/**
+ * The gate the app opens through.
+ *
+ * Nothing may read the index before it is open, and opening it can be slow
+ * (a key derivation), interactive (an unlock prompt) or a first run (a key to
+ * mint and show). This screen is where all of that is visible, so that no other
+ * screen has to know about any of it.
+ *
+ * A failure here shows an error with a Retry button and never a crash — a
+ * launcher activity that crashes on start is a loop the user cannot escape, and
+ * the thing it would be looping on is their entire library.
+ */
+class BootstrapActivity : AppCompatActivity() {
+
+    private lateinit var root: LinearLayout
+    private lateinit var title: TextView
+    private lateinit var message: TextView
+    private lateinit var spinner: ProgressBar
+    private lateinit var passphrase: EditText
+    private lateinit var primary: MaterialButton
+    private lateinit var secondary: MaterialButton
+
+    private var countdown: kotlinx.coroutines.Job? = null
+
+    /** Added once; [render] can run more than once for the same state. */
+    private var keyView: TextView? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // Deliberately NOT edge-to-edge, unlike the canvas screens. This one has a
+        // text field, and with the decor fitting insets normally the soft keyboard
+        // resizes the layout instead of covering the Unlock button — which is
+        // exactly what it did on the first device run.
+        setContentView(buildUi())
+
+        lifecycleScope.launch {
+            render(IndexGate.ensureReady(this@BootstrapActivity))
+        }
+    }
+
+    // --- States -------------------------------------------------------------
+
+    private fun render(status: IndexStatus) {
+        countdown?.cancel()
+        when (status) {
+            is IndexStatus.Starting -> showBusy()
+            is IndexStatus.Ready -> onReady()
+            is IndexStatus.NeedsUnlock -> showUnlock(status.lockedUntil)
+            is IndexStatus.Failed -> showFailure(status.cause)
+        }
+    }
+
+    private fun showBusy() {
+        title.text = getString(R.string.bootstrap_opening)
+        message.visibility = View.GONE
+        spinner.visibility = View.VISIBLE
+        passphrase.visibility = View.GONE
+        primary.visibility = View.GONE
+        secondary.visibility = View.GONE
+    }
+
+    private fun onReady() {
+        val key = IndexGate.pendingRecoveryKey(this)
+        if (key != null) showRecoveryKey(key) else route()
+    }
+
+    /**
+     * Shown until the user says they have written it down, and shown again on
+     * every launch until then — this string is the only way back into the library
+     * on another device or after a reinstall, and it is minted without ever asking
+     * for anything.
+     */
+    private fun showRecoveryKey(key: String) {
+        title.text = getString(R.string.bootstrap_recovery_title)
+        message.text = getString(R.string.bootstrap_recovery_body)
+        message.visibility = View.VISIBLE
+        spinner.visibility = View.GONE
+        passphrase.visibility = View.GONE
+
+        if (keyView == null) {
+            keyView = TextView(this).apply {
+                text = key
+                typeface = Typeface.MONOSPACE
+                textSize = 20f
+                setTextColor(Color.BLACK)
+                gravity = Gravity.CENTER
+                setPadding(pad(20), pad(20), pad(20), pad(20))
+                setBackgroundColor(0xFFF2F0EA.toInt())
+                setTextIsSelectable(true)
+            }
+            root.addView(keyView, root.indexOfChild(primary), lp())
+        }
+
+        primary.visibility = View.VISIBLE
+        primary.text = getString(R.string.bootstrap_recovery_written)
+        primary.setOnClickListener {
+            IndexGate.acknowledgeRecoveryKey(this)
+            route()
+        }
+        secondary.visibility = View.VISIBLE
+        secondary.text = getString(R.string.bootstrap_recovery_copy)
+        secondary.setOnClickListener {
+            val clip = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clip.setPrimaryClip(ClipData.newPlainText("", key))
+            secondary.text = getString(R.string.bootstrap_recovery_copied)
+        }
+    }
+
+    private fun showUnlock(lockedUntil: Long) {
+        title.text = getString(R.string.bootstrap_unlock_title)
+        message.text = getString(R.string.bootstrap_unlock_body)
+        message.visibility = View.VISIBLE
+        spinner.visibility = View.GONE
+        passphrase.visibility = View.VISIBLE
+        secondary.visibility = View.GONE
+        primary.visibility = View.VISIBLE
+        primary.text = getString(R.string.bootstrap_unlock_action)
+        primary.setOnClickListener { attemptUnlock() }
+
+        if (lockedUntil > System.currentTimeMillis()) startCountdown(lockedUntil) else clearLockout()
+    }
+
+    private fun attemptUnlock() {
+        val entered = passphrase.text.toString()
+        if (entered.isEmpty()) return
+        showBusy()
+        lifecycleScope.launch {
+            val result = IndexGate.unlock(this@BootstrapActivity, entered)
+            render(result)
+            if (result is IndexStatus.NeedsUnlock) {
+                passphrase.setText("")
+                // A lockout has its own countdown message; a plain wrong answer
+                // says so, rather than repeating the neutral instructions.
+                if (result.lockedUntil <= System.currentTimeMillis()) {
+                    message.text = getString(R.string.bootstrap_unlock_wrong)
+                }
+            }
+        }
+    }
+
+    /** Counts the lockout down in place rather than leaving a dead button. */
+    private fun startCountdown(until: Long) {
+        primary.isEnabled = false
+        passphrase.isEnabled = false
+        countdown = lifecycleScope.launch {
+            while (true) {
+                val remaining = until - System.currentTimeMillis()
+                if (remaining <= 0) break
+                message.text = getString(R.string.bootstrap_locked, formatRemaining(remaining))
+                delay(500)
+            }
+            clearLockout()
+            message.text = getString(R.string.bootstrap_unlock_body)
+        }
+    }
+
+    private fun clearLockout() {
+        primary.isEnabled = true
+        passphrase.isEnabled = true
+    }
+
+    private fun formatRemaining(ms: Long): String {
+        val totalSeconds = (ms / 1000.0).roundToInt().coerceAtLeast(1)
+        val minutes = totalSeconds / 60
+        val seconds = totalSeconds % 60
+        return if (minutes > 0) "${minutes}m ${seconds}s" else "${seconds}s"
+    }
+
+    private fun showFailure(cause: Throwable) {
+        title.text = getString(R.string.bootstrap_failed_title)
+        // The message, not a stack trace: this is a screen a user reads. Nothing
+        // here can name a key or a passphrase — none of those exceptions carry one.
+        message.text = cause.message ?: cause::class.java.simpleName
+        message.visibility = View.VISIBLE
+        spinner.visibility = View.GONE
+        passphrase.visibility = View.GONE
+        secondary.visibility = View.GONE
+        primary.visibility = View.VISIBLE
+        primary.text = getString(R.string.bootstrap_retry)
+        primary.setOnClickListener {
+            showBusy()
+            lifecycleScope.launch { render(IndexGate.retry(this@BootstrapActivity)) }
+        }
+    }
+
+    // --- Routing ------------------------------------------------------------
+
+    /**
+     * Back to wherever the user was.
+     *
+     * The pointer is a hint, and Phase 12 is what teaches this to resolve a
+     * sketchbook page; until documents exist, every route lands on the editor.
+     * The fallback becomes the library in Phase 14.
+     */
+    private fun route() {
+        LastOpen.load(this) // resolved for real once documents exist
+        startActivity(Intent(this, MainActivity::class.java))
+        finish()
+    }
+
+    // --- Chrome -------------------------------------------------------------
+
+    private fun buildUi(): View {
+        title = TextView(this).apply {
+            textSize = 24f
+            setTextColor(Color.BLACK)
+            gravity = Gravity.CENTER
+        }
+        message = TextView(this).apply {
+            textSize = 15f
+            setTextColor(0xFF5A5F63.toInt())
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+        }
+        spinner = ProgressBar(this).apply { isIndeterminate = true }
+        passphrase = EditText(this).apply {
+            hint = getString(R.string.bootstrap_unlock_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+            // Submitting from the keyboard is the natural gesture here, and it also
+            // means the flow never depends on the button being reachable.
+            imeOptions = EditorInfo.IME_ACTION_GO
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_GO && primary.isEnabled) {
+                    attemptUnlock()
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+        primary = MaterialButton(this).apply { visibility = View.GONE }
+        secondary = MaterialButton(this, null, com.google.android.material.R.attr.borderlessButtonStyle)
+            .apply { visibility = View.GONE }
+
+        root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(pad(48), pad(48), pad(48), pad(48))
+            addView(title, lp())
+            addView(message, lp(topMargin = pad(12)))
+            addView(spinner, lp(topMargin = pad(24)).also { it.gravity = Gravity.CENTER })
+            addView(passphrase, lp(topMargin = pad(24)))
+            addView(primary, lp(topMargin = pad(24)))
+            addView(secondary, lp(topMargin = pad(4)))
+        }
+        return root
+    }
+
+    private fun lp(topMargin: Int = 0) = LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+    ).apply {
+        gravity = Gravity.CENTER_HORIZONTAL
+        this.topMargin = topMargin
+    }
+
+    private fun pad(dp: Int): Int = (dp * resources.displayMetrics.density).roundToInt()
+}

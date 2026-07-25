@@ -1,4 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Paintsprout</string>
+
+    <!-- Bootstrap: opening the library -->
+    <string name="bootstrap_opening">Opening your library…</string>
+
+    <string name="bootstrap_recovery_title">Your recovery key</string>
+    <string name="bootstrap_recovery_body">Your work is encrypted. This key is the only way to open your library on another device, or after reinstalling. Write it down somewhere safe — nobody can recover it for you.</string>
+    <string name="bootstrap_recovery_written">I\'ve written it down</string>
+    <string name="bootstrap_recovery_copy">Copy</string>
+    <string name="bootstrap_recovery_copied">Copied</string>
+
+    <string name="bootstrap_unlock_title">Unlock Paintsprout</string>
+    <string name="bootstrap_unlock_body">Enter your recovery key or passphrase to open your library.</string>
+    <string name="bootstrap_unlock_wrong">That didn\'t open the library. Try again.</string>
+    <string name="bootstrap_unlock_hint">Recovery key or passphrase</string>
+    <string name="bootstrap_unlock_action">Unlock</string>
+    <string name="bootstrap_locked">Too many attempts. Try again in %1$s.</string>
+
+    <string name="bootstrap_failed_title">Couldn\'t open your library</string>
+    <string name="bootstrap_retry">Try again</string>
 </resources>
