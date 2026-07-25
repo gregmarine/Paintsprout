@@ -137,6 +137,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pagesBtn: TextView
     private lateinit var scratchBtn: ImageButton
     private lateinit var canvasSizeBtn: ImageButton
+    private lateinit var copyBtn: ImageButton
+    private lateinit var pasteBtn: ImageButton
+
+    /**
+     * How many marks are on the clipboard, as far as the rail knows.
+     *
+     * Cached rather than queried while drawing the rail: the clipboard lives in
+     * the index database, and `updateRail` runs on every stroke, every undo and
+     * every tool change. Refreshed when it can actually have changed.
+     */
+    private var clipboardCount = 0
 
     /** The document being painted into, once it has finished opening. */
     private var session: DocumentSession? = null
@@ -281,6 +292,7 @@ class MainActivity : AppCompatActivity() {
             binding.canvas.onBrushLoadChanged = { recordPalette() }
             binding.canvas.onPageTurn = ::turnPage
             refreshPageLabel()
+            refreshClipboard()
         }
     }
 
@@ -424,6 +436,65 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Copies what the selection wholly encloses.
+     *
+     * The count is reported because a copy that took nothing looks exactly like
+     * one that worked: whole ops are copied, so a selection whose strokes all
+     * cross its edge encloses no *marks* however much paint it covers.
+     */
+    private fun copySelection() {
+        val open = session ?: return
+        val (mask, scale) = binding.canvas.selectionSnapshot() ?: return
+        lifecycleScope.launch {
+            val count = runCatching { open.copySelection(mask, scale) }.getOrDefault(0)
+            mask.recycle()
+            clipboardCount = count
+            updateRail()
+            Snackbar.make(
+                binding.root,
+                if (count > 0) {
+                    resources.getQuantityString(R.plurals.editor_copied, count, count)
+                } else {
+                    getString(R.string.editor_copied_nothing)
+                },
+                Snackbar.LENGTH_SHORT,
+            ).show()
+        }
+    }
+
+    /**
+     * Pastes the clipboard onto this page, where the marks were.
+     *
+     * Told rather than shown, because a paste back onto the page it came from
+     * lands exactly on top of the original and is otherwise invisible.
+     */
+    private fun paste() {
+        val open = session ?: return
+        lifecycleScope.launch {
+            val ops = runCatching { open.clipboardOps() }.getOrDefault(emptyList())
+            if (ops.isEmpty()) {
+                clipboardCount = 0
+                updateRail()
+                return@launch
+            }
+            binding.canvas.pasteOps(ops)
+            Snackbar.make(
+                binding.root,
+                resources.getQuantityString(R.plurals.editor_pasted, ops.size, ops.size),
+                Snackbar.LENGTH_SHORT,
+            ).show()
+        }
+    }
+
+    private fun refreshClipboard() {
+        val open = session ?: return
+        lifecycleScope.launch {
+            clipboardCount = runCatching { open.clipboardCount() }.getOrDefault(0)
+            updateRail()
+        }
+    }
+
     private fun refreshPageLabel() {
         val open = session ?: return
         lifecycleScope.launch {
@@ -536,9 +607,13 @@ class MainActivity : AppCompatActivity() {
         fillBtn = iconButton(R.drawable.ic_fill, "Fill selection") { binding.canvas.fillSelection(color) }
         eraseBtn = iconButton(R.drawable.ic_erase_sel, "Erase inside selection") { binding.canvas.deleteSelection() }
         deselectBtn = iconButton(R.drawable.ic_deselect, "Deselect") { binding.canvas.clearSelection() }
+        copyBtn = iconButton(R.drawable.ic_copy, "Copy selection") { copySelection() }
+        pasteBtn = iconButton(R.drawable.ic_paste, "Paste") { paste() }
         rail.addView(fillBtn)
         rail.addView(eraseBtn)
+        rail.addView(copyBtn)
         rail.addView(deselectBtn)
+        rail.addView(pasteBtn)
 
         lineDoneBtn = iconButton(R.drawable.ic_done, "Finish shape") { binding.canvas.commitPendingShape() }
         rail.addView(lineDoneBtn)
@@ -663,6 +738,10 @@ class MainActivity : AppCompatActivity() {
         fillBtn.visibility = selVis
         eraseBtn.visibility = selVis
         deselectBtn.visibility = selVis
+        copyBtn.visibility = selVis
+        // Paste does not need a selection — it needs something on the clipboard,
+        // which may have been put there in another book, or last week.
+        pasteBtn.visibility = if (clipboardCount > 0) View.VISIBLE else View.GONE
         fillBtn.imageTintList = android.content.res.ColorStateList.valueOf(color)
 
         lineDoneBtn.visibility =

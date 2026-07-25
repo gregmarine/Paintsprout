@@ -5,6 +5,7 @@ import com.symmetricalpalmtree.paintsprout.crypto.KeyScope
 import com.symmetricalpalmtree.paintsprout.data.SchemaSql
 import com.symmetricalpalmtree.paintsprout.data.SoilFiles
 import com.symmetricalpalmtree.paintsprout.data.index.IndexGate
+import com.symmetricalpalmtree.paintsprout.data.index.Sentinels
 import com.symmetricalpalmtree.paintsprout.data.soil.codec.Params
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -14,6 +15,7 @@ import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
+import com.symmetricalpalmtree.paintsprout.paint.PasteOp
 import com.symmetricalpalmtree.paintsprout.paint.Pot
 import com.symmetricalpalmtree.paintsprout.paint.Recipe
 import com.symmetricalpalmtree.paintsprout.paint.StrokeOp
@@ -188,12 +190,48 @@ class DocumentSession private constructor(
                 repo.appendOp(layerId, OpRows.moveRow(matrix, it, DOWNSAMPLE))
             }
 
+            // One row on the timeline, with the pasted ops beneath it — so undo
+            // takes the whole paste back, which is what a paste is.
+            is PasteOp -> {
+                val parent = repo.appendOp(layerId, OpRows.pasteRow(op.ops.size))
+                op.ops.forEachIndexed { i, child -> writeUnder(parent.id, child, i) }
+            }
+
             // Only the op. The page row holds the surface the page was *created*
             // on and is never rewritten — see SketchbookRepository.resolvedSurface.
             // Caching the current surface there instead looked obviously right and
             // was wrong: undoing a surface change moved the history and left the
             // cached answer behind, so the page reloaded on the wrong paper.
             is SurfaceOp -> repo.appendOp(layerId, OpRows.surfaceRow(op))
+        }
+    }
+
+    /**
+     * An op stored as somebody else's child rather than as a step of its own.
+     *
+     * Only a paste does this. A paste of a paste is refused rather than nested:
+     * the clipboard flattens on copy, so this cannot arise from the app, and a
+     * file that claims otherwise gets one level and no recursion.
+     */
+    private fun writeUnder(parentId: String, op: PaintOp, order: Int) {
+        when (op) {
+            is StrokeOp -> {
+                val row = repo.attach(parentId, OpRows.strokeRow(op.stroke).copy(order = order))
+                op.clip?.let { clip ->
+                    maskOf(clip)?.let { repo.attach(row.id, OpRows.clipRow(it, DOWNSAMPLE)) }
+                }
+                OpRows.wetStateRow(op.stroke)?.let { repo.attach(row.id, it) }
+            }
+
+            is FillOp -> maskOf(op.mask)?.let {
+                repo.attach(parentId, OpRows.fillRow(op.color, it, DOWNSAMPLE).copy(order = order))
+            }
+
+            is EraseOp -> maskOf(op.mask)?.let {
+                repo.attach(parentId, OpRows.eraseRow(it, DOWNSAMPLE).copy(order = order))
+            }
+
+            is MoveOp, is PasteOp, is SurfaceOp -> Unit
         }
     }
 
@@ -241,10 +279,19 @@ class DocumentSession private constructor(
             val committedRows = repo.committedOps(layerId)
             val undoneRows = repo.redoableOps(layerId)
             val attachments = repo.attachmentsOf((committedRows + undoneRows).map { it.id })
-                .groupBy { it.parentId }
+            // A paste's children are ops, which have children of their own — one
+            // level deeper than anything else on the timeline. Fetched only when
+            // there is a paste to fetch it for, so an ordinary page still loads in
+            // two queries.
+            val nested = if (attachments.any { it.type in SoilType.OPS }) {
+                repo.attachmentsOf(attachments.map { it.id })
+            } else {
+                emptyList()
+            }
+            val children = (attachments + nested).groupBy { it.parentId }
 
             fun rebuild(rows: List<SoilObject>) =
-                rows.mapNotNull { OpRows.readOp(it, attachments[it.id].orEmpty()) }
+                rows.mapNotNull { OpRows.readOp(it) { id -> children[id].orEmpty() } }
 
             PageSnapshot(
                 // The size is the book's, not the page's: a sketchbook is bought
@@ -298,6 +345,88 @@ class DocumentSession private constructor(
                 }
                 repo.writeCache(layerId, bytes, paint.width.toFloat(), paint.height.toFloat())
             }
+        }
+    }
+
+    // --- The clipboard ------------------------------------------------------
+
+    /**
+     * Copies the ops wholly inside [selection] onto the clipboard.
+     *
+     * Whole ops, not pixels — see [Clipboard]. [selection] is the live selection
+     * mask, and [maskScale] how many buffer pixels one of its pixels covers; the
+     * enclosure test happens in buffer coordinates because that is what the rows
+     * are in.
+     *
+     * Returns how many marks were taken, so the caller can say so: a copy that
+     * silently took nothing (because every stroke crossed the edge) is otherwise
+     * indistinguishable from one that worked.
+     */
+    suspend fun copySelection(selection: Bitmap, maskScale: Float): Int =
+        withContext(Dispatchers.IO) {
+            lock.withLock {
+                runCatching { flushNow() }
+                val bounds = maskBounds(selection, maskScale) ?: return@withLock 0
+                val inside = sampler(selection, maskScale)
+
+                val rows = repo.committedOps(layerId)
+                val children = repo.attachmentsOf(rows.map { it.id })
+                // An earlier paste is opened up rather than treated as one mark:
+                // the clipboard stays one level deep, and lassoing half of what
+                // you pasted copies that half.
+                val candidates = rows.flatMap { row ->
+                    if (row.type == SoilType.PASTE) children.filter { it.parentId == row.id } else listOf(row)
+                }
+                val taken = candidates.filter { row ->
+                    // A move is deliberately not copyable: it lifts whatever paint
+                    // is under it *at replay time*, so pasted into another book it
+                    // would move that book's paint, not the mark it was copied for.
+                    row.type != SoilType.MOVE &&
+                        Enclosure.shapeOf(row)?.let { Enclosure.encloses(it, bounds, inside) } == true
+                }
+                if (taken.isEmpty()) return@withLock 0
+
+                val subtree = taken + repo.attachmentsOf(taken.map { it.id })
+                Clipboard.replace(subtree, taken.map { it.id }, documentId)
+                taken.size
+            }
+        }
+
+    /**
+     * The clipboard's contents, as ops this page can replay. Empty when there is
+     * nothing to paste, or when nothing on it could be read.
+     */
+    suspend fun clipboardOps(): List<PaintOp> = withContext(Dispatchers.IO) {
+        val rows = Clipboard.contents()
+        val children = rows.groupBy { it.parentId }
+        rows.filter { it.parentId == Sentinels.CLIPBOARD_ROOT_ID }
+            .sortedBy { it.order }
+            .mapNotNull { row -> OpRows.readOp(row) { id -> children[id].orEmpty() } }
+    }
+
+    suspend fun clipboardCount(): Int = runCatching { Clipboard.summary().count }.getOrDefault(0)
+
+    /** The selection's extent in buffer pixels, or null when nothing is selected. */
+    private fun maskBounds(mask: Bitmap, scale: Float): Enclosure.Box? {
+        val cropped = runCatching { MaskBitmaps.encode(mask) }.getOrNull() ?: return null
+        return Enclosure.Box(
+            cropped.left * scale,
+            cropped.top * scale,
+            (cropped.left + cropped.mask.width) * scale,
+            (cropped.top + cropped.mask.height) * scale,
+        )
+    }
+
+    /** Reads the mask once, so the enclosure test is not a bitmap call per point. */
+    private fun sampler(mask: Bitmap, scale: Float): (Float, Float) -> Boolean {
+        val w = mask.width
+        val h = mask.height
+        val pixels = IntArray(w * h)
+        mask.getPixels(pixels, 0, w, 0, 0, w, h)
+        return { x, y ->
+            val mx = (x / scale).toInt()
+            val my = (y / scale).toInt()
+            mx in 0 until w && my in 0 until h && (pixels[my * w + mx] ushr 24) > COVERAGE_FLOOR
         }
     }
 
@@ -484,6 +613,14 @@ class DocumentSession private constructor(
 
         /** Page-strip thumbnails; small enough that ten of them cost nothing. */
         const val THUMBNAIL_EDGE = 240
+
+        /**
+         * How much of a mask pixel counts as selected, when deciding whether a
+         * mark is inside it. Above zero because a lasso's edge is antialiased and
+         * its outermost pixels are a few percent covered — a stroke sitting on
+         * that fringe is on the line the user drew, not inside it.
+         */
+        const val COVERAGE_FLOOR = 24
 
         /**
          * Masks are captured at half resolution and stretched at paint time, so

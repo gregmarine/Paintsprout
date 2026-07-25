@@ -110,6 +110,12 @@ object SoilType {
     const val MOVE = "move"
     const val SURFACE_OP = "surface_op"
 
+    /**
+     * A clipboard paste: one step in the timeline, holding the pasted ops as
+     * child rows. The only op type with ops beneath it.
+     */
+    const val PASTE = "paste"
+
     // Attached to a stroke
     const val STROKE_CLIP = "stroke_clip"
     const val WET_STATE = "wet_state"
@@ -128,7 +134,7 @@ object SoilType {
     const val SHAPE = "shape"
 
     /** Every op type, in the sense of "appears in a layer's undo timeline". */
-    val OPS = setOf(STROKE, FILL, ERASE, MOVE, SURFACE_OP)
+    val OPS = setOf(STROKE, FILL, ERASE, MOVE, SURFACE_OP, PASTE)
 }
 
 /** Per-type bitfields. */

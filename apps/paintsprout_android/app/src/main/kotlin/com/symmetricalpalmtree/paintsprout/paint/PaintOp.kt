@@ -31,6 +31,21 @@ class StrokeOp(val stroke: Stroke, val clip: Bitmap? = null) : PaintOp() {
     }
 }
 
+/**
+ * A clipboard paste: the copied ops, replayed in order as **one** step.
+ *
+ * A composite rather than a run of siblings, and that is the whole reason it
+ * exists: a paste of thirty marks that takes thirty presses to undo is not one
+ * paste, it is thirty. Everything else about it is delegation — it renders by
+ * replaying its children, and it stores as a parent row with theirs beneath it,
+ * which is the shape the container already uses for a stroke and its frisket.
+ */
+class PasteOp(val ops: List<PaintOp>) : PaintOp() {
+    override fun recycle() {
+        ops.forEach { it.recycle() }
+    }
+}
+
 /** Fills a magic-wand region with [color], broken up by the surface tooth. */
 class FillOp(val mask: Bitmap, @param:ColorInt val color: Int) : PaintOp() {
     override fun recycle() {

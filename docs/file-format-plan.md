@@ -616,7 +616,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 17 | Multi-page UI: page strip, add/duplicate/delete/reorder | **yes** | ✅ |
 | 18 | Scratchpad | **yes** | ✅ |
 | 19 | Lasso tool | **yes** | ✅ |
-| 20 | Clipboard: copy/paste whole objects | **yes** | ⬜ |
+| 20 | Clipboard: copy/paste whole objects | **yes** | ✅ |
 | 21 | Send to scratchpad / send to sketchbook | **yes** | ⬜ |
 | 22 | Export `.soil` + `notebook_meta` upkeep | **yes** | ⬜ |
 | 23 | Import `.soil` | **yes** | ⬜ |
@@ -1596,12 +1596,67 @@ circle.
 | A straight drag selects nothing | ✅ selection cleared, no mark drawn |
 | Available in both surfaces | ✅ scratchpad rail (6 tools) and sketchbook rail (13) |
 
-## Phase 20 — Clipboard 🧪
+## Phase 20 — Clipboard ✅ 🧪
 Copy ops wholly inside the selection into the `clipboard` table (fresh ids), paste into any page
 with fresh ids as one undoable unit, cross-document and cross-surface. Clipboard survives process
 death; a corrupt clipboard item is dropped per item, never thrown at launch.
 **Device test:** copy in a sketchbook → paste in the scratchpad and in another book; paste the same
 clipboard twice (the id-remap test that broke Notesprout).
+
+**As built.** The clipboard holds **ops, not pixels** — the same universal object rows a page holds,
+in the index's own `clipboard` table — which is what makes pasting into another book, or into the
+scratchpad, ordinary code rather than a translation layer. A mark stays a mark instead of becoming a
+picture of one. 459 tests.
+
+- **A paste is one op with ops beneath it.** `PasteOp` is the first composite on the timeline, and it
+  exists for one reason: a paste of thirty marks that takes thirty presses to undo is not one paste.
+  It renders by replaying its children and stores as a parent row with theirs under it — the shape
+  the container already uses for a stroke and its frisket, one level deeper. `load()` fetches that
+  level only when a paste is actually there, so an ordinary page still opens in two queries.
+- **Copy takes whole ops, so what counts as "inside" is the whole question.**
+  [`Enclosure`](../apps/paintsprout_android/app/src/main/kotlin/com/symmetricalpalmtree/paintsprout/data/soil/Enclosure.kt)
+  judges a stroke against **its own points**, not its bounding box — an S drawn corner to corner
+  spans a box far larger than the mark, and a lasso can hold the mark without holding the box — and
+  carries the mark's *width*, so a spine inside the loop whose edge spills over is not enclosed. A
+  region op has no path, so its box corners stand in: exact for a convex selection, generous for a
+  concave one, and generous is the side to err on. A mark that came along is visible and undoable; a
+  mark that stayed behind is discovered later, in another document.
+- **A move is deliberately not copyable.** It lifts whatever paint is under it *at replay time*, so
+  pasted into another book it would move that book's paint rather than the mark it was copied for.
+- **An earlier paste is opened up on copy**, not treated as one mark, so the clipboard stays one
+  level deep and lassoing half of what you pasted copies that half.
+- **The clipboard root doubles as its metadata** — source document, count, copied-at. Ids and counts
+  only: a preview image there would be content, cached under the global key, for something the user
+  has merely copied.
+- **Clearing is a hard delete.** Nothing undoes a copy, and a tombstoned clipboard would carry every
+  selection ever copied for the life of the install.
+- **Told, not shown.** Copy and paste both report a count, because a paste back onto the page it came
+  from lands exactly on the original and is otherwise invisible — and a copy that took *nothing*
+  (every stroke crossing the edge) looks exactly like one that worked.
+
+### The selection that outlived its page
+
+The rail went on offering Fill, Erase and Copy after switching from a sketchbook to the scratchpad —
+for a selection made in a book two documents ago. `reconfigureBuffers` had been destroying the mask
+all along, correctly; what it never did was **say so**, so the editor's flag and the canvas's state
+disagreed and the toolbar believed a region existed that had already been recycled.
+
+The fix is in `clearSelectionState`, which now announces: whoever cleared it, the rail hears about
+it. A selection belongs to the page it was drawn on — its mask is in that page's buffer — so
+`restore()` drops it on every page switch too. This one predates the clipboard; copy is just what
+made it visible, because Copy is the first button that would have acted on nothing.
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| Copy in a sketchbook | ✅ **"Copied 2 marks"** — the two strokes inside the loop, not the two crossing it |
+| Paste into the scratchpad | ✅ same canvas coordinates, cross-document |
+| **Paste the same clipboard twice** | ✅ **no `UNIQUE` failure** — both pastes real |
+| One paste, one undo | ✅ undo → one paste's worth left; undo again → none; redo → a whole paste back |
+| Paste into another book | ✅ landed in the second sketchbook, then undone in one press |
+| Clipboard survives process death | ✅ force-stop and cold launch, Paste still offered and still works |
+| Stale selection after a page switch | ❌ **rail still offered Copy** — fixed, then ✅ buttons clear on a page turn |
 
 ## Phase 21 — Send to scratchpad / send to sketchbook 🧪
 Whole-page transfer both directions with a target picker, carrying the surface across.

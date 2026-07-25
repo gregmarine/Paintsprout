@@ -36,6 +36,7 @@ import com.symmetricalpalmtree.paintsprout.paint.LassoLoop
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
 import com.symmetricalpalmtree.paintsprout.paint.PageTurn
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
+import com.symmetricalpalmtree.paintsprout.paint.PasteOp
 import com.symmetricalpalmtree.paintsprout.paint.PigmentMixer
 import com.symmetricalpalmtree.paintsprout.paint.SelectionRender
 import com.symmetricalpalmtree.paintsprout.paint.Stroke
@@ -3698,6 +3699,10 @@ class PaintCanvasView @JvmOverloads constructor(
                     cur.recycle()
                     cur = out
                 }
+                // A paste replays what it holds, in order — it is one step in the
+                // history and a list of marks on the paint layer.
+                is PasteOp -> cur = foldOps(cur, op.ops)
+
                 // Surface changes don't touch the paint layer; the surface state is
                 // resolved separately (see syncSurfaceToHistory).
                 is SurfaceOp -> {}
@@ -3764,6 +3769,11 @@ class PaintCanvasView @JvmOverloads constructor(
             return
         }
         pendingRestore = null
+
+        // A selection belongs to the page it was drawn on: its mask is in that
+        // page's buffer, and carrying it to the next one leaves marching ants
+        // around nothing and a frisket clipping the next stroke drawn there.
+        clearSelectionState()
 
         for (op in committed) op.recycle()
         for (op in redoStack) op.recycle()
@@ -3991,6 +4001,34 @@ class PaintCanvasView @JvmOverloads constructor(
             flushPending()
             val mask = selectionMask ?: return@launch
             applyCommittedOp(EraseOp(mask.copy(Bitmap.Config.ARGB_8888, false)))
+        }
+    }
+
+    /**
+     * The live selection mask, as an independent copy, or null when there is none.
+     *
+     * A copy because the caller reads it off the UI thread — the selection can be
+     * cleared or replaced while a copy is being written — and the scale factor
+     * comes with it, since a mask on its own does not say what it is a mask *of*.
+     */
+    fun selectionSnapshot(): Pair<Bitmap, Float>? {
+        val mask = selectionMask ?: return null
+        return mask.copy(Bitmap.Config.ARGB_8888, false) to (bufW.toFloat() / mask.width)
+    }
+
+    /**
+     * Lays pasted ops onto the paint layer as **one** committed step.
+     *
+     * They arrive already decoded, at the coordinates they were copied from — a
+     * paste lands where the marks were, which is what makes copying between two
+     * pages of the same book, or two books the same size, mean anything.
+     */
+    fun pasteOps(ops: List<PaintOp>) {
+        if (ops.isEmpty()) return
+        scope.launch {
+            commitFloating()
+            flushPending()
+            applyCommittedOp(PasteOp(ops))
         }
     }
 
@@ -4286,7 +4324,18 @@ class PaintCanvasView @JvmOverloads constructor(
         if (!hasSelection) antsAnimator.cancel()
     }
 
+    /**
+     * Drops the selection and any half-made shape, and **says so**.
+     *
+     * The announcement is the load-bearing part. Every path that resizes the
+     * buffers already came through here, so the mask was being destroyed while
+     * whoever draws the toolbar still believed there was a selection — offering
+     * Fill, Erase and Copy for a region that no longer existed. Found on device
+     * after a page switch: the rail kept offering to copy a selection made in a
+     * book two documents ago.
+     */
     private fun clearSelectionState() {
+        val had = hasSelection
         selectionMask?.recycle()
         selectionMask = null
         discardFloating()
@@ -4296,6 +4345,7 @@ class PaintCanvasView @JvmOverloads constructor(
         discardPendingPolyarc()
         selRect.setEmpty()
         antsAnimator.cancel()
+        if (had) onSelectionChanged?.invoke(false)
     }
 
     // --- Watercolor (from Stage 4b) -----------------------------------------

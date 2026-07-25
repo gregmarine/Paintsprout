@@ -11,6 +11,7 @@ import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
+import com.symmetricalpalmtree.paintsprout.paint.PasteOp
 import com.symmetricalpalmtree.paintsprout.paint.StrokeOp
 import com.symmetricalpalmtree.paintsprout.paint.Recipe
 import com.symmetricalpalmtree.paintsprout.paint.Stroke
@@ -224,10 +225,22 @@ object OpRows {
      * Rebuilds one op, or returns null if its payload is unreadable.
      *
      * Null is a dropped op, never a failed page: one damaged blob costs the mark
-     * it describes and nothing else. [attachments] are the op's own children,
-     * already fetched in a batch by the caller rather than one query per op.
+     * it describes and nothing else. [childrenOf] answers with an op's own child
+     * rows and is expected to be backed by a batch the caller already fetched,
+     * rather than a query per op.
      */
-    fun readOp(row: SoilObject, attachments: List<SoilObject>): PaintOp? = when (row.type) {
+    fun readOp(row: SoilObject, childrenOf: (String) -> List<SoilObject>): PaintOp? =
+        readOp(row, childrenOf(row.id), childrenOf)
+
+    /** The flat case: an op whose children are attachments, never other ops. */
+    fun readOp(row: SoilObject, attachments: List<SoilObject>): PaintOp? =
+        readOp(row, attachments) { emptyList() }
+
+    private fun readOp(
+        row: SoilObject,
+        attachments: List<SoilObject>,
+        childrenOf: (String) -> List<SoilObject>,
+    ): PaintOp? = when (row.type) {
         SoilType.STROKE -> readStroke(row)?.let { stroke ->
             attachments.firstOrNull { it.type == SoilType.WET_STATE }
                 ?.let(::readWetState)
@@ -257,10 +270,27 @@ object OpRows {
 
         SoilType.SURFACE_OP -> readSurfaceOp(row)
 
+        // The one op with ops beneath it. Each child is read on its own terms and
+        // a damaged one is dropped, so a paste of thirty marks survives losing
+        // one of them — the same rule as a page, one level down.
+        SoilType.PASTE -> PasteOp(
+            attachments
+                .sortedBy { it.order }
+                .mapNotNull { child -> readOp(child, childrenOf(child.id), childrenOf) },
+        )
+
         // A raster cache is not an op, and neither is anything a future build
         // adds that this one has not heard of. Skipping beats guessing.
         else -> null
     }
+
+    /** The parent row of a paste. It carries no payload of its own. */
+    fun pasteRow(count: Int): SoilObject = SoilObject(
+        id = "",
+        parentId = "",
+        type = SoilType.PASTE,
+        opCount = count,
+    )
 
     fun readSurfaceOp(row: SoilObject): SurfaceOp {
         val params = Params.decode(row.params)
