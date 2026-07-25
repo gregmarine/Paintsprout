@@ -53,6 +53,19 @@ class IndexRepository(
 
     suspend fun childCount(parentId: String?): Int = objects.countLiveChildren(parentId)
 
+    /** Every folder, for a move picker and for ancestry walks. */
+    suspend fun allFolders(): List<IndexObject> = objects.liveOfType(IndexType.FOLDER)
+
+    /**
+     * Whether a folder still holds anything.
+     *
+     * Deleting a folder is refused while it does. The alternative — a recursive
+     * delete — would put a user two taps from losing every sketchbook inside
+     * something they thought was empty, and the index cannot show them what is in
+     * there without them going and looking.
+     */
+    suspend fun isEmptyFolder(id: String): Boolean = childCount(id) == 0
+
     /**
      * Filename search. The `%`, `_` and `\` a user can type are literal characters
      * to them and wildcards to SQL; the query is escaped so they behave as typed.

@@ -24,6 +24,22 @@
     <!-- Library -->
     <string name="library_title">Sketchbooks</string>
     <string name="library_new">New</string>
+    <string name="library_new_sketchbook">New sketchbook</string>
+    <string name="library_new_folder">New folder</string>
+    <string name="library_folder">Folder</string>
+    <string name="library_root">Sketchbooks</string>
+    <string name="library_up">Up</string>
+    <string name="library_move">Move</string>
+    <string name="library_move_refused">A folder can\'t be moved inside itself</string>
+    <string name="library_folder_empty">This folder is empty.</string>
+    <string name="library_folder_not_empty">Move or delete what\'s inside first.</string>
+    <string name="library_search_hint">Search by name</string>
+    <string name="library_results">%1$d found</string>
+    <string name="library_no_results">Nothing matches that name.</string>
+    <string name="library_sort">Sort</string>
+    <string name="library_sort_name">Name</string>
+    <string name="library_sort_created">Recently created</string>
+    <string name="library_sort_updated">Recently updated</string>
     <string name="library_create">Create</string>
     <string name="library_empty">No sketchbooks yet. Make one and start painting.</string>
     <string name="library_name_hint">Name</string>

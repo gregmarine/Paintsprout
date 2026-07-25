@@ -611,7 +611,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 12 | Editor load — raster cache fast path, cross-session undo/redo | **yes** | ✅ |
 | 13 | Autosave, lifecycle, seal, crash safety | **yes** | ✅ |
 | 14 | Library screen (flat): create, open, rename, delete, covers | **yes** | ✅ |
-| 15 | Folders, move, sort, name search | **yes** | ⬜ |
+| 15 | Folders, move, sort, name search | **yes** | ✅ |
 | 16 | Pinned + recents | **yes** | ⬜ |
 | 17 | Multi-page UI: page strip, add/duplicate/delete/reorder | **yes** | ⬜ |
 | 18 | Scratchpad | **yes** | ⬜ |
@@ -1331,10 +1331,44 @@ so the New dialog asked for the size before the name. It is one custom view now,
 That "no cover" row is the dirty-tracking discipline showing up where it should: a book created and
 opened but never painted in writes no cover and does not move `updatedAt`.
 
-## Phase 15 — Folders, move, sort, search 🧪
+## Phase 15 — Folders, move, sort, search ✅ 🧪
 Folder rows, breadcrumb navigation, create/rename/delete folder (with a non-empty-folder policy),
 move sketchbook, sort by name/created/updated, name-only search across the library.
 **Device test:** nested folders, move in and out, search hits and misses.
+
+**As built.** `LibrarySort`, folder/move/search in `LibraryActivity`, `allFolders()` and
+`isEmptyFolder()` on the repository. 6 tests; 390 in the module.
+
+- **Deleting a folder is refused while anything is inside it.** A recursive delete would put someone
+  two taps from losing every sketchbook in a folder they believed was empty, and the card cannot show
+  them what is in there. Emptying it first is one more step and no ambiguity.
+- **Move refuses a cycle at the repository, not in the picker.** The destination list already
+  excludes the row itself, but `IndexRepository.move` checks `Ancestry.wouldCycle` regardless — a
+  cycle in the tree is something every ancestry walk afterwards has to survive, so it is not a thing
+  to leave to a list being built correctly.
+- **Sorting is applied in memory.** The index has no intrinsic sibling order — that is the documented
+  divergence from the document row — so listings sort at read time by whatever the user chose. If a
+  user-draggable tree ever arrives it wants an `"order"` column, not another sort mode.
+- **Search spans the whole library, not the current folder**, and matches names only. No document
+  content can reach the index by construction, so "search inside artwork" stays a deliberate future
+  decision rather than something that quietly becomes possible.
+- **Back walks up the tree** before it leaves the library, and clears an active search first.
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| Create a folder | ✅ `Studies`, listed before the books |
+| Move a sketchbook into it | ✅ `Harbour` left the root and appeared inside |
+| Breadcrumb and Up | ✅ `/ Studies`, Up shown only inside a folder |
+| Duplicate | ✅ `Harbour copy`, its own file and row |
+| Search across folders | ✅ `harb` → "2 found": the one inside `Studies` and the one at root |
+| Sort menu | ✅ persists as a setting (not a name) in the plaintext prefs |
+
+**One visible defect, found and fixed on glass.** The folder card used `🗀` (U+1F5C0), which is not
+in this device's system font and rendered as an empty tofu box. It is a vector drawable now. Worth
+remembering as a rule rather than a one-off: a Unicode glyph is a *font dependency*, and the target
+device is an e-ink-adjacent tablet with a minimal font set.
 
 ## Phase 16 — Pinned + recents 🧪
 `PINNED_LIST_ID` list with `list_item` child rows (hard-deleted on unpin, scrubbed on document
