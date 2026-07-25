@@ -71,6 +71,18 @@ object SoilCrypto {
         return canRead { CipherDb.openOrCreateDatabase(file, passphrase, null, null) }
     }
 
+    /**
+     * Does this file open with **no** key at all?
+     *
+     * The mirror of [verifyPassphrase], for the one state a document can be in
+     * that has no passphrase: decrypted on purpose. Same rule about a missing
+     * file — never true — for the same reason.
+     */
+    fun opensAsPlaintext(file: File): Boolean {
+        if (!existsAsDatabase(file)) return false
+        return DbProbe.probe(file) == DbState.PLAINTEXT
+    }
+
     /** As [verifyPassphrase], for a cached raw key. Verify before trusting one. */
     fun verifyRawKey(file: File, rawKey: ByteArray): Boolean {
         if (!existsAsDatabase(file)) return false

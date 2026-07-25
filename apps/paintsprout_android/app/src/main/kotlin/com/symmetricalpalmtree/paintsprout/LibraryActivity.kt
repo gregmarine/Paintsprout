@@ -30,6 +30,10 @@ import com.symmetricalpalmtree.paintsprout.data.index.IndexObject
 import com.symmetricalpalmtree.paintsprout.data.index.IndexType
 import com.symmetricalpalmtree.paintsprout.data.index.LibrarySort
 import android.net.Uri
+import com.symmetricalpalmtree.paintsprout.crypto.AttemptLimiter
+import com.symmetricalpalmtree.paintsprout.crypto.CryptoStores
+import com.symmetricalpalmtree.paintsprout.crypto.KeyRotation
+import com.symmetricalpalmtree.paintsprout.data.soil.DocumentKeying
 import com.symmetricalpalmtree.paintsprout.data.soil.ExportName
 import com.symmetricalpalmtree.paintsprout.data.soil.ImportPlan
 import com.symmetricalpalmtree.paintsprout.data.soil.SoilImport
@@ -215,11 +219,31 @@ class LibraryActivity : AppCompatActivity() {
             }
             contentDescription = book.name
         }
+        // A private-passphrase book has no cover here and never will — the index
+        // is encrypted with the *global* key, and a thumbnail of something the
+        // user locked separately would cross exactly the boundary they drew. So
+        // the card says "locked" instead of showing blank paper.
+        if (book.isPrivateScope) {
+            cover.setImageDrawable(null)
+            cover.setBackgroundColor(0xFFDCD8D0.toInt())
+        }
         // A drawable, not a glyph — this device's font has no pushpin, and Phase 15
         // already learned what that looks like.
         val top = android.widget.FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(200), dp(140))
             addView(cover)
+            if (book.isPrivateScope) {
+                addView(
+                    ImageView(this@LibraryActivity).apply {
+                        setImageResource(R.drawable.ic_lock)
+                        setPadding(dp(4), dp(4), dp(4), dp(4))
+                        imageTintList = android.content.res.ColorStateList.valueOf(0xFF6B7075.toInt())
+                        layoutParams = android.widget.FrameLayout.LayoutParams(dp(44), dp(44)).apply {
+                            gravity = Gravity.CENTER
+                        }
+                    },
+                )
+            }
             if (pinned) {
                 addView(
                     ImageView(this@LibraryActivity).apply {
@@ -282,7 +306,51 @@ class LibraryActivity : AppCompatActivity() {
 
     // --- Actions ------------------------------------------------------------
 
+    /**
+     * Opens a book, asking for its passphrase first when it has its own.
+     *
+     * The passphrase never travels: it is turned into a derived key held **in
+     * RAM only** for this process, which is what `NOTEBOOK` scope means, and the
+     * editor finds it there. Nothing about a private book is written anywhere the
+     * global key could reach it — not a cover, not a cached key, not a pointer.
+     */
     private fun open(book: IndexObject) {
+        if (!book.isPrivateScope) {
+            launchEditor(book)
+            return
+        }
+        val limiter = AttemptLimiter(CryptoStores.secrets(this))
+        if (limiter.isLocked(book.id)) {
+            val minutes = (limiter.remainingMs(book.id) / 60_000) + 1
+            toast(getString(R.string.import_locked, minutes))
+            return
+        }
+        val field = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(book.name)
+            .setMessage(R.string.keying_unlock_body)
+            .setView(padded(field))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.import_unlock) { _, _ ->
+                lifecycleScope.launch {
+                    val ok = runCatching {
+                        Sketchbooks.unlock(this@LibraryActivity, book.id, field.text.toString())
+                    }.getOrDefault(false)
+                    if (ok) {
+                        limiter.recordSuccess(book.id)
+                        launchEditor(book)
+                    } else {
+                        limiter.recordFailure(book.id)
+                        toast(getString(R.string.import_wrong_key))
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun launchEditor(book: IndexObject) {
         LastOpen.save(this, LastOpen.Pointer(LastOpen.Kind.SKETCHBOOK, book.id, null))
         startActivity(Intent(this, MainActivity::class.java))
     }
@@ -305,6 +373,7 @@ class LibraryActivity : AppCompatActivity() {
                         getString(R.string.library_move),
                         getString(R.string.library_duplicate),
                         getString(R.string.library_export),
+                        getString(R.string.library_keying),
                         getString(R.string.library_delete),
                     ),
                 ) { _, which ->
@@ -317,7 +386,8 @@ class LibraryActivity : AppCompatActivity() {
                         2 -> promptMove(book)
                         3 -> duplicate(book)
                         4 -> export(book)
-                        5 -> confirmDeleteBook(book)
+                        5 -> promptKeying(book)
+                        6 -> confirmDeleteBook(book)
                     }
                 }
                 .show()
@@ -460,6 +530,146 @@ class LibraryActivity : AppCompatActivity() {
             val name = IndexGate.awaitReady().byId(id)?.name ?: ready.meta.name
             toast(getString(R.string.import_done, name))
         }
+    }
+
+    // --- Encryption -----------------------------------------------------------
+
+    /**
+     * How this sketchbook is locked.
+     *
+     * Three real states rather than a switch, because "no encryption" is a choice
+     * with a use — a file another program can read — and hiding it behind a
+     * toggle labelled *off* would understate it. Each conversion is a
+     * `sqlcipher_export` round trip through the one shared helper.
+     */
+    private fun promptKeying(book: IndexObject) {
+        lifecycleScope.launch {
+            val current = DocumentKeying.current(book.id)
+            val options = listOf(
+                DocumentKeying.Keying.DEVICE to getString(R.string.keying_device),
+                DocumentKeying.Keying.PRIVATE to getString(R.string.keying_private),
+                DocumentKeying.Keying.NONE to getString(R.string.keying_none),
+            )
+            MaterialAlertDialogBuilder(this@LibraryActivity)
+                .setTitle(R.string.library_keying)
+                .setSingleChoiceItems(
+                    options.map { it.second }.toTypedArray(),
+                    options.indexOfFirst { it.first == current },
+                ) { dialog, which ->
+                    dialog.dismiss()
+                    val chosen = options[which].first
+                    if (chosen != current) beginKeying(book, current, chosen)
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+        }
+    }
+
+    /**
+     * Collects whatever passphrases the change needs, then makes it.
+     *
+     * The *current* one is asked for only when the book has its own — the device
+     * key is on hand and a plaintext book has none. Removing encryption is
+     * confirmed rather than just done: it is the one direction that makes the
+     * artwork readable by anything that can open a database.
+     */
+    private fun beginKeying(
+        book: IndexObject,
+        from: DocumentKeying.Keying,
+        to: DocumentKeying.Keying,
+    ) {
+        val needsCurrent = from == DocumentKeying.Keying.PRIVATE
+        val needsNew = to == DocumentKeying.Keying.PRIVATE
+
+        fun go(current: String?, fresh: String?) {
+            if (to == DocumentKeying.Keying.NONE) {
+                MaterialAlertDialogBuilder(this)
+                    .setTitle(R.string.keying_none)
+                    .setMessage(R.string.keying_none_warning)
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .setPositiveButton(R.string.keying_none_confirm) { _, _ -> applyKeying(book, to, current, fresh) }
+                    .show()
+            } else {
+                applyKeying(book, to, current, fresh)
+            }
+        }
+
+        if (needsCurrent) {
+            askPassphrase(R.string.keying_current_title) { current ->
+                if (needsNew) askPassphrase(R.string.keying_new_title) { fresh -> go(current, fresh) }
+                else go(current, null)
+            }
+        } else if (needsNew) {
+            askPassphrase(R.string.keying_new_title) { fresh -> go(null, fresh) }
+        } else {
+            go(null, null)
+        }
+    }
+
+    private fun askPassphrase(titleRes: Int, onEntered: (String) -> Unit) {
+        val field = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(titleRes)
+            .setView(padded(field))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val entered = field.text.toString()
+                if (entered.isNotBlank()) onEntered(entered)
+            }
+            .show()
+    }
+
+    private fun applyKeying(
+        book: IndexObject,
+        to: DocumentKeying.Keying,
+        current: String?,
+        fresh: String?,
+    ) {
+        lifecycleScope.launch {
+            val ok = runCatching {
+                DocumentKeying.convert(this@LibraryActivity, book.id, to, current, fresh)
+            }.getOrDefault(false)
+            refresh()
+            toast(getString(if (ok) R.string.keying_done else R.string.keying_failed))
+        }
+    }
+
+    /**
+     * Changing the key the whole library uses.
+     *
+     * Every global-scope document and the index, one file at a time, resumable if
+     * it is interrupted — see `KeyRotation`. The new passphrase replaces the
+     * recovery key, so it is worth saying so before it happens.
+     */
+    private fun promptRotate() {
+        val field = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.rotate_title)
+            .setMessage(R.string.rotate_body)
+            .setView(padded(field))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.rotate_action) { _, _ ->
+                val entered = field.text.toString()
+                if (entered.isBlank()) return@setPositiveButton
+                lifecycleScope.launch {
+                    toast(getString(R.string.rotate_running))
+                    val outcome = runCatching { KeyRotation.start(this@LibraryActivity, entered) }.getOrNull()
+                    refresh()
+                    toast(
+                        when {
+                            outcome == null -> getString(R.string.keying_failed)
+                            outcome.quarantined.isEmpty() ->
+                                getString(R.string.rotate_done, outcome.converted)
+                            else -> getString(R.string.rotate_done_partial, outcome.converted, outcome.quarantined.size)
+                        },
+                    )
+                }
+            }
+            .show()
     }
 
     private fun folderActions(folder: IndexObject) = MaterialAlertDialogBuilder(this)
@@ -735,12 +945,14 @@ class LibraryActivity : AppCompatActivity() {
                                     getString(R.string.library_new_sketchbook),
                                     getString(R.string.library_new_folder),
                                     getString(R.string.library_import),
+                                    getString(R.string.rotate_title),
                                 ),
                             ) { _, which ->
                                 when (which) {
                                     0 -> promptNewSketchbook()
                                     1 -> promptNewFolder()
-                                    else -> pickImport()
+                                    2 -> pickImport()
+                                    else -> promptRotate()
                                 }
                             }
                             .show()

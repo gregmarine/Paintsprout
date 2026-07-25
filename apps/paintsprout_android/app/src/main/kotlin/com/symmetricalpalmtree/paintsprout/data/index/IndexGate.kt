@@ -3,6 +3,7 @@ package com.symmetricalpalmtree.paintsprout.data.index
 import android.content.Context
 import com.symmetricalpalmtree.paintsprout.crypto.AttemptLimiter
 import com.symmetricalpalmtree.paintsprout.crypto.CryptoStores
+import com.symmetricalpalmtree.paintsprout.crypto.KeyRotation
 import com.symmetricalpalmtree.paintsprout.crypto.PassphraseVault
 import com.symmetricalpalmtree.paintsprout.crypto.RawKeyCache
 import com.symmetricalpalmtree.paintsprout.crypto.RecoveryKey
@@ -161,11 +162,17 @@ object IndexGate {
             }
 
             IndexOpenPlan.OPEN_WITH_PASSPHRASE -> {
-                if (SoilCrypto.verifyPassphrase(file, passphrase!!)) {
+                // A rotation converts the index last, so an interrupted one can
+                // leave the library already on the key being rotated *to* while
+                // the cached passphrase is still the old one. Both are tried
+                // before anybody is asked for anything.
+                val opener = listOfNotNull(passphrase, KeyRotation.target(context))
+                    .firstOrNull { SoilCrypto.verifyPassphrase(file, it) }
+                if (opener != null) {
                     // One slow open; the derivation happens behind it rather than
                     // in front of the user.
-                    install(context, file, SoilCrypto.roomFactory(passphrase))
-                    deriveInBackground(context, file, passphrase)
+                    install(context, file, SoilCrypto.roomFactory(opener))
+                    deriveInBackground(context, file, opener)
                     IndexStatus.Ready
                 } else {
                     needsUnlock(context)

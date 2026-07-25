@@ -7,6 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -22,6 +23,15 @@ class RawKeyCacheTest {
     private val cache = RawKeyCache(store) { _, _ -> derivations++; key }
 
     private fun file() = tmp.newFile("book.soil").apply { writeBytes(ByteArray(64)) }
+
+    /**
+     * The RAM half of the cache is process-wide — that is what "the key lives in
+     * memory until the document closes" has to mean when every screen builds its
+     * own instance — so a test that wants a cold start has to say so. In the app
+     * a cold start is a new process; here it is this.
+     */
+    @Before
+    fun coldStart() = RawKeyCache(store).clearAll()
 
     @Test
     fun `a global key is derived once and then comes from RAM`() {
@@ -41,6 +51,7 @@ class RawKeyCacheTest {
         cache.global("id", f, "phrase")
 
         var freshDerivations = 0
+        RawKeyCache(store).forgetRam("id") // the process ended; RAM did not survive it
         val afterRestart = RawKeyCache(store) { _, _ -> freshDerivations++; key }
 
         assertArrayEquals(key, afterRestart.global("id", f, "phrase"))
@@ -60,6 +71,7 @@ class RawKeyCacheTest {
         assertTrue(store.keys().isEmpty())
         assertArrayEquals(key, cache.peek("private"))
 
+        RawKeyCache(store).forgetRam("private") // as above: RAM does not outlive a process
         val afterRestart = RawKeyCache(store) { _, _ -> error("must not derive") }
         assertNull(afterRestart.peekOrLoad("private"))
     }

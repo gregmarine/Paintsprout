@@ -620,7 +620,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 21 | Send to scratchpad / send to sketchbook | **yes** | ✅ |
 | 22 | Export `.soil` + `notebook_meta` upkeep | **yes** | ✅ |
 | 23 | Import `.soil` | **yes** | ✅ |
-| 24 | Encryption UX: per-document passphrase, rotation, lock states | **yes** | ⬜ |
+| 24 | Encryption UX: per-document passphrase, rotation, lock states | **yes** | ✅ |
 | 25 | Compaction, VACUUM, size/perf measurement, leak audit | **yes** | ⬜ |
 
 ## Working protocol
@@ -1847,7 +1847,7 @@ when it stops, so by the time the library is in front of the user nothing is ope
 the milliseconds while an asynchronous seal is still running, which cannot be hit by hand. It is unit
 tested (`collisionOf(row, isOpen = true)`), and `toSketchbook` in Phase 21 refuses the same way.
 
-## Phase 24 — Encryption UX 🧪
+## Phase 24 — Encryption UX ✅ 🧪
 Per-document passphrase (set / change / remove) with in-place `sqlcipher_export` conversion and the
 never-zero-copies swap; global passphrase rotation as a crash-resumable batch re-key (marker written
 before the first file, per-file verify-then-skip, quarantine a mislabeled file and continue, cached
@@ -1857,6 +1857,71 @@ global passphrase updated only when `pendingIds` is empty); lock glyphs and cove
 books present, kill mid-rotation and confirm resumption. **Carried forward from Phase 22:** decrypt a
 book in place, export it, and open *that* file in the stock `sqlcipher` CLI — the plaintext half of
 the export test, which nothing before this phase can produce a document for.
+
+**As built.** SQLCipher cannot re-key across a change of *kind*, so every conversion is "export into
+a fresh database keyed the new way, then swap it in" — and three features want that, which is exactly
+why there is **one** of them. 514 tests.
+
+- **[`ReKey`](../apps/paintsprout_android/app/src/main/kotlin/com/symmetricalpalmtree/paintsprout/crypto/ReKey.kt)
+  is the only place a file's keying changes**, and it carries the one line the plan has been warning
+  about since Phase 6: `sqlcipher_export` copies *content*, not the header, so the new file is left
+  at `user_version = 0` and the next open runs `onCreate` over a database full of data. It is copied
+  explicitly, once, here. Verified in the CLI on every converted file below.
+- **Verify, then swap.** The converted copy is opened with the key it is *supposed* to have before
+  anything is renamed, and the rename is [`CommitSwap`]'s — at no instant do zero intact copies exist
+  under a name recovery can find.
+- **Three states, not a switch.** Device key, its own passphrase, or none. "No encryption" is a real
+  choice with a real use — a file another program can read — and hiding it behind a toggle labelled
+  *off* would understate it, so it is named, warned about, and confirmed.
+- **Rotation is written down before it starts.**
+  [`RotationPlan`](../apps/paintsprout_android/app/src/main/kotlin/com/symmetricalpalmtree/paintsprout/crypto/RotationPlan.kt)
+  is a pure verdict per file — *opens with the old key* → convert, *opens with the new* → skip
+  (the interrupted run already did it), *neither* → quarantine and carry on. The marker holds the
+  passphrase being rotated **to**, because losing that mid-run leaves documents keyed to something
+  nobody knows; it lives in the secure store, never in plaintext prefs.
+- **The index is converted last, and the cached passphrase changes last of all.** While the index is
+  still on the old key a cold start opens the library normally, which is what makes an interrupted
+  rotation resume from an ordinary launch instead of a rescue path. `IndexGate` tries the rotation's
+  target as well as the cached passphrase, for the case where the kill landed after the index.
+
+### Four things the device found
+
+**`sqlcipher_export` cannot go through `execSQL`.** It returns a row, and the driver refuses anything
+that does — *"Queries can be performed using SQLiteDatabase query or rawQuery methods only"*. The
+conversion failed silently and the file was left exactly as it was, which is the failure path working
+correctly; the toast said so and nothing else did. It is a `rawQuery`, and it has to be **stepped**:
+a cursor that is never read is an export that never runs.
+
+**A private book bounced straight back to the library.** `SketchbookStore.open` resolved the
+passphrase before it consulted the cached key, so a `NOTEBOOK` open with no passphrase threw — even
+with a perfectly good key already derived. The cache is consulted first now, and the passphrase is
+only needed when it misses.
+
+**…and the cache was empty anyway.** `RawKeyCache`'s RAM map was an *instance* field, and the class is
+constructed wherever it is needed rather than injected — so the screen that took the passphrase
+cached the key into an object it then threw away. "The key lives in memory until the document closes"
+has to mean one map per process, and now does.
+
+**A decrypted book still said it was encrypted.** Reading the exported plaintext file in `sqlite3`
+showed `"encrypted": true, "keyScope": "GLOBAL"` in a manifest sitting in a file with no key at all.
+`MetaUpkeep` deliberately never touches keying — the file owns that — so the conversion has to, and
+it does: the record is re-stamped after the swap, and a book that just became private drops its
+embedded cover on the way through.
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| Give a book its own passphrase | ✅ after the `execSQL` fix; card shows a lock, no cover |
+| The converted file, in stock `sqlcipher` | ✅ opens with the book's passphrase, **`user_version` = 1**, 11 rows |
+| Relaunch and unlock | ✅ after two fixes; wrong passphrase → *"That didn't open it"*, right one → the page, intact |
+| **Decrypt in place** | ✅ header is `SQLite format 3`, opens in **stock `sqlite3` with no key**, `user_version` = 1 |
+| **Export the decrypted book** (Phase 22's carried-forward half) | ✅ the exported copy opens in `sqlite3`; manifest readable, `notebookId` / `folderPath` verbatim |
+| Back to the device key | ✅ encrypted again, `sqlite3` refuses it |
+| **Kill mid-rotation** | ✅ two documents converted, one pending, index untouched — the half-and-half state by design |
+| **Resume on the next launch** | ✅ the pending document *and* the index converted, library opened normally |
+| Everything on the new key | ✅ all three books **and the index** open in stock `sqlcipher` with the new passphrase, every one at `user_version` = 1, row counts intact (11 / 59 / 50 objects, 11 index rows) |
+| The app after rotation | ✅ cold start, opened a 12-page book, page renders |
 
 ## Phase 25 — Compaction, measurement, leak audit 🧪
 Compactor sweep (guarded per row, `VACUUM` only if something actually changed, `updatedAt`

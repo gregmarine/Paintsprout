@@ -663,7 +663,17 @@ class DocumentSession private constructor(
             }
 
         private suspend fun open(context: Context, id: String): DocumentSession {
-            val soil = SketchbookStore.open(context, id)
+            // A private-passphrase document is opened under its own scope, which
+            // means "use the key already derived in RAM, and never a cached one
+            // from disk". The library primes that when it takes the passphrase;
+            // arriving here without it simply fails to open, which is the correct
+            // outcome for a locked document nobody has unlocked.
+            val scope = if (IndexGate.awaitReady().byId(id)?.isPrivateScope == true) {
+                KeyScope.NOTEBOOK
+            } else {
+                KeyScope.GLOBAL
+            }
+            val soil = SketchbookStore.open(context, id, keyScope = scope)
             val repo = Sketchbooks.repositoryFor(soil, id)
             // A document that somehow has no page is still openable; give it one
             // rather than failing in front of the user.

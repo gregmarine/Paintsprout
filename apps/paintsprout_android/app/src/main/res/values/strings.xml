@@ -96,4 +96,21 @@
     <string name="import_open_elsewhere">That sketchbook is open. Close it first.</string>
     <string name="import_done">Imported “%1$s”</string>
     <string name="import_failed">That didn\'t import</string>
+    <string name="library_keying">Encryption…</string>
+    <string name="keying_device">This device\'s key</string>
+    <string name="keying_private">Its own passphrase</string>
+    <string name="keying_none">No encryption</string>
+    <string name="keying_none_warning">The file will be readable by anything that can open a database. Only do this to hand it to another program.</string>
+    <string name="keying_none_confirm">Remove encryption</string>
+    <string name="keying_current_title">Its current passphrase</string>
+    <string name="keying_new_title">A passphrase for this sketchbook</string>
+    <string name="keying_unlock_body">This sketchbook has its own passphrase.</string>
+    <string name="keying_done">Done</string>
+    <string name="keying_failed">That didn\'t work</string>
+    <string name="rotate_title">Change this device\'s key</string>
+    <string name="rotate_body">Every sketchbook using this device\'s key is re-encrypted. The new passphrase replaces your recovery key — write it down.</string>
+    <string name="rotate_action">Change it</string>
+    <string name="rotate_running">Re-encrypting…</string>
+    <string name="rotate_done">%1$d sketchbooks re-encrypted</string>
+    <string name="rotate_done_partial">%1$d re-encrypted, %2$d set aside</string>
 </resources>

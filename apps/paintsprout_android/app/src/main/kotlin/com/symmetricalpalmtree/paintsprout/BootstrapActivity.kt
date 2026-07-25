@@ -19,6 +19,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
+import com.symmetricalpalmtree.paintsprout.crypto.KeyRotation
 import com.symmetricalpalmtree.paintsprout.data.LastOpen
 import com.symmetricalpalmtree.paintsprout.data.LaunchRoute
 import com.symmetricalpalmtree.paintsprout.data.LaunchTarget
@@ -91,7 +92,22 @@ class BootstrapActivity : AppCompatActivity() {
 
     private fun onReady() {
         val key = IndexGate.pendingRecoveryKey(this)
-        if (key != null) showRecoveryKey(key) else route()
+        if (key != null) {
+            showRecoveryKey(key)
+            return
+        }
+        // A rotation that was interrupted finishes here, before any screen that
+        // opens a document exists — half the library on one key and half on
+        // another is a state to pass through, never one to run in.
+        if (KeyRotation.isPending(this)) {
+            showBusy()
+            lifecycleScope.launch {
+                runCatching { KeyRotation.resume(this@BootstrapActivity) }
+                route()
+            }
+            return
+        }
+        route()
     }
 
     /**

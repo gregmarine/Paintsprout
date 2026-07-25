@@ -1,7 +1,10 @@
 package com.symmetricalpalmtree.paintsprout.data.soil
 
 import android.content.Context
+import com.symmetricalpalmtree.paintsprout.crypto.CryptoStores
 import com.symmetricalpalmtree.paintsprout.crypto.KeyScope
+import com.symmetricalpalmtree.paintsprout.crypto.RawKeyCache
+import com.symmetricalpalmtree.paintsprout.crypto.SoilCrypto
 import com.symmetricalpalmtree.paintsprout.data.SchemaSql
 import com.symmetricalpalmtree.paintsprout.data.SoilFiles
 import com.symmetricalpalmtree.paintsprout.data.index.IndexGate
@@ -179,6 +182,22 @@ object Sketchbooks {
             arrayOf<Any?>(newId, oldId),
         )
     }
+
+    /**
+     * Takes a private book's passphrase and holds its derived key **in RAM**.
+     *
+     * That is the whole of what unlocking one means: `NOTEBOOK` scope is exactly
+     * "the key lives in memory until the process ends", so the passphrase is
+     * verified against the file, derived once, and never written down. Returns
+     * false for a wrong answer, which the caller counts.
+     */
+    suspend fun unlock(context: Context, documentId: String, passphrase: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val file = SoilFiles.soilFile(context, documentId)
+            if (!SoilCrypto.verifyPassphrase(file, passphrase)) return@withContext false
+            RawKeyCache(CryptoStores.derivedKeys(context)).ephemeral(documentId, file, passphrase)
+            true
+        }
 
     /** Opens, refreshes the embedded record against the library, and seals again. */
     private suspend fun stampFolderPath(context: Context, id: String) {

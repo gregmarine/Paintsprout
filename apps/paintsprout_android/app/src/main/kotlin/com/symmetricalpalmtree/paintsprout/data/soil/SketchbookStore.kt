@@ -90,19 +90,26 @@ object SketchbookStore {
         passphrase: String? = null,
     ): SoilDatabase {
         val file = SoilFiles.soilFile(context, documentId)
-        val secret = secretFor(context, keyScope, passphrase)
         val keys = RawKeyCache(CryptoStores.derivedKeys(context))
 
+        // The cached key first, and the passphrase only if it fails. That order
+        // is what makes a private document openable at all: unlocking one derives
+        // its key into RAM and nothing writes the passphrase down, so the editor
+        // arrives here with no passphrase and a perfectly good key. Asking for the
+        // secret up front threw before the cache was ever consulted — found on
+        // device, by unlocking a book and watching the editor bounce straight back
+        // to the library.
         val cached = if (keyScope == KeyScope.GLOBAL) keys.peekOrLoad(documentId) else keys.peek(documentId)
-        val factory: SupportSQLiteOpenHelper.Factory =
-            if (cached != null && SoilCrypto.verifyRawKey(file, cached)) {
-                SoilCrypto.roomFactoryRawKey(cached)
-            } else {
-                if (cached != null) keys.invalidate(documentId)
-                SoilCrypto.roomFactory(secret).also {
-                    deriveInBackground(context, documentId, file, secret, keyScope)
-                }
-            }
+        if (cached != null && SoilCrypto.verifyRawKey(file, cached)) {
+            return SoilDatabase.open(context, file, documentId, SoilCrypto.roomFactoryRawKey(cached))
+        }
+        // A key that no longer opens its file is indistinguishable from
+        // corruption by the time SQLite sees it.
+        if (cached != null) keys.invalidate(documentId)
+
+        val secret = secretFor(context, keyScope, passphrase)
+        val factory = SoilCrypto.roomFactory(secret)
+        deriveInBackground(context, documentId, file, secret, keyScope)
         return SoilDatabase.open(context, file, documentId, factory)
     }
 

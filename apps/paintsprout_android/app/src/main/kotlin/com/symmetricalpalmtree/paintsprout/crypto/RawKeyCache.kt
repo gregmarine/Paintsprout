@@ -34,7 +34,17 @@ class RawKeyCache(
     private val derive: (File, String) -> ByteArray = RawKeyDerivation::deriveKey,
 ) {
 
-    private val ram = ConcurrentHashMap<String, ByteArray>()
+    /**
+     * Process-wide, not per instance.
+     *
+     * "The key lives in RAM until the document closes" is the whole definition of
+     * a private-passphrase document, and this class is constructed wherever it is
+     * needed rather than injected — so a per-instance map means the screen that
+     * took the passphrase caches the key into an object it then throws away.
+     * Found on device: unlocking a book succeeded and the editor bounced straight
+     * back to the library, because by then the cache was empty.
+     */
+    private val ram get() = SHARED_RAM
 
     /** Raw key for a global-scope file: RAM → store → derive and persist. */
     fun global(fileId: String, file: File, passphrase: String): ByteArray {
@@ -112,5 +122,8 @@ class RawKeyCache(
          * `SoilFiles.isDocumentId`.
          */
         const val INDEX_FILE_ID = "__paintsprout_index__"
+
+        /** See [ram]. One per process, which is what "in memory" has to mean. */
+        private val SHARED_RAM = ConcurrentHashMap<String, ByteArray>()
     }
 }
