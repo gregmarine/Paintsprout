@@ -607,7 +607,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 8 | Binary codecs: stroke format B, masks, matrix, wet state | no | ✅ |
 | 9 | Document repository: pages, layers, ops, undoDepth, cache, palette | no | ✅ |
 | 10 | Editor save — strokes + surface ops | **yes** | ✅ |
-| 11 | Editor save — selection ops, clips, wet state, palette | **yes** | ✅ 🧪 |
+| 11 | Editor save — selection ops, clips, wet state, palette | **yes** | ✅ |
 | 12 | Editor load — raster cache fast path, cross-session undo/redo | **yes** | ⬜ |
 | 13 | Autosave, lifecycle, seal, crash safety | **yes** | ⬜ |
 | 14 | Library screen (flat): create, open, rename, delete, covers | **yes** | ⬜ |
@@ -1100,7 +1100,7 @@ draws. Per the injected-vs-real-input lesson this validates the *mechanism* only
 becomes a row with the right columns — and says nothing about feel, which is the correct use of
 injected input.
 
-## Phase 11 — Editor save: selection ops, clips, wet state, palette ✅ (device test partly outstanding)
+## Phase 11 — Editor save: selection ops, clips, wet state, palette ✅ 🧪
 `FillOp` / `EraseOp` / `MoveOp` with cropped masks; `StrokeOp.clip` as a `stroke_clip` child;
 watercolor `wetSchedule` / `wetCrop` / `dryFreeze` as `wet_state`; tray pots, mixture and brush load
 as `palette`/`pot` rows written on change.
@@ -1136,25 +1136,43 @@ every op type — which removes Phase 10's `desynced` latch. 21 tests; 365 in th
 | Stock `sqlcipher` reads it all back | ✅ |
 | Crashes | ✅ none |
 
-> ### ⏳ Outstanding: the wand-dependent ops were not exercised on device
->
-> `fill`, `erase`, `move` and `stroke_clip` all require a **wand selection**, and the wand does not
-> respond to `adb shell input stylus tap` — the flood fill never runs, so there is no selection to
-> fill, erase, move or paint inside. Ten-plus attempts across two input sources; the strokes inject
-> fine, the selection tap does not.
->
-> Their encoding is covered by unit tests (crop/expand round-trips, every row's columns and geometry,
-> an exactly-preserved transform, unreadable-blob degradation), and the write path is the same
-> `repo.appendOp` the verified ops use. What is unverified is that the hook fires with a real mask
-> attached.
->
-> **Needs a human with the pen**: wand-tap a painted region, then Fill, then Erase, then drag/scale
-> the selection, then draw a stroke inside a selection. Then background the app and the file should
-> carry `fill` / `erase` / `move` op rows and a `stroke_clip` child.
->
-> One observation worth checking at the same time: of two injected watercolour washes only one got a
-> `wet_state` row. That is plausibly correct — a very fast injected swipe may never enter the wet
-> simulation at all — but a real pen is the only way to know.
+### The wand-dependent ops, exercised by hand
+
+The wand does not respond to `adb shell input stylus tap` — the flood fill never runs, so injected
+input cannot produce a selection to fill, move or paint inside. **Greg ran those steps with the pen**
+and the resulting file was pulled and taken apart:
+
+| Check | Result |
+|---|---|
+| `fill` rows | ✅ 2, colour `#FF1B1BB3`, crop `(381, 236)` in a `1100×720` field at downsample `2` |
+| `move` row | ✅ 1, blob `463` bytes = 37-byte transform header + the 426-byte mask, exactly |
+| `stroke_clip` children | ✅ 3, on an `ERASER` and a `BRUSH` stroke — friskets |
+| `wet_state` child | ✅ on a `WATERCOLOR` stroke |
+| Frontier | ✅ 17 of 17 ops |
+
+Every blob was then decoded **independently, in Python**, rather than trusted because it was present:
+
+- The mask is `198×167`, 76.4% covered, cropped out of an `1100×720` field — which is exactly half of
+  the Movink's `2200×1440` buffer, confirming the downsample factor is what the row says it is.
+- **33,066 alpha bytes store in 426**: 78× smaller than the raw alpha, and ~313× smaller than the
+  ARGB bitmap it came from. Cropping plus dropping three bytes in four, before zlib does the rest.
+- The move transform decodes to `[2.0058, 0, −566.62 | 0, 2.0058, −801.46 | 0, 0, 1]` — a uniform
+  ~2× scale with translation, and an exact affine bottom row. A real `Matrix.getValues()` capture,
+  preserved bit for bit.
+
+**Two things worth recording.**
+
+`erase` is still the one op type never written on device. The eraser was used as a *tool inside a
+selection* — which is the `ERASER` stroke at order 13 with its own `stroke_clip`, a different and
+also-correct path — rather than through the "Erase inside selection" button that produces an
+`EraseOp`. Its encoding is unit-tested and its row shape is `fill` minus the colour, so the risk is
+low, but it is untested on glass and should be ticked off during Phase 12's device pass.
+
+One of the three `stroke_clip` rows has **no live parent**. That is the format working as designed,
+not a leak: a redo tail is hard-deleted when a new op replaces it, and the spec's rule is that a
+composite's orphaned children are harmless — excluded from every read by the parent's absence, and
+reclaimed by the compactor's orphan sweep (Phase 25). It is the first time that state has actually
+been observed, and it confirms the sweep has real work to do.
 
 ## Phase 12 — Editor load 🧪
 Open a page: restore canvas size (book), surface kind/params/seed/plain colour (page), palette and
