@@ -94,6 +94,22 @@ object IndexGate {
     fun repositoryOrNull(): IndexRepository? = repository
 
     /**
+     * The raw connection under the index, for the document-shaped tables it also
+     * holds — `scratchpad` and `clipboard`.
+     *
+     * Those are not Room's: they are the universal object row, created from
+     * [com.symmetricalpalmtree.paintsprout.data.SchemaSql] so that every codec and
+     * subtree walk written for a sketchbook file works on them unchanged. They
+     * still have to come through this gate, because reading a database that has
+     * not been decrypted yet is the failure this whole class exists to prevent.
+     */
+    suspend fun awaitConnection(): androidx.sqlite.db.SupportSQLiteDatabase {
+        _status.first { it is IndexStatus.Ready }
+        val db = database ?: error("Index reported ready without a database")
+        return db.openHelper.writableDatabase
+    }
+
+    /**
      * Idempotent: returns immediately if the index is already open. Safe to call
      * from several places at once — the bootstrap screen, a deep link, a share
      * intent — which is the point, because those can all start the app.

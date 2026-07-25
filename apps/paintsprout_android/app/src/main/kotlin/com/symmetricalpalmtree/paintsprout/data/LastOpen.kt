@@ -23,12 +23,27 @@ object LastOpen {
 
     data class Pointer(val kind: Kind, val documentId: String?, val pageId: String?)
 
-    fun save(context: Context, pointer: Pointer) =
-        prefs(context).edit().putString(KEY, encode(pointer)).apply()
+    /**
+     * Records where the user is.
+     *
+     * A sketchbook pointer is written twice: once as the surface to reopen, and
+     * once as **the book to come back to**. Without the second, stepping into the
+     * scratchpad would overwrite the only record of what you were painting, and
+     * the way back would be through the library — hunting for a book you never
+     * left on purpose.
+     */
+    fun save(context: Context, pointer: Pointer) = prefs(context).edit().apply {
+        putString(KEY, encode(pointer))
+        if (pointer.kind == Kind.SKETCHBOOK) putString(KEY_BOOK, encode(pointer))
+    }.apply()
 
     fun load(context: Context): Pointer? = decode(prefs(context).getString(KEY, null))
 
-    fun clear(context: Context) = prefs(context).edit().remove(KEY).apply()
+    /** The last sketchbook, whatever is open now. Null before one has been opened. */
+    fun lastBook(context: Context): Pointer? = decode(prefs(context).getString(KEY_BOOK, null))
+        ?.takeIf { it.kind == Kind.SKETCHBOOK }
+
+    fun clear(context: Context) = prefs(context).edit().remove(KEY).remove(KEY_BOOK).apply()
 
     /** `KIND|documentId|pageId`, with empty fields for absent ids. */
     fun encode(pointer: Pointer): String =
@@ -61,5 +76,6 @@ object LastOpen {
 
     private const val PREFS = "paintsprout_session"
     private const val KEY = "last_open"
+    private const val KEY_BOOK = "last_book"
     private const val SEPARATOR = "|"
 }

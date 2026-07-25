@@ -57,6 +57,7 @@
     <string name="library_delete_body">The sketchbook and everything in it will be removed from this device.</string>
     <string name="library_failed">That didn\'t work</string>
     <string name="library_open">Library</string>
+    <string name="library_scratchpad">Scratchpad</string>
 
     <plurals name="library_pages">
         <item quantity="one">%d page</item>

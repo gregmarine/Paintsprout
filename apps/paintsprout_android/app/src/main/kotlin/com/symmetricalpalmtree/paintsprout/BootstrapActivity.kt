@@ -20,6 +20,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.symmetricalpalmtree.paintsprout.data.LastOpen
+import com.symmetricalpalmtree.paintsprout.data.LaunchRoute
+import com.symmetricalpalmtree.paintsprout.data.LaunchTarget
 import com.symmetricalpalmtree.paintsprout.data.index.IndexGate
 import com.symmetricalpalmtree.paintsprout.data.index.IndexStatus
 import kotlinx.coroutines.delay
@@ -222,8 +224,10 @@ class BootstrapActivity : AppCompatActivity() {
      * whose last document has since been deleted.
      */
     private fun route() {
-        val pointer = LastOpen.load(this)
-        val destination = if (pointer?.documentId != null) MainActivity::class.java else LibraryActivity::class.java
+        val destination = when (LaunchRoute.of(LastOpen.load(this))) {
+            LaunchTarget.EDITOR -> MainActivity::class.java
+            LaunchTarget.LIBRARY -> LibraryActivity::class.java
+        }
         startActivity(Intent(this, destination))
         finish()
     }

@@ -614,7 +614,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 15 | Folders, move, sort, name search | **yes** | ✅ |
 | 16 | Pinned + recents | **yes** | ✅ |
 | 17 | Multi-page UI: page strip, add/duplicate/delete/reorder | **yes** | ✅ |
-| 18 | Scratchpad | **yes** | ⬜ |
+| 18 | Scratchpad | **yes** | ✅ |
 | 19 | Lasso tool | **yes** | ⬜ |
 | 20 | Clipboard: copy/paste whole objects | **yes** | ⬜ |
 | 21 | Send to scratchpad / send to sketchbook | **yes** | ⬜ |
@@ -1477,11 +1477,64 @@ memory argument the cheap path was chosen for. The schedule is a pure function p
 | Page turn stops at both covers | ✅ `1/11` and `11/11` hold |
 | Stylus still draws, and never turns the page | ✅ |
 
-## Phase 18 — Scratchpad 🧪
+## Phase 18 — Scratchpad ✅ 🧪
 Scratchpad hosting in the editor, multi-page, restricted tool set, always-available entry point, its
 own tray in the index.
 **Device test:** paint on several scratch pages, relaunch, confirm restore and that the sketchbook
 tool set is unaffected.
+
+**As built.** The scratchpad is a document in every sense the editor cares about and none the library
+does. It is the same `SketchbookRepository` over the index's own `scratchpad` table with the sentinel
+as its root — which Phase 9 had already proved by running the whole lifecycle over that table — so
+almost all of this phase was deciding what *differs* rather than writing anything new. 424 tests.
+
+- **`DocumentHome` is the difference, and it is a type rather than a null check.** A session's edges
+  are the only thing that varies: `SoilHome` seals its file and refreshes its library card;
+  `ScratchpadHome` does neither, and does nothing at all. That is not a stub — sealing the scratchpad
+  would close *the index*, the one database the app keeps open for its whole life, out from under
+  every screen that reads it. The rest of `close()` (cancel the debounce, flush, cache the pixels) is
+  the same wherever the document lives, and stayed in the session.
+- **`IndexGate.awaitConnection()`** hands out the raw connection for the index's document-shaped
+  tables. They still come through the gate, because reading a database that has not been decrypted
+  yet is the failure the gate exists to prevent.
+- **The tool set is a list, not a lambda in the rail.** Pencil, pen, brush, eraser, wand: dry, inked,
+  wet, take-it-back, select. The shape tools are the pointed omission — a line you plotted with
+  handles is something you meant, and something you meant belongs in a book. Hidden rather than
+  disabled, and if the current tool is not on offer the *selection* moves too, because a rail with
+  nothing lit while the pen still draws is worse than no restriction.
+- **The way in is the way out.** One rail button toggles: into the pad, or back to the book you were
+  in. That needs a second pointer — `LastOpen` now also keeps `last_book` — because a scratchpad
+  pointer has no document id and would otherwise overwrite the only record of what you were painting.
+  With no book to return to, the way back is the library.
+- **No canvas size in the pad.** A scratch page is always the screen it is drawn on: there is no book
+  for a print size to belong to, and nothing to print it at.
+
+### The scratchpad that always opened the library
+
+Relaunching into the pad landed on the library instead. The routing rule was one line —
+*"open the editor if the pointer names a document"* — written when a sketchbook was the only thing
+the editor could host. **A scratchpad pointer has no document id**, by design, so every scratch
+session was sent to the shelf.
+
+It is now [`LaunchRoute`](../apps/paintsprout_android/app/src/main/kotlin/com/symmetricalpalmtree/paintsprout/data/LaunchRoute.kt),
+a pure function with the scratchpad case named in a test. Whether the thing pointed at still exists
+is a separate question, answered later and much closer to the file; this decides which screen, and
+that is all it decides.
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| Rail entry point opens the pad | ✅ five tools, full-screen sheet, no canvas-size button |
+| Library entry point opens the pad | ✅ header button, lands on 1/3 |
+| Sketchbook tool set unaffected | ✅ all twelve back, mat and print size back |
+| Paint on three scratch pages, add pages | ✅ thumbnails in the strip |
+| **Relaunch onto the pad** | ❌ **opened the library** — routing fixed, then ✅ `3/3` with its stroke |
+| Page turns inside the pad | ✅ `3/3` → `1/3`, stroke restored on each |
+| Back to the last sketchbook | ✅ page 11, its two strokes |
+| A sketchbook still seals after the refactor | ✅ **no `-wal`/`-shm` beside the `.soil`** |
+| No file minted for the pad | ✅ `Garden/` unchanged; `paintsprout.db` grew 143 KB → 217 KB |
+| The pad's own tray | ✅ opens with its own pots and a clean well |
 
 ## Phase 19 — Lasso tool 🧪
 New `Tool.LASSO` + icon + rail entry: freehand closed loop → mask → the existing selection

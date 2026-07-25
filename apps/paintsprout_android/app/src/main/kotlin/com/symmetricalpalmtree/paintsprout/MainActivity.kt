@@ -48,6 +48,7 @@ import com.symmetricalpalmtree.paintsprout.paint.WoodParams
 import com.symmetricalpalmtree.paintsprout.data.LastOpen
 import com.symmetricalpalmtree.paintsprout.data.index.IndexGate
 import com.symmetricalpalmtree.paintsprout.data.soil.DocumentSession
+import com.symmetricalpalmtree.paintsprout.data.soil.Scratchpad
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -134,9 +135,21 @@ class MainActivity : AppCompatActivity() {
     private lateinit var undoBtn: ImageButton
     private lateinit var redoBtn: ImageButton
     private lateinit var pagesBtn: TextView
+    private lateinit var scratchBtn: ImageButton
+    private lateinit var canvasSizeBtn: ImageButton
 
     /** The document being painted into, once it has finished opening. */
     private var session: DocumentSession? = null
+
+    /**
+     * Whether that document is the scratchpad rather than a sketchbook.
+     *
+     * The editor is otherwise the same screen — same canvas, same tray, same
+     * pages — so this drives only what the rail offers and where the way out
+     * leads. It is set before the rail is next drawn and never read by anything
+     * that writes.
+     */
+    private var isScratchpad = false
 
     /** Outlives this screen, so a flush is never cut short by leaving it. */
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -164,7 +177,6 @@ class MainActivity : AppCompatActivity() {
             syncSurfaceFromCanvas()
             updateRail()
         }
-        binding.canvas.onBrushLoadChanged = { recordPalette() }
         binding.canvas.onSelectionChanged = {
             hasSelection = it
             updateRail()
@@ -208,10 +220,7 @@ class MainActivity : AppCompatActivity() {
         super.onStop()
         val open = session ?: return
         session = null
-        binding.canvas.onOpCommitted = null
-        binding.canvas.onUndone = null
-        binding.canvas.onRedone = null
-        binding.canvas.onBrushLoadChanged = null
+        detachCanvasHooks()
 
         val paint = if (open.isDirty) binding.canvas.paintSnapshot() else null
         val cover = if (open.isDirty) binding.canvas.coverSnapshot() else null
@@ -234,18 +243,32 @@ class MainActivity : AppCompatActivity() {
      */
     private fun attachDocument() {
         lifecycleScope.launch {
+            val pointer = LastOpen.load(this@MainActivity)
+            val wantsScratch = pointer?.kind == LastOpen.Kind.SCRATCHPAD
+            // Before the open, not after: the rail should already be the
+            // scratchpad's while the document is still being read off disk.
+            isScratchpad = wantsScratch
+            constrainTools()
             val opened = runCatching {
-                DocumentSession.openOrCreate(
-                    context = this@MainActivity,
-                    documentId = LastOpen.load(this@MainActivity)?.documentId,
-                    surface = currentSurface(),
-                )
+                if (wantsScratch) {
+                    Scratchpad.open()
+                } else {
+                    DocumentSession.openOrCreate(
+                        context = this@MainActivity,
+                        documentId = pointer?.documentId,
+                        surface = currentSurface(),
+                    )
+                }
             }.getOrNull() ?: return@launch
 
             session = opened
             LastOpen.save(
                 this@MainActivity,
-                LastOpen.Pointer(LastOpen.Kind.SKETCHBOOK, opened.documentId, opened.pageId),
+                if (wantsScratch) {
+                    LastOpen.Pointer(LastOpen.Kind.SCRATCHPAD, null, opened.pageId)
+                } else {
+                    LastOpen.Pointer(LastOpen.Kind.SKETCHBOOK, opened.documentId, opened.pageId)
+                },
             )
 
             // Load before wiring the hooks, so restoring a page does not read back
@@ -255,6 +278,7 @@ class MainActivity : AppCompatActivity() {
             binding.canvas.onOpCommitted = { opened.record(it) }
             binding.canvas.onUndone = { opened.recordUndo() }
             binding.canvas.onRedone = { opened.recordRedo() }
+            binding.canvas.onBrushLoadChanged = { recordPalette() }
             binding.canvas.onPageTurn = ::turnPage
             refreshPageLabel()
         }
@@ -528,16 +552,93 @@ class MainActivity : AppCompatActivity() {
         rail.addView(divider())
         pagesBtn = textButton("Pages") { showPages() }
         rail.addView(pagesBtn)
+        scratchBtn = iconButton(R.drawable.ic_scratchpad, "Scratchpad") { toggleScratchpad() }
+        rail.addView(scratchBtn)
         rail.addView(iconButton(R.drawable.ic_library, "Library") { openLibrary() })
         rail.addView(iconButton(R.drawable.ic_save, "Save PNG") { save() })
-        rail.addView(iconButton(R.drawable.ic_canvas_size, "Canvas size") { pickCanvasSize() })
+        canvasSizeBtn = iconButton(R.drawable.ic_canvas_size, "Canvas size") { pickCanvasSize() }
+        rail.addView(canvasSizeBtn)
         rail.addView(iconButton(R.drawable.ic_calibrate, "Calibrate screen") { openCalibration() })
         rail.addView(iconButton(R.drawable.ic_clear, "Clear") { confirmClear() })
         rail.addView(iconButton(R.drawable.ic_hide, "Hide toolbar") { setRailVisible(false) })
     }
 
+    /**
+     * Keeps the rail honest about where the user is.
+     *
+     * A tool that is not on offer here cannot simply be hidden: it might be the
+     * one already selected, and a rail with nothing lit while the pen still draws
+     * lines is worse than no restriction at all. So the selection moves too.
+     */
+    private fun constrainTools() {
+        if (isScratchpad && tool !in Scratchpad.TOOLS) onToolChanged(Scratchpad.DEFAULT_TOOL)
+        updateRail()
+    }
+
+    /**
+     * Into the scratchpad, or back out to the book you were in.
+     *
+     * Both directions go through the same door, because "somewhere to try
+     * something out" is only useful if getting back is as cheap as getting there.
+     * With no book to return to — a fresh install, or a library that has been
+     * emptied — the way back is the library itself.
+     */
+    private fun toggleScratchpad() {
+        if (isScratchpad) {
+            val book = LastOpen.lastBook(this)
+            if (book == null) {
+                openLibrary()
+                return
+            }
+            LastOpen.save(this, book)
+        } else {
+            LastOpen.save(this, LastOpen.Pointer(LastOpen.Kind.SCRATCHPAD, null, null))
+        }
+        reopenDocument()
+    }
+
+    /**
+     * Closes what is open and attaches whatever [LastOpen] now points at.
+     *
+     * The seal has to finish before the next document opens: the two can be the
+     * same database — the scratchpad and the index are — and a flush racing an
+     * open is how a page loses its last stroke.
+     */
+    private fun reopenDocument() {
+        val open = session ?: return
+        session = null
+        detachCanvasHooks()
+        val paint = if (open.isDirty) binding.canvas.paintSnapshot() else null
+        val cover = if (open.isDirty) binding.canvas.coverSnapshot() else null
+        // The seal runs on the scope that outlives this screen and is *joined*
+        // rather than fired off: leaving mid-switch must not skip it, and the next
+        // document must not open on top of it.
+        val sealed = applicationScope.launch { runCatching { open.close(paint, cover) } }
+        lifecycleScope.launch {
+            sealed.join()
+            attachDocument()
+        }
+    }
+
+    private fun detachCanvasHooks() {
+        binding.canvas.onOpCommitted = null
+        binding.canvas.onUndone = null
+        binding.canvas.onRedone = null
+        binding.canvas.onBrushLoadChanged = null
+    }
+
     private fun updateRail() {
-        for ((t, b) in toolButtons) b.background = if (t == tool) selectedBg() else rippleBg()
+        for ((t, b) in toolButtons) {
+            // The scratchpad offers a subset; the buttons for the rest are not
+            // there rather than disabled, because a rail of greyed-out tools reads
+            // as something broken.
+            b.visibility = if (!isScratchpad || t in Scratchpad.TOOLS) View.VISIBLE else View.GONE
+            b.background = if (t == tool) selectedBg() else rippleBg()
+        }
+        scratchBtn.background = if (isScratchpad) selectedBg() else rippleBg()
+        // A scratch page is always the screen it is drawn on: there is no book for
+        // a print size to belong to, and nothing to print it at.
+        canvasSizeBtn.visibility = if (isScratchpad) View.GONE else View.VISIBLE
 
         // The colour is moot while the brush carries clean water.
         colorBtn.visibility =

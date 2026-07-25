@@ -282,6 +282,11 @@ class LibraryActivity : AppCompatActivity() {
         startActivity(Intent(this, MainActivity::class.java))
     }
 
+    private fun openScratchpad() {
+        LastOpen.save(this, LastOpen.Pointer(LastOpen.Kind.SCRATCHPAD, null, null))
+        startActivity(Intent(this, MainActivity::class.java))
+    }
+
     private fun bookActions(book: IndexObject) {
         lifecycleScope.launch {
             val index = IndexGate.awaitReady()
@@ -564,6 +569,15 @@ class LibraryActivity : AppCompatActivity() {
                     .apply {
                         text = getString(R.string.library_sort)
                         setOnClickListener { promptSort() }
+                    },
+            )
+            // Always available, and never a card in the grid: the scratchpad is
+            // not a sketchbook you might one day rename, move or delete.
+            addView(
+                MaterialButton(this@LibraryActivity, null, com.google.android.material.R.attr.borderlessButtonStyle)
+                    .apply {
+                        text = getString(R.string.library_scratchpad)
+                        setOnClickListener { openScratchpad() }
                     },
             )
             addView(

@@ -45,12 +45,14 @@ import java.util.UUID
  * rescheduling would mean an unbroken stroke sequence never writes at all.
  */
 class DocumentSession private constructor(
-    val documentId: String,
-    private val soil: SoilDatabase,
+    private val home: DocumentHome,
     val repo: SketchbookRepository,
     pageId: String,
     layerId: String,
 ) {
+
+    /** A sketchbook's file id, or the scratchpad's sentinel. */
+    val documentId: String get() = home.documentId
 
     /** The page being painted. Changes with [switchTo]. */
     var pageId: String = pageId
@@ -450,12 +452,12 @@ class DocumentSession private constructor(
     // --- Closing ------------------------------------------------------------
 
     /**
-     * Everything that has to happen before the file goes cold.
+     * Everything that has to happen before the document goes cold.
      *
-     * **Each step is guarded on its own.** A disk-full failure seconds after the
-     * user left the page must not crash the app, and — more importantly — must not
-     * stop the steps after it from running. Skipping the checkpoint because the
-     * cover failed to write would leave a `-wal` beside the document forever.
+     * The parts that are the same wherever it lives are here — cancel the
+     * debounce, flush what is queued, cache the composited pixels — and the parts
+     * that are not are [DocumentHome]'s: a sketchbook seals its file and refreshes
+     * its library card, the scratchpad does neither.
      *
      * Run this from an application-scoped, non-cancellable coroutine: the screen
      * going away is precisely when it needs to survive.
@@ -468,36 +470,10 @@ class DocumentSession private constructor(
         lock.withLock {
             withContext(NonCancellable + Dispatchers.IO) {
                 runCatching { flushNow() }
-                if (isDirty) {
-                    paint?.let { p -> runCatching { writeCacheLocked(p) } }
-                    runCatching { refreshIndexRow(cover) }
-                }
-                // The seal proper: refresh the embedded identity record, vacuum,
-                // truncate the WAL, close, and leave no sidecars behind.
-                runCatching { soil.seal { it.copy(updatedAt = System.currentTimeMillis()) } }
+                if (isDirty) paint?.let { p -> runCatching { writeCacheLocked(p) } }
+                runCatching { home.close(isDirty, cover, repo.pageCount()) }
             }
             isDirty = false
-        }
-    }
-
-    /**
-     * What the library needs to know about a closed document.
-     *
-     * Only when something changed — see [isDirty]. The cover is offered rather
-     * than stored: [IndexRepository.setCover] refuses it for a document with its
-     * own passphrase, because the index opens with the *global* key and that is a
-     * key boundary a picture of the contents must not cross.
-     */
-    private suspend fun refreshIndexRow(cover: Bitmap?) {
-        val index = IndexGate.awaitReady()
-        index.setPageCount(documentId, repo.pageCount())
-        index.recordEdited(documentId)
-        if (cover != null) {
-            val bytes = java.io.ByteArrayOutputStream().use { out ->
-                cover.compress(Bitmap.CompressFormat.WEBP_LOSSY, 90, out)
-                out.toByteArray()
-            }
-            index.setCover(documentId, bytes)
         }
     }
 
@@ -554,18 +530,19 @@ class DocumentSession private constructor(
             // rather than failing in front of the user.
             if (repo.pages().isEmpty()) repo.createDocument(title = repo.root()?.text ?: "")
             IndexGate.awaitReady().recordOpened(id)
-            return sessionFor(id, soil, repo)
+            return on(SoilHome(id, soil), repo)
         }
 
-        private fun sessionFor(
-            id: String,
-            soil: SoilDatabase,
-            repo: SketchbookRepository,
-        ): DocumentSession {
+        /**
+         * A session over an already-prepared repository, landing on the page it
+         * was left on. The scratchpad builds itself this way too — same page
+         * resolution, same "a stale pointer means the first page" rule.
+         */
+        internal fun on(home: DocumentHome, repo: SketchbookRepository): DocumentSession {
             val page = repo.lastOpenedPage() ?: repo.pages().first()
             val layer = repo.contentLayer(page.id) ?: repo.addLayer(page.id)
             repo.setLastOpenedPage(page.id)
-            return DocumentSession(id, soil, repo, page.id, layer.id)
+            return DocumentSession(home, repo, page.id, layer.id)
         }
     }
 }
