@@ -599,7 +599,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 0 | Plan & decisions (this document) | — | ✅ |
 | 1 | Container skeleton: deps, paths, schema constants, WAL | no | ✅ |
 | 2 | Non-destructive opens, probe, swap repair | no | ✅ |
-| 3 | Crypto core: keystore stores, key mint, KDF cache, rate limiter | no | ⬜ |
+| 3 | Crypto core: keystore stores, key mint, KDF cache, rate limiter | no | ✅ |
 | 4 | Global index DB: Room entities, DAOs, repository, sentinels | no | ⬜ |
 | 5 | Bootstrap gate + unlock UI + launch routing | **yes** | ⬜ |
 | 6 | `.soil` container: schema, `notebook_meta`, create/open/seal, registry | **yes** | ⬜ |
@@ -695,7 +695,7 @@ the three interrupted-swap states from the spec.
 
 Not wired to anything yet: `repairAll` must run before the first probe, which is Phase 5's bootstrap.
 
-## Phase 3 — Crypto core
+## Phase 3 — Crypto core ✅
 Three keystore-backed preference files (secure prefs / derived-key store / reserved), created under
 one lock with one cached instance each and one retry (the keystore throws transiently right after
 boot). Global key minting is synchronized — two concurrent first-callers must not mint two secrets.
@@ -705,6 +705,34 @@ boot). Global key minting is synchronized — two concurrent first-callers must 
 empty files. Escalating rate limiter, persisted. Nothing logged, ever.
 **Verify:** JVM tests for base32 alphabet, KDF vectors, rate-limit escalation; keystore paths by
 inspection.
+
+**As built.** Eight files in a new `crypto/` package: `KeyScope`, `RecoveryKey`, `RawKeyDerivation`,
+`SecureStore` (+ `AndroidSecureStore`, `CryptoStores`), `PassphraseVault`, `RawKeyCache`,
+`AttemptLimiter`, `SoilCrypto`. 40 tests; 173 in the module overall. Notes:
+
+- **`SecureStore` is an interface**, so the passphrase vault, the raw-key cache and the limiter are
+  ordinary logic with JVM tests rather than code welded to a platform keystore. The Android
+  implementation is the only part verified by inspection — which is what the plan anticipated, but
+  it is now three thin methods rather than three subsystems.
+- **The KDF is verified against the JCE's own `PBKDF2WithHmacSHA512`**, for ASCII and across a
+  block boundary, rather than against itself. The hand-rolled implementation exists because
+  `PBEKeySpec` takes a `char[]` and leaves the password→bytes encoding to the provider; here the
+  input is already the exact UTF-8 bytes SQLCipher hashes.
+- **Two store files, not three.** Notesprout's third holds cloud OAuth tokens, and backup/restore is
+  out of scope (decision 8). Secrets and derived keys stay separate so clearing the key cache can
+  never disturb the passphrase that would rebuild it.
+- **`RawKeyCache` takes the KDF as a parameter.** "Derive once" is the class's entire promise, and
+  counting invocations asserts it directly; timing a 256,000-iteration hash would not.
+- **`PassphraseVault.ensureGlobal` synchronizes on a static lock**, not a per-instance one — the
+  guarantee needed is one mint per *process*, and the concurrency test runs 16 threads through it to
+  prove exactly one secret is minted and every caller sees it.
+- **`System.loadLibrary("sqlcipher")` moved into `PaintsproutApplication.onCreate`.** Verified by
+  unzipping the APK: `lib/arm64-v8a/libsqlcipher.so` is packaged, so this cannot fail on the target
+  device — worth checking here rather than discovering it at Phase 5's device test.
+
+Two open-path rules the limiter documents but cannot enforce, for whoever writes Phase 5's unlock
+UI: a **cancelled** prompt is not a failure, and a missing file must be reported as missing rather
+than looped back into the prompt.
 
 ## Phase 4 — Global index DB
 Room entities/DAOs for `objects`, `scratchpad`, `clipboard`, `sketchbook_activity`. One repository
