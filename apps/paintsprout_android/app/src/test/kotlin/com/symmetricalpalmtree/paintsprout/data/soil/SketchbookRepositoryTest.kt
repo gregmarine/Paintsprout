@@ -250,6 +250,37 @@ class SketchbookRepositoryTest {
         assertEquals("the original is untouched", 2, repo.committedOps(layer.id).size)
     }
 
+    /** Where the copy lands: beside its original, not at the back of the book. */
+    @Test
+    fun `a duplicate is inserted after the page it copies`() {
+        repo.createDocument("x")
+        repeat(3) { repo.addPage() }
+        val pages = repo.pages()
+        assertEquals(4, pages.size)
+        val second = pages[1]
+
+        val copy = repo.duplicatePage(second.id)!!
+
+        assertEquals(
+            listOf(pages[0].id, second.id, copy.id, pages[2].id, pages[3].id),
+            repo.pages().map { it.id },
+        )
+        assertEquals("and the order column is dense", listOf(0, 1, 2, 3, 4), repo.pages().map { it.order })
+    }
+
+    /** Duplicating the last page has nowhere after it to go but the end. */
+    @Test
+    fun `duplicating the last page appends`() {
+        repo.createDocument("x")
+        repo.addPage()
+        val last = repo.pages().last()
+
+        val copy = repo.duplicatePage(last.id)!!
+
+        assertEquals(copy.id, repo.pages().last().id)
+        assertEquals(3, repo.pageCount())
+    }
+
     /** Duplicating twice is the id-collision case that crashes without a remap. */
     @Test
     fun `duplicating the same page twice is safe`() {
@@ -447,5 +478,60 @@ class SketchbookRepositoryTest {
         repo.appendOp(layer, op())
 
         assertEquals("WOOD", repo.resolvedSurface(page)!!.kind)
+    }
+
+    // --- Pages, as the page strip drives them -------------------------------
+
+    /**
+     * Reordering has to renumber the survivors, or the next append lands on top
+     * of something.
+     */
+    @Test
+    fun `pages stay a dense sequence through reordering`() {
+        repo.createDocument("x", surfaceKind = "A")
+        listOf("B", "C", "D", "E").forEach { repo.addPage(surfaceKind = it) }
+
+        repo.movePage(repo.pages()[4].id, 0)
+        repo.movePage(repo.pages()[2].id, 4)
+
+        assertEquals(listOf(0, 1, 2, 3, 4), repo.pages().map { it.order })
+        assertEquals(listOf("E", "A", "C", "D", "B"), repo.pages().map { it.kind })
+    }
+
+    /** Deleting a page must not leave the ones after it sharing positions. */
+    @Test
+    fun `deleting a middle page leaves the rest in order`() {
+        repo.createDocument("x", surfaceKind = "A")
+        listOf("B", "C").forEach { repo.addPage(surfaceKind = it) }
+
+        repo.deletePage(repo.pages()[1].id)
+
+        assertEquals(listOf("A", "C"), repo.pages().map { it.kind })
+        assertEquals(3, repo.addPage(surfaceKind = "D").order)
+        assertEquals("a tombstone still holds its place", listOf("A", "C", "D"), repo.pages().map { it.kind })
+    }
+
+    /** Each page gets its own paper and its own seed. */
+    @Test
+    fun `pages carry their own surface`() {
+        repo.createDocument("x", surfaceKind = "PAPER", surfaceSeed = 11L)
+        val second = repo.addPage(surfaceKind = "WATERCOLOR", surfaceSeed = 22L)
+
+        assertEquals("PAPER", repo.pages()[0].kind)
+        assertEquals(11L, repo.pages()[0].seed)
+        assertEquals("WATERCOLOR", repo.pages()[1].kind)
+        assertEquals(22L, second.seed)
+    }
+
+    /** Reopening lands where you left off, and only if that page still exists. */
+    @Test
+    fun `the last opened page is remembered and validated`() {
+        repo.createDocument("x")
+        val second = repo.addPage()
+        repo.setLastOpenedPage(second.id)
+        assertEquals(second.id, repo.lastOpenedPage()!!.id)
+
+        repo.deletePage(second.id)
+        assertNull("a deleted page is not somewhere to land", repo.lastOpenedPage())
     }
 }

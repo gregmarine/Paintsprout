@@ -613,7 +613,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 14 | Library screen (flat): create, open, rename, delete, covers | **yes** | ✅ |
 | 15 | Folders, move, sort, name search | **yes** | ✅ |
 | 16 | Pinned + recents | **yes** | ✅ |
-| 17 | Multi-page UI: page strip, add/duplicate/delete/reorder | **yes** | ⬜ |
+| 17 | Multi-page UI: page strip, add/duplicate/delete/reorder | **yes** | ✅ |
 | 18 | Scratchpad | **yes** | ⬜ |
 | 19 | Lasso tool | **yes** | ⬜ |
 | 20 | Clipboard: copy/paste whole objects | **yes** | ⬜ |
@@ -1409,10 +1409,73 @@ scrubs every edge pointing at a document *before* the row is soft-deleted, and `
 filters members at read as well — belt and braces, because a list that can resurrect a deleted
 sketchbook is a picker crash waiting to happen.
 
-## Phase 17 — Multi-page UI 🧪
+## Phase 17 — Multi-page UI ✅ 🧪
 Page strip with thumbnails, add / duplicate / delete / reorder, prev/next navigation, per-page
 surface selection, `lastOpenedPage` restore, page-count refresh.
 **Device test:** a 10-page book — reorder, delete the current page, relaunch onto the right page.
+
+**As built.** `DocumentSession` grew the page verbs (`pages`, `switchTo`, `addPage`, `duplicatePage`,
+`deletePage`, `movePage`), each of them putting the current page *down* — flush, then cache the
+composited pixels — before picking the next one up, because after the switch nothing holds the old
+page's paint any more. 410 tests.
+
+- **The strip is a dialog, not a permanent rail.** The canvas is drawn at true physical size and
+  centred; giving up an edge of the screen permanently would shrink the sheet on the smallest devices
+  this targets. The rail carries a `3/8` button that opens it.
+- **A page holds its *creation* surface; the current one is derived.** Caching the resolved surface
+  on the page row desynced it the moment an undo walked back past a `surface_op` — found on device.
+  `resolvedSurface()` reads the last committed op instead.
+- **`restoreCanvasSize()`, not `applyCanvasSize()`.** A 5×7 book opened full-screen because switching
+  pages has to *adopt* a stored size, where the obvious call re-rolls the surface seed and wipes
+  history. The two look identical at the call site and are not.
+- **`lastOpenedPage()` filters at read.** A test written this phase caught it resolving soft-deleted
+  pages — the same discipline the pinned list already applies to its member edges.
+- **A duplicate lands after the page it copies.** The subtree copy appends, having nowhere else to
+  put it; the repository now moves it into place, because hunting for your duplicate at the back of a
+  fifty-page book is not what "duplicate" means to anyone.
+- **Prev/next is a finger swept across the sheet**, and drawing stays stylus-only — the hand that
+  turns a page is not the hand holding the pencil. It stops at the covers rather than wrapping.
+  [`PageTurn`](../apps/paintsprout_android/app/src/main/kotlin/com/symmetricalpalmtree/paintsprout/paint/PageTurn.kt)
+  owns the decision so the "was that a turn?" question is unit-testable away from `MotionEvent`.
+
+### The thumbnails that were not there
+
+Nine pages of identical line art produced thumbnails on pages 2, 4, 6, 8, 10 and blank paper on 3, 5,
+7, 9 — perfectly alternating, which is the shape of an aliasing bug rather than a storage one. It was
+worth ruling out storage properly, so the decode was instrumented: **every page had a ~13.4 KB cache
+row and exactly one op**, and the decoded thumbnails came back `opaque=124` / `opaque=0` in strict
+alternation. Nothing was lost; the reduction was throwing it away.
+
+`inSampleSize` **subsamples**: it keeps one row in every *n* and discards the rest. At the factor a
+240-pixel thumbnail wants on a seven-inch page it keeps one row in eight, so a pen line one pixel
+wide survives only when it happens to land on a kept row — and test strokes at a regular pitch land
+alternately on and off it. Real line art is exactly the content this destroys.
+
+The fix is [`ThumbnailPlan`](../apps/paintsprout_android/app/src/main/kotlin/com/symmetricalpalmtree/paintsprout/data/soil/ThumbnailPlan.kt):
+decode full size and walk down in halves, **no step discarding more than three quarters of the
+pixels**, each pass averaging four pixels into one so a hairline arrives faint instead of missing.
+One full-size bitmap exists at a time and is recycled before the next page is read, which keeps the
+memory argument the cheap path was chosen for. The schedule is a pure function precisely because the
+*picture* is what a device test can check and the *schedule* is what a unit test can.
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| Pages dialog: thumbnails, current-page highlight, Add page / Close | ✅ |
+| Build a 10-page book, a stroke on each | ✅ |
+| Thumbnails before the fix | ❌ **blank on every other page** — cache rows all present |
+| Thumbnails after the fix | ✅ all nine drawn pages show their mark, page 1 correctly blank |
+| Tap a thumbnail to switch | ✅ page 3's stroke restored from its own history |
+| Reorder (Move right) | ✅ slots 2 and 3 swap, nothing else moves |
+| Reorder survives a relaunch | ✅ |
+| **Delete the current page** | ✅ lands on the neighbour, 10 → 9 |
+| **Relaunch onto the right page** | ✅ `4/9`, on the page that took the deleted one's place |
+| Duplicate | ✅ inserted at 3/11, directly after its original |
+| Page turn: swipe left / right | ✅ 3→4→5→4 |
+| Page turn: vertical drag, short drag | ✅ neither turns |
+| Page turn stops at both covers | ✅ `1/11` and `11/11` hold |
+| Stylus still draws, and never turns the page | ✅ |
 
 ## Phase 18 — Scratchpad 🧪
 Scratchpad hosting in the editor, multi-page, restricted tool set, always-available entry point, its

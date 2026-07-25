@@ -92,8 +92,17 @@ class SketchbookRepository(
 
     fun rename(title: String) = touchRoot { it.copy(text = title) }
 
-    /** The page to reopen on. Nullable, and never trusted without a lookup. */
-    fun lastOpenedPage(): SoilObject? = root()?.refId?.let { store.byId(it) }
+    /**
+     * The page to reopen on, if it is still there.
+     *
+     * Resolved **and filtered** at read, exactly like list membership: the pointer
+     * is a `refId` to a row that may since have been deleted — here, or in another
+     * session — and a reference is not permission to resurrect what it points at.
+     * A stale pointer means "no particular page", which the caller answers with
+     * the first one.
+     */
+    fun lastOpenedPage(): SoilObject? =
+        root()?.refId?.let { store.byId(it) }?.takeIf { it.isAlive && it.type == SoilType.PAGE }
 
     fun setLastOpenedPage(pageId: String?) = touchRoot { it.copy(refId = pageId) }
 
@@ -215,7 +224,12 @@ class SketchbookRepository(
         )
         val at = now()
         store.upsertAll(copy.map { it.copy(createdAt = at, updatedAt = at) })
-        copy.first()
+        // A copy belongs beside the page it came from. Appending it — which is
+        // what the subtree copy does on its own, having nowhere else to put it —
+        // means hunting for your duplicate at the back of a fifty-page book.
+        val index = pages().indexOfFirst { it.id == pageId }
+        if (index >= 0) movePage(copy.first().id, index + 1)
+        store.byId(copy.first().id) ?: copy.first()
     }
 
     /** Moves a page to [toIndex] among its live siblings, renumbering the rest. */

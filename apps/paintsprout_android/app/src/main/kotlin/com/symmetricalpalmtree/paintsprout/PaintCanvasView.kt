@@ -33,6 +33,7 @@ import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.GalleryExport
 import com.symmetricalpalmtree.paintsprout.paint.GpuRender
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
+import com.symmetricalpalmtree.paintsprout.paint.PageTurn
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
 import com.symmetricalpalmtree.paintsprout.paint.PigmentMixer
 import com.symmetricalpalmtree.paintsprout.paint.SelectionRender
@@ -460,6 +461,9 @@ class PaintCanvasView @JvmOverloads constructor(
     var onOpCommitted: ((PaintOp) -> Unit)? = null
     var onUndone: (() -> Unit)? = null
     var onRedone: (() -> Unit)? = null
+
+    /** A finger swept across the sheet: [PageTurn.FORWARD] or [PageTurn.BACK]. */
+    var onPageTurn: ((PageTurn) -> Unit)? = null
     val canUndo: Boolean get() = committed.isNotEmpty()
     val canRedo: Boolean get() = redoStack.isNotEmpty()
 
@@ -2097,11 +2101,16 @@ class PaintCanvasView @JvmOverloads constructor(
     }
 
     /**
-     * Finger-touch history gestures: a two-finger double-tap undoes, a
-     * three-finger double-tap redoes. A "tap" = all fingers down and up within
-     * ~400 ms with no finger dragged past the slop; the tap's count is the most
-     * fingers down at once. Two matching taps within [DOUBLE_TAP_WINDOW_MS] make
-     * the double-tap. Mirrors Flutter's `_onTouch*` handlers. Always consumes.
+     * Finger-touch gestures: a two-finger double-tap undoes, a three-finger
+     * double-tap redoes, and one finger dragged sideways turns the page. A "tap"
+     * = all fingers down and up within ~400 ms with no finger dragged past the
+     * slop; the tap's count is the most fingers down at once. Two matching taps
+     * within [DOUBLE_TAP_WINDOW_MS] make the double-tap. Mirrors Flutter's
+     * `_onTouch*` handlers. Always consumes.
+     *
+     * The page turn is a *finger* gesture for the same reason drawing is a stylus
+     * one: the hand that turns a sheet is not the hand holding the pencil, and
+     * the two must never be confused for each other mid-mark.
      */
     private fun handleTouchGesture(event: MotionEvent): Boolean {
         val slop = TOUCH_TAP_SLOP_DP * resources.displayMetrics.density
@@ -2125,8 +2134,21 @@ class PaintCanvasView @JvmOverloads constructor(
                 }
             }
             MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP -> {
-                if (touchStart.remove(event.getPointerId(event.actionIndex)) == null) return true
+                val ai = event.actionIndex
+                val from = touchStart.remove(event.getPointerId(ai)) ?: return true
                 if (touchStart.isNotEmpty()) return true // still fingers down; wait
+                if (touchMaxCount == 1 && touchMoved) {
+                    val turn = PageTurn.of(
+                        dx = event.getX(ai) - from.x,
+                        dy = event.getY(ai) - from.y,
+                        minimum = PAGE_TURN_MIN_DP * resources.displayMetrics.density,
+                    )
+                    touchMaxCount = 0
+                    touchMoved = false
+                    pendingTapCount = 0
+                    turn?.let { onPageTurn?.invoke(it) }
+                    return true
+                }
                 val tapped = !touchMoved && event.eventTime - touchSessionStart < TAP_MAX_MS
                 val count = touchMaxCount
                 touchMaxCount = 0
@@ -4626,8 +4648,15 @@ class PaintCanvasView @JvmOverloads constructor(
         const val POLY_TAP_SLOP = 26f
         const val POLY_CLOSE_DIST = 24f
 
-        // Finger history gestures (undo/redo double-tap).
+        // Finger history gestures (undo/redo double-tap) and the page turn.
         const val TOUCH_TAP_SLOP_DP = 18f
+
+        /**
+         * How far one finger must travel sideways to turn the page. Well past the
+         * tap slop, so a finger resting and shifting on the sheet does not flip
+         * away from what you were drawing.
+         */
+        const val PAGE_TURN_MIN_DP = 72f
         const val TAP_MAX_MS = 400L
         const val DOUBLE_TAP_WINDOW_MS = 450L
 

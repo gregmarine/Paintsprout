@@ -48,9 +48,16 @@ class DocumentSession private constructor(
     val documentId: String,
     private val soil: SoilDatabase,
     val repo: SketchbookRepository,
-    val pageId: String,
-    val layerId: String,
+    pageId: String,
+    layerId: String,
 ) {
+
+    /** The page being painted. Changes with [switchTo]. */
+    var pageId: String = pageId
+        private set
+
+    var layerId: String = layerId
+        private set
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lock = Mutex()
@@ -292,6 +299,141 @@ class DocumentSession private constructor(
         }
     }
 
+    // --- Pages --------------------------------------------------------------
+
+    /** One page, as the page strip needs it. */
+    class PageInfo(val id: String, val index: Int, val isCurrent: Boolean, val thumbnail: Bitmap?)
+
+    suspend fun pages(): List<PageInfo> = withContext(Dispatchers.IO) {
+        lock.withLock {
+            repo.pages().mapIndexed { i, page ->
+                val layer = repo.contentLayer(page.id)
+                PageInfo(
+                    id = page.id,
+                    index = i,
+                    isCurrent = page.id == pageId,
+                    thumbnail = layer?.let { decodeThumbnail(repo.cacheRow(it.id)?.blob, THUMBNAIL_EDGE) },
+                )
+            }
+        }
+    }
+
+    /**
+     * Puts the current page down and picks another one up.
+     *
+     * The order matters: everything pending is written and the composited pixels
+     * are cached *before* the page changes, because after it changes there is no
+     * longer anything holding the old page's paint.
+     */
+    suspend fun switchTo(newPageId: String, paint: Bitmap?): PageSnapshot? {
+        if (newPageId == pageId) return null
+        withContext(NonCancellable + Dispatchers.IO) {
+            lock.withLock {
+                runCatching { flushNow() }
+                paint?.let { runCatching { writeCacheLocked(it) } }
+                val layer = repo.contentLayer(newPageId) ?: repo.addLayer(newPageId)
+                pageId = newPageId
+                layerId = layer.id
+                repo.setLastOpenedPage(newPageId)
+            }
+        }
+        return load()
+    }
+
+    suspend fun addPage(surface: SurfaceOp, seed: Long, paint: Bitmap?): PageSnapshot? {
+        val created = withContext(Dispatchers.IO) {
+            lock.withLock {
+                isDirty = true
+                repo.addPage(
+                    surfaceKind = surface.kind.name,
+                    plainColor = ArgbHex.encode(surface.plainColor),
+                    surfaceSeed = seed,
+                    surfaceParams = SurfaceParamsCodec.encode(
+                        canvas = surface.canvas, watercolor = surface.watercolor, wood = surface.wood,
+                        stone = surface.stone, concrete = surface.concrete, metal = surface.metal,
+                        chalkboard = surface.chalkboard,
+                    ),
+                ).id
+            }
+        }
+        return switchTo(created, paint)
+    }
+
+    suspend fun duplicatePage(id: String, paint: Bitmap?): PageSnapshot? {
+        val copy = withContext(Dispatchers.IO) {
+            lock.withLock {
+                isDirty = true
+                runCatching { flushNow() }
+                paint?.let { runCatching { writeCacheLocked(it) } }
+                repo.duplicatePage(id)?.id
+            }
+        } ?: return null
+        return switchTo(copy, paint = null)
+    }
+
+    /**
+     * Deletes a page and lands on a neighbour.
+     *
+     * The last page is never deleted — a sketchbook with no pages has nothing to
+     * open, and "delete then immediately create a blank one" is a worse answer
+     * than simply refusing.
+     */
+    suspend fun deletePage(id: String): PageSnapshot? {
+        val next = withContext(Dispatchers.IO) {
+            lock.withLock {
+                val pages = repo.pages()
+                if (pages.size <= 1) return@withLock null
+                val index = pages.indexOfFirst { it.id == id }
+                if (index < 0) return@withLock null
+                isDirty = true
+                repo.deletePage(id)
+                (pages.getOrNull(index + 1) ?: pages.getOrNull(index - 1))?.id
+            }
+        } ?: return null
+        // The current page may have been the one removed, in which case the
+        // canvas has to be handed its neighbour rather than left showing a ghost.
+        return if (id == pageId) switchTo(next, paint = null) else load()
+    }
+
+    suspend fun movePage(id: String, toIndex: Int) = withContext(Dispatchers.IO) {
+        lock.withLock {
+            isDirty = true
+            repo.movePage(id, toIndex)
+        }
+    }
+
+    /**
+     * A cached page, small enough for a strip of thumbnails.
+     *
+     * Decoded full size and reduced here, rather than by `inSampleSize`.
+     * `inSampleSize` **subsamples**: it keeps one row in every *n* and discards
+     * the rest, so a pen line one pixel wide survives only if it happens to fall
+     * on a kept row. Measured on device with a seven-inch page: at the sample
+     * factor a 240-pixel thumbnail wants, alternate pages of identical line art
+     * came back completely empty. A page strip that shows blank paper for a page
+     * you drew on is worse than no strip at all.
+     *
+     * Halving with filtering averages four pixels into one at every pass, so a
+     * hairline arrives faint instead of missing — see [ThumbnailPlan], which owns
+     * that schedule. One full-size bitmap exists at a time and is recycled before
+     * the next page is read; the reason the cheap path was chosen originally was
+     * memory, and this keeps that.
+     */
+    private fun decodeThumbnail(bytes: ByteArray?, maxEdge: Int): Bitmap? {
+        if (bytes == null) return null
+        return runCatching {
+            var current = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@runCatching null
+            for (step in ThumbnailPlan.steps(current.width, current.height, maxEdge)) {
+                current = current.scaledTo(step.width, step.height)
+            }
+            current
+        }.getOrNull()
+    }
+
+    /** Scales and releases the source, which is always an intermediate here. */
+    private fun Bitmap.scaledTo(width: Int, height: Int): Bitmap =
+        Bitmap.createScaledBitmap(this, width, height, true).also { if (it !== this) recycle() }
+
     // --- Page bookkeeping ---------------------------------------------------
 
     fun setPageSize(width: Float, height: Float) = scope.launch {
@@ -363,6 +505,9 @@ class DocumentSession private constructor(
 
         /** Long enough to batch a burst of strokes; short enough to be invisible. */
         const val DEBOUNCE_MS = 300L
+
+        /** Page-strip thumbnails; small enough that ten of them cost nothing. */
+        const val THUMBNAIL_EDGE = 240
 
         /**
          * Masks are captured at half resolution and stretched at paint time, so

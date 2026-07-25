@@ -35,9 +35,11 @@ import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.ChalkboardParams
 import com.symmetricalpalmtree.paintsprout.paint.ConcreteParams
 import com.symmetricalpalmtree.paintsprout.paint.MetalParams
+import com.symmetricalpalmtree.paintsprout.paint.PageTurn
 import com.symmetricalpalmtree.paintsprout.paint.Pot
 import com.symmetricalpalmtree.paintsprout.paint.StoneParams
 import com.symmetricalpalmtree.paintsprout.paint.SurfaceKind
+import com.symmetricalpalmtree.paintsprout.paint.SurfaceOp
 import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
 import com.symmetricalpalmtree.paintsprout.paint.Tool
 import com.symmetricalpalmtree.paintsprout.paint.Tray
@@ -131,6 +133,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var lineDoneBtn: ImageButton
     private lateinit var undoBtn: ImageButton
     private lateinit var redoBtn: ImageButton
+    private lateinit var pagesBtn: TextView
 
     /** The document being painted into, once it has finished opening. */
     private var session: DocumentSession? = null
@@ -252,6 +255,158 @@ class MainActivity : AppCompatActivity() {
             binding.canvas.onOpCommitted = { opened.record(it) }
             binding.canvas.onUndone = { opened.recordUndo() }
             binding.canvas.onRedone = { opened.recordRedo() }
+            binding.canvas.onPageTurn = ::turnPage
+            refreshPageLabel()
+        }
+    }
+
+    /** "3/8" — which page of how many, shown on the rail's Pages button. */
+    private var pageLabel = "–"
+
+    /**
+     * The page strip.
+     *
+     * A dialog rather than a permanent strip: the canvas is drawn at true physical
+     * size and centred, and permanently giving up an edge of the screen to
+     * navigation would shrink the sheet on the smallest devices this targets.
+     */
+    private fun showPages() {
+        val open = session ?: return
+        lifecycleScope.launch {
+            val pages = open.pages()
+            val row = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(dp(16), dp(8), dp(16), dp(8))
+            }
+            val dialog = MaterialAlertDialogBuilder(this@MainActivity)
+                .setTitle("Pages")
+                .setView(
+                    android.widget.HorizontalScrollView(this@MainActivity).apply {
+                        isHorizontalScrollBarEnabled = false
+                        addView(row)
+                    },
+                )
+                .setNeutralButton("Add page") { _, _ -> addPage() }
+                .setNegativeButton("Close", null)
+                .create()
+
+            pages.forEach { page -> row.addView(pageCard(page, pages.size, dialog)) }
+            dialog.show()
+        }
+    }
+
+    private fun pageCard(
+        page: DocumentSession.PageInfo,
+        total: Int,
+        dialog: androidx.appcompat.app.AlertDialog,
+    ): View {
+        val thumb = android.widget.ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(120), dp(84))
+            scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+            setBackgroundColor(0xFFEFEDE7.toInt())
+            page.thumbnail?.let(::setImageBitmap)
+        }
+        val label = TextView(this).apply {
+            text = "${page.index + 1}"
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTextColor(if (page.isCurrent) 0xFF2E7D32.toInt() else 0xFF6B7075.toInt())
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            // The page you are on is outlined, because a strip of thumbnails with
+            // nothing marked is a strip you have to count along.
+            if (page.isCurrent) setBackgroundColor(0x1A2E7D32)
+            addView(thumb)
+            addView(label)
+            setOnClickListener {
+                dialog.dismiss()
+                switchToPage(page.id)
+            }
+            setOnLongClickListener {
+                dialog.dismiss()
+                pageActions(page, total)
+                true
+            }
+        }
+    }
+
+    private fun pageActions(page: DocumentSession.PageInfo, total: Int) {
+        val open = session ?: return
+        val actions = buildList {
+            add("Duplicate")
+            if (page.index > 0) add("Move left")
+            if (page.index < total - 1) add("Move right")
+            if (total > 1) add("Delete")
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Page ${page.index + 1}")
+            .setItems(actions.toTypedArray()) { _, which ->
+                lifecycleScope.launch {
+                    when (actions[which]) {
+                        "Duplicate" -> open.duplicatePage(page.id, binding.canvas.paintSnapshot())?.let(::applyPage)
+                        "Move left" -> open.movePage(page.id, page.index - 1)
+                        "Move right" -> open.movePage(page.id, page.index + 1)
+                        "Delete" -> open.deletePage(page.id)?.let(::applyPage)
+                    }
+                    refreshPageLabel()
+                }
+            }
+            .show()
+    }
+
+    private fun addPage() {
+        val open = session ?: return
+        lifecycleScope.launch {
+            // A new page starts on the paper you are already using — the same
+            // reasoning as a real sketchbook, where the next sheet is the same
+            // stock as this one.
+            val surface = SurfaceOp(
+                currentSurface(), plainColor, canvasParams, watercolorParams, woodParams,
+                stoneParams, concreteParams, metalParams, chalkboardParams,
+            )
+            open.addPage(surface, java.util.Random().nextLong(), binding.canvas.paintSnapshot())
+                ?.let(::applyPage)
+            refreshPageLabel()
+        }
+    }
+
+    private fun switchToPage(id: String) {
+        val open = session ?: return
+        lifecycleScope.launch {
+            open.switchTo(id, binding.canvas.paintSnapshot())?.let(::applyPage)
+            refreshPageLabel()
+        }
+    }
+
+    /**
+     * Prev/next, driven by a finger swept across the sheet.
+     *
+     * Stops at the covers rather than wrapping: a sketchbook has a first page and
+     * a last one, and arriving at page 1 by swiping past page 40 would be a
+     * teleport, not a page turn.
+     */
+    private fun turnPage(direction: PageTurn) {
+        val open = session ?: return
+        lifecycleScope.launch {
+            val pages = open.pages()
+            val here = pages.indexOfFirst { it.isCurrent }
+            if (here < 0) return@launch
+            val there = if (direction == PageTurn.FORWARD) here + 1 else here - 1
+            val target = pages.getOrNull(there) ?: return@launch
+            open.switchTo(target.id, binding.canvas.paintSnapshot())?.let(::applyPage)
+            refreshPageLabel()
+        }
+    }
+
+    private fun refreshPageLabel() {
+        val open = session ?: return
+        lifecycleScope.launch {
+            val pages = open.pages()
+            val index = pages.indexOfFirst { it.isCurrent }
+            pageLabel = if (index >= 0) "${index + 1}/${pages.size}" else "${pages.size}"
+            updateRail()
         }
     }
 
@@ -371,6 +526,8 @@ class MainActivity : AppCompatActivity() {
         rail.addView(redoBtn)
 
         rail.addView(divider())
+        pagesBtn = textButton("Pages") { showPages() }
+        rail.addView(pagesBtn)
         rail.addView(iconButton(R.drawable.ic_library, "Library") { openLibrary() })
         rail.addView(iconButton(R.drawable.ic_save, "Save PNG") { save() })
         rail.addView(iconButton(R.drawable.ic_canvas_size, "Canvas size") { pickCanvasSize() })
@@ -412,6 +569,7 @@ class MainActivity : AppCompatActivity() {
 
         setEnabled(undoBtn, binding.canvas.canUndo)
         setEnabled(redoBtn, binding.canvas.canRedo)
+        pagesBtn.text = pageLabel
     }
 
     private fun onToolChanged(t: Tool) {
