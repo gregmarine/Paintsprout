@@ -607,7 +607,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 8 | Binary codecs: stroke format B, masks, matrix, wet state | no | ✅ |
 | 9 | Document repository: pages, layers, ops, undoDepth, cache, palette | no | ✅ |
 | 10 | Editor save — strokes + surface ops | **yes** | ✅ |
-| 11 | Editor save — selection ops, clips, wet state, palette | **yes** | ⬜ |
+| 11 | Editor save — selection ops, clips, wet state, palette | **yes** | ✅ 🧪 |
 | 12 | Editor load — raster cache fast path, cross-session undo/redo | **yes** | ⬜ |
 | 13 | Autosave, lifecycle, seal, crash safety | **yes** | ⬜ |
 | 14 | Library screen (flat): create, open, rename, delete, covers | **yes** | ⬜ |
@@ -1100,12 +1100,61 @@ draws. Per the injected-vs-real-input lesson this validates the *mechanism* only
 becomes a row with the right columns — and says nothing about feel, which is the correct use of
 injected input.
 
-## Phase 11 — Editor save: selection ops, clips, wet state, palette 🧪
+## Phase 11 — Editor save: selection ops, clips, wet state, palette ✅ (device test partly outstanding)
 `FillOp` / `EraseOp` / `MoveOp` with cropped masks; `StrokeOp.clip` as a `stroke_clip` child;
 watercolor `wetSchedule` / `wetCrop` / `dryFreeze` as `wet_state`; tray pots, mixture and brush load
 as `palette`/`pot` rows written on change.
 **Device test:** wand-fill, erase, move/scale/rotate, a frisket stroke, an interrupted wash, and a
 custom pigment — all present in the file.
+
+**As built.** `MaskBitmaps`, `RecipeCodec`, the rest of `OpRows`, and `DocumentSession` now handles
+every op type — which removes Phase 10's `desynced` latch. 21 tests; 365 in the module.
+
+- **A mask is stored as alpha only, cropped.** A selection is opaque white where selected, so three
+  bytes in four are waste, and it spans the whole canvas while covering a fraction of it. The row
+  keeps the crop origin (`x`/`y`), the full field it belongs in (`width`/`height`) and the capture
+  resolution (`amount`) — masks are captured at half resolution and stretched at paint time, so that
+  factor travels rather than being assumed.
+- **The frisket and the wet state are children of their stroke**, not ops. They are properties of one
+  stroke rather than steps in the history, and they have to replay with it so the constraint and the
+  frozen drying survive undo and a surface change.
+- **The palette is snapshotted, not queued.** The brush's load changes on every stylus sample as it
+  drains and picks up colour; only the latest value means anything, so it coalesces into the same
+  debounce as the ops — one write per batch instead of hundreds.
+- **A recipe is stored as text** (`AARRGGBB:amount,…`). At most eight pigments, never queried, and
+  something a person debugging a palette wants to read straight out of the row. Parsing is total: a
+  malformed pair is skipped, because a palette missing one pigment beats a document that will not open.
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| Eight pen strokes + two watercolour washes → ten op rows | ✅ |
+| A wash gets a `wet_state` child | ✅ 53 bytes, attached to a `WATERCOLOR` stroke |
+| Mixing pigments writes the well and the brush load | ✅ `{"mixture":"FFE30022:1.0","load":"FFE30022:1.0","capacity":1.0}` |
+| The rim's twelve pots are rows | ✅ |
+| Stock `sqlcipher` reads it all back | ✅ |
+| Crashes | ✅ none |
+
+> ### ⏳ Outstanding: the wand-dependent ops were not exercised on device
+>
+> `fill`, `erase`, `move` and `stroke_clip` all require a **wand selection**, and the wand does not
+> respond to `adb shell input stylus tap` — the flood fill never runs, so there is no selection to
+> fill, erase, move or paint inside. Ten-plus attempts across two input sources; the strokes inject
+> fine, the selection tap does not.
+>
+> Their encoding is covered by unit tests (crop/expand round-trips, every row's columns and geometry,
+> an exactly-preserved transform, unreadable-blob degradation), and the write path is the same
+> `repo.appendOp` the verified ops use. What is unverified is that the hook fires with a real mask
+> attached.
+>
+> **Needs a human with the pen**: wand-tap a painted region, then Fill, then Erase, then drag/scale
+> the selection, then draw a stroke inside a selection. Then background the app and the file should
+> carry `fill` / `erase` / `move` op rows and a `stroke_clip` child.
+>
+> One observation worth checking at the same time: of two injected watercolour washes only one got a
+> `wet_state` row. That is plausibly correct — a very fast injected swipe may never enter the wet
+> simulation at all — but a real pen is the only way to know.
 
 ## Phase 12 — Editor load 🧪
 Open a page: restore canvas size (book), surface kind/params/seed/plain colour (page), palette and

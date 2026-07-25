@@ -6,8 +6,16 @@ import com.symmetricalpalmtree.paintsprout.data.SchemaSql
 import com.symmetricalpalmtree.paintsprout.data.SoilFiles
 import com.symmetricalpalmtree.paintsprout.data.index.IndexGate
 import com.symmetricalpalmtree.paintsprout.data.soil.codec.Params
+import android.graphics.Bitmap
+import com.symmetricalpalmtree.paintsprout.paint.BrushLoad
+import com.symmetricalpalmtree.paintsprout.paint.EraseOp
+import com.symmetricalpalmtree.paintsprout.paint.FillOp
+import com.symmetricalpalmtree.paintsprout.paint.MoveOp
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
+import com.symmetricalpalmtree.paintsprout.paint.Pot
+import com.symmetricalpalmtree.paintsprout.paint.Recipe
 import com.symmetricalpalmtree.paintsprout.paint.StrokeOp
+import com.symmetricalpalmtree.paintsprout.paint.WandFloodFill
 import com.symmetricalpalmtree.paintsprout.paint.SurfaceKind
 import com.symmetricalpalmtree.paintsprout.paint.SurfaceOp
 import kotlinx.coroutines.CoroutineScope
@@ -47,34 +55,34 @@ class DocumentSession private constructor(
     private val pending = ArrayDeque<PaintOp>()
     private var flushJob: Job? = null
 
-    /**
-     * Set when an op arrives that this build cannot yet persist.
-     *
-     * Once true, nothing further is written for this document. A file that is
-     * *visibly* missing its tail is recoverable; a file whose op sequence has a
-     * hole in the middle claims to be a painting it is not, and would replay as
-     * one. Phase 11 handles the remaining op types and this stops being reachable.
-     */
-    var desynced: Boolean = false
-        private set
+    /** The tray, captured on change and written with the next batch. */
+    private var pendingPalette: PaletteSnapshot? = null
 
     // --- Recording ----------------------------------------------------------
 
     fun record(op: PaintOp) {
-        if (desynced) return
-        if (!canPersist(op)) {
-            desynced = true
-            return
-        }
         synchronized(pending) { pending.addLast(op) }
         scheduleFlush()
     }
 
+    /**
+     * The palette, as it stands.
+     *
+     * Snapshotted rather than queued: the brush's load changes on every stylus
+     * sample as it drains and picks up colour, and only its latest value is worth
+     * anything. Coalescing it into the same debounce as the ops means a dirty
+     * brush costs one write per batch instead of hundreds.
+     */
+    fun recordPalette(pots: List<Pot>, mixture: Recipe, load: BrushLoad) {
+        pendingPalette = PaletteSnapshot(pots.toList(), mixture, load)
+        scheduleFlush()
+    }
+
+    private class PaletteSnapshot(val pots: List<Pot>, val mixture: Recipe, val load: BrushLoad)
+
     fun recordUndo() = scope.launch { lock.withLock { flushNow(); repo.undo(layerId) } }
 
     fun recordRedo() = scope.launch { lock.withLock { flushNow(); repo.redo(layerId) } }
-
-    private fun canPersist(op: PaintOp): Boolean = op is StrokeOp || op is SurfaceOp
 
     private fun scheduleFlush() {
         if (flushJob?.isActive == true) return
@@ -89,32 +97,83 @@ class DocumentSession private constructor(
 
     private suspend fun flushNow() {
         val batch = synchronized(pending) {
-            if (pending.isEmpty()) return
             val copy = pending.toList()
             pending.clear()
             copy
         }
+        val palette = pendingPalette.also { pendingPalette = null }
+        if (batch.isEmpty() && palette == null) return
+
         withContext(NonCancellable + Dispatchers.IO) {
             runCatching {
                 repo.transaction {
                     batch.forEach(::write)
+                    palette?.let(::writePalette)
                 }
             }
         }
     }
 
+    private fun writePalette(snapshot: PaletteSnapshot) {
+        repo.writePaletteState(OpRows.paletteParams(snapshot.mixture, snapshot.load))
+        // The rim is small and changes rarely; rewriting it wholesale is simpler
+        // than diffing, and a pot is identified by what it is rather than by an id.
+        val existing = repo.pots()
+        val wanted = snapshot.pots
+        if (existing.size == wanted.size &&
+            existing.zip(wanted).all { (row, pot) ->
+                row.text == pot.name && row.color == ArgbHex.encode(pot.color)
+            }
+        ) {
+            return
+        }
+        existing.forEach { repo.removePot(it.id) }
+        wanted.forEachIndexed { i, pot -> repo.addPot(pot.name, ArgbHex.encode(pot.color), pot.custom) }
+    }
+
     private fun write(op: PaintOp) {
         when (op) {
-            is StrokeOp -> repo.appendOp(layerId, OpRows.strokeRow(op.stroke))
+            is StrokeOp -> {
+                val row = repo.appendOp(layerId, OpRows.strokeRow(op.stroke))
+                // The frisket and the wet state are properties of this one stroke,
+                // not steps in the history, so they hang off it as children and
+                // replay with it.
+                op.clip?.let { clip ->
+                    maskOf(clip)?.let { repo.attach(row.id, OpRows.clipRow(it, DOWNSAMPLE)) }
+                }
+                OpRows.wetStateRow(op.stroke)?.let { repo.attach(row.id, it) }
+            }
+
+            is FillOp -> maskOf(op.mask)?.let {
+                repo.appendOp(layerId, OpRows.fillRow(op.color, it, DOWNSAMPLE))
+            }
+
+            is EraseOp -> maskOf(op.mask)?.let {
+                repo.appendOp(layerId, OpRows.eraseRow(it, DOWNSAMPLE))
+            }
+
+            is MoveOp -> maskOf(op.sourceMask)?.let {
+                val matrix = FloatArray(9).also { m -> op.transform.getValues(m) }
+                repo.appendOp(layerId, OpRows.moveRow(matrix, it, DOWNSAMPLE))
+            }
+
             // Only the op. The page row holds the surface the page was *created*
             // on and is never rewritten — see SketchbookRepository.resolvedSurface.
             // Caching the current surface there instead looked obviously right and
             // was wrong: undoing a surface change moved the history and left the
             // cached answer behind, so the page reloaded on the wrong paper.
             is SurfaceOp -> repo.appendOp(layerId, OpRows.surfaceRow(op))
-            else -> Unit // unreachable: canPersist gates this
         }
     }
+
+    /**
+     * An empty mask yields null and the op is skipped.
+     *
+     * That is the right answer rather than a lost edit: a fill or erase over
+     * nothing changed nothing, so there is nothing for a replay to do.
+     */
+    private fun maskOf(bitmap: Bitmap): MaskBitmaps.Cropped? =
+        runCatching { MaskBitmaps.encode(bitmap) }.getOrNull()
 
     // --- Page bookkeeping ---------------------------------------------------
 
@@ -146,6 +205,13 @@ class DocumentSession private constructor(
 
         /** Long enough to batch a burst of strokes; short enough to be invisible. */
         const val DEBOUNCE_MS = 300L
+
+        /**
+         * Masks are captured at half resolution and stretched at paint time, so
+         * the factor travels with each one rather than being assumed by whoever
+         * reads it back.
+         */
+        private val DOWNSAMPLE = WandFloodFill.DOWNSAMPLE.toFloat()
 
         /**
          * Opens the given document, or creates one when there is nothing to open.

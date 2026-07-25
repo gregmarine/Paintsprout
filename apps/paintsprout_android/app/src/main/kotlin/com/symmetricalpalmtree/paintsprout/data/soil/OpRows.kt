@@ -1,6 +1,12 @@
 package com.symmetricalpalmtree.paintsprout.data.soil
 
+import com.symmetricalpalmtree.paintsprout.data.soil.codec.MaskCodec
+import com.symmetricalpalmtree.paintsprout.data.soil.codec.MoveCodec
+import com.symmetricalpalmtree.paintsprout.data.soil.codec.Params
 import com.symmetricalpalmtree.paintsprout.data.soil.codec.StrokeCodec
+import com.symmetricalpalmtree.paintsprout.data.soil.codec.WetStateCodec
+import com.symmetricalpalmtree.paintsprout.paint.BrushLoad
+import com.symmetricalpalmtree.paintsprout.paint.Recipe
 import com.symmetricalpalmtree.paintsprout.paint.Stroke
 import com.symmetricalpalmtree.paintsprout.paint.SurfaceOp
 import com.symmetricalpalmtree.paintsprout.paint.Tool
@@ -82,6 +88,128 @@ object OpRows {
             metal = op.metal,
             chalkboard = op.chalkboard,
         ).encode(),
+    )
+
+    // --- Selection ops ------------------------------------------------------
+
+    /**
+     * The three ops that act on a wand or lasso region.
+     *
+     * They share a shape: a mask in the blob, and the geometry needed to put it
+     * back — the crop's origin in `x`/`y`, the full field it belongs in as
+     * `width`/`height`, and the resolution it was captured at in `amount`. The
+     * mask is captured at half resolution and stretched at paint time, so that
+     * factor has to travel with it rather than being assumed.
+     */
+    fun fillRow(color: Int, mask: MaskBitmaps.Cropped, downsample: Float): SoilObject =
+        maskRow(SoilType.FILL, mask, downsample).copy(
+            color = ArgbHex.encode(color),
+            blob = MaskCodec.encode(mask.mask),
+        )
+
+    fun eraseRow(mask: MaskBitmaps.Cropped, downsample: Float): SoilObject =
+        maskRow(SoilType.ERASE, mask, downsample).copy(blob = MaskCodec.encode(mask.mask))
+
+    /**
+     * A move carries its transform in the blob alongside the mask. Nine floats
+     * through decimal text would drift, and a transform that drifts re-lays the
+     * lifted paint slightly off on every replay.
+     */
+    fun moveRow(matrix: FloatArray, mask: MaskBitmaps.Cropped, downsample: Float): SoilObject =
+        maskRow(SoilType.MOVE, mask, downsample).copy(
+            blob = MoveCodec.encode(MoveCodec.Move(matrix, mask.mask)),
+        )
+
+    /**
+     * The frisket a stroke was drawn inside.
+     *
+     * A child of the stroke rather than an op of its own: it is not a step in the
+     * history, it is a property of that one stroke, and it has to replay with it
+     * so the constraint survives undo and a surface change.
+     */
+    fun clipRow(mask: MaskBitmaps.Cropped, downsample: Float): SoilObject =
+        maskRow(SoilType.STROKE_CLIP, mask, downsample).copy(blob = MaskCodec.encode(mask.mask))
+
+    private fun maskRow(type: String, mask: MaskBitmaps.Cropped, downsample: Float) = SoilObject(
+        id = "",
+        parentId = "",
+        type = type,
+        x = mask.left.toFloat(),
+        y = mask.top.toFloat(),
+        width = mask.fullWidth.toFloat(),
+        height = mask.fullHeight.toFloat(),
+        amount = downsample,
+    )
+
+    fun readMask(row: SoilObject): MaskBitmaps.Cropped? {
+        val mask = when (row.type) {
+            SoilType.MOVE -> MoveCodec.decode(row.blob)?.mask
+            else -> MaskCodec.decode(row.blob)
+        } ?: return null
+        return MaskBitmaps.Cropped(
+            mask = mask,
+            left = (row.x ?: 0f).toInt(),
+            top = (row.y ?: 0f).toInt(),
+            fullWidth = (row.width ?: 0f).toInt(),
+            fullHeight = (row.height ?: 0f).toInt(),
+        )
+    }
+
+    fun readMatrix(row: SoilObject): FloatArray? = MoveCodec.decode(row.blob)?.matrix
+
+    // --- Watercolour ---------------------------------------------------------
+
+    /**
+     * The wall-clock state a wash needs to replay as what the user watched.
+     *
+     * A child of the stroke, and only written for a stroke that actually went
+     * wet — a dry tool has none, and a wash that dried fully has no freeze.
+     */
+    fun wetStateRow(stroke: Stroke): SoilObject? {
+        val crop = stroke.wetCrop
+        val schedule = stroke.wetSchedule
+        val freeze = stroke.dryFreeze
+        if (schedule.isEmpty() && crop == null && freeze == null) return null
+        return SoilObject(
+            id = "",
+            parentId = "",
+            type = SoilType.WET_STATE,
+            blob = WetStateCodec.encode(
+                WetStateCodec.WetState(
+                    schedule = schedule.toIntArray(),
+                    crop = crop?.let { intArrayOf(it.left, it.top, it.right, it.bottom) },
+                    dryFreeze = freeze,
+                ),
+            ),
+        )
+    }
+
+    fun readWetState(row: SoilObject): WetStateCodec.WetState? = WetStateCodec.decode(row.blob)
+
+    // --- The tray ------------------------------------------------------------
+
+    fun potRow(name: String, color: Int, custom: Boolean, order: Int): SoilObject = SoilObject(
+        id = "",
+        parentId = "",
+        type = SoilType.POT,
+        order = order,
+        text = name,
+        color = ArgbHex.encode(color),
+        flags = if (custom) SoilFlags.POT_CUSTOM else 0,
+    )
+
+    /** What is in the mixing well and what the brush is carrying. */
+    fun paletteParams(mixture: Recipe, load: BrushLoad): Params = Params.of(
+        "mixture" to RecipeCodec.encode(mixture),
+        "load" to RecipeCodec.encode(load.recipe),
+        "capacity" to load.capacity,
+    )
+
+    fun readMixture(params: Params): Recipe = RecipeCodec.decode(params.string("mixture", ""))
+
+    fun readLoad(params: Params): BrushLoad = BrushLoad(
+        recipe = RecipeCodec.decode(params.string("load", "")),
+        capacity = params.float("capacity", BrushLoad.DEFAULT_CAPACITY),
     )
 
     private const val DEFAULT_COLOR = 0xFF000000.toInt()

@@ -163,6 +163,7 @@ class MainActivity : AppCompatActivity() {
             syncSurfaceFromCanvas()
             updateRail()
         }
+        binding.canvas.onBrushLoadChanged = { recordPalette() }
         binding.canvas.onSelectionChanged = {
             hasSelection = it
             updateRail()
@@ -220,6 +221,17 @@ class MainActivity : AppCompatActivity() {
             binding.canvas.onUndone = { opened.recordUndo() }
             binding.canvas.onRedone = { opened.recordRedo() }
         }
+    }
+
+    /**
+     * Snapshots the tray into the document.
+     *
+     * Called on every change including the brush picking up colour mid-stroke;
+     * the session keeps only the latest and writes it with the next batch, so a
+     * dirty brush costs one write rather than hundreds.
+     */
+    private fun recordPalette() {
+        session?.recordPalette(tray.pots, tray.mixture, binding.canvas.brushLoad)
     }
 
     override fun onPause() {
@@ -383,13 +395,16 @@ class MainActivity : AppCompatActivity() {
             binding.canvas.loadBrush(load)
             color = load.color
             updateRail()
+            recordPalette()
         }
         binding.tray.onAddPot = {
             pickColor("Add a pigment", color) { c ->
                 tray.addPot(Pot(namePot(c), c, custom = true))
                 binding.tray.tray = tray
+                recordPalette()
             }
         }
+        binding.tray.onMixtureChanged = { recordPalette() }
 
         // Park the palette off-screen until it's pulled out, leaving the tab.
         binding.trayPanel.doOnLayout {
