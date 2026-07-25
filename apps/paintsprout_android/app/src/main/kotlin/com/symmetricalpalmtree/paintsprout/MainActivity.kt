@@ -13,6 +13,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
@@ -48,6 +50,7 @@ import com.symmetricalpalmtree.paintsprout.paint.WoodParams
 import com.symmetricalpalmtree.paintsprout.data.LastOpen
 import com.symmetricalpalmtree.paintsprout.data.index.IndexGate
 import com.symmetricalpalmtree.paintsprout.data.soil.DocumentSession
+import com.symmetricalpalmtree.paintsprout.data.soil.PageTransfer
 import com.symmetricalpalmtree.paintsprout.data.soil.Scratchpad
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CoroutineScope
@@ -487,6 +490,104 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Sends this page somewhere else — a copy, never a move.
+     *
+     * The page stays where it is. "Send" reads as though it leaves, and it would
+     * be a strange thing to do to somebody's only copy of a drawing; what this
+     * does is put a duplicate on the shelf they asked for.
+     */
+    private fun sendPage() {
+        val open = session ?: return
+        val destinations = buildList {
+            if (!isScratchpad) add(getString(R.string.send_to_scratchpad))
+            add(getString(R.string.send_to_sketchbook))
+            add(getString(R.string.send_to_new_sketchbook))
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.send_title)
+            .setItems(destinations.toTypedArray()) { _, which ->
+                when (destinations[which]) {
+                    getString(R.string.send_to_scratchpad) -> sendToScratchpad(open)
+                    getString(R.string.send_to_sketchbook) -> pickSketchbook(open)
+                    else -> promptNewSketchbook(open)
+                }
+            }
+            .show()
+    }
+
+    private fun sendToScratchpad(open: DocumentSession) {
+        lifecycleScope.launch {
+            // Flushed first: a page is sent as it stands on disk, and the last
+            // stroke may still be sitting in the debounce window.
+            runCatching { open.flush() }
+            val ok = runCatching { PageTransfer.toScratchpad(open.repo, open.pageId) }.getOrDefault(false)
+            toast(if (ok) getString(R.string.send_done, Scratchpad.NAME) else getString(R.string.send_failed))
+        }
+    }
+
+    /**
+     * The books this page could go to — every one except the one it is already
+     * in, which is what Duplicate Page is for and what an open file cannot
+     * safely be.
+     */
+    private fun pickSketchbook(open: DocumentSession) {
+        lifecycleScope.launch {
+            val index = IndexGate.awaitReady()
+            val books = index.allSketchbooks().filter { it.id != open.documentId }
+            if (books.isEmpty()) {
+                toast(getString(R.string.send_no_books))
+                return@launch
+            }
+            MaterialAlertDialogBuilder(this@MainActivity)
+                .setTitle(R.string.send_to_sketchbook)
+                .setItems(books.map { it.name }.toTypedArray()) { _, which ->
+                    val book = books[which]
+                    lifecycleScope.launch {
+                        runCatching { open.flush() }
+                        val ok = runCatching {
+                            PageTransfer.toSketchbook(this@MainActivity, open.repo, open.pageId, book.id)
+                        }.getOrDefault(false)
+                        toast(if (ok) getString(R.string.send_done, book.name) else getString(R.string.send_failed))
+                    }
+                }
+                .show()
+        }
+    }
+
+    private fun promptNewSketchbook(open: DocumentSession) {
+        val input = EditText(this).apply {
+            hint = getString(R.string.library_name_hint)
+            setText(getString(R.string.library_default_name))
+            setSingleLine()
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.send_to_new_sketchbook)
+            .setView(FrameLayout(this).apply { setPadding(dp(24), dp(8), dp(24), 0); addView(input) })
+            .setPositiveButton(R.string.library_create) { _, _ ->
+                val name = input.text.toString().trim().ifEmpty { getString(R.string.library_default_name) }
+                lifecycleScope.launch {
+                    runCatching { open.flush() }
+                    val book = runCatching {
+                        // The new book takes this page's size, so the drawing
+                        // arrives at the size it was drawn.
+                        PageTransfer.toNewSketchbook(
+                            this@MainActivity, open.repo, open.pageId, name, canvasSize,
+                        )
+                    }.getOrNull()
+                    toast(
+                        if (book != null) getString(R.string.send_done, book.name)
+                        else getString(R.string.send_failed),
+                    )
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun toast(message: String) =
+        Snackbar.make(binding.root, message, Snackbar.LENGTH_SHORT).show()
+
     private fun refreshClipboard() {
         val open = session ?: return
         lifecycleScope.launch {
@@ -629,6 +730,7 @@ class MainActivity : AppCompatActivity() {
         rail.addView(pagesBtn)
         scratchBtn = iconButton(R.drawable.ic_scratchpad, "Scratchpad") { toggleScratchpad() }
         rail.addView(scratchBtn)
+        rail.addView(iconButton(R.drawable.ic_send, "Send page") { sendPage() })
         rail.addView(iconButton(R.drawable.ic_library, "Library") { openLibrary() })
         rail.addView(iconButton(R.drawable.ic_save, "Save PNG") { save() })
         canvasSizeBtn = iconButton(R.drawable.ic_canvas_size, "Canvas size") { pickCanvasSize() }

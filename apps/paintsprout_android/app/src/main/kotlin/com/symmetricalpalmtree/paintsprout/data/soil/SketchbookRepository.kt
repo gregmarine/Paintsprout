@@ -232,6 +232,50 @@ class SketchbookRepository(
         store.byId(copy.first().id) ?: copy.first()
     }
 
+    /**
+     * A page and everything under it — layers, ops, attachments, cache.
+     *
+     * The read half of a transfer. It is deliberately the *whole* subtree rather
+     * than a curated selection: whatever the page is made of travels, including
+     * the layer's `undoDepth`, so the page arrives somewhere else with its undo
+     * history intact rather than as a flattened result.
+     */
+    fun pageSubtree(pageId: String): List<SoilObject> {
+        // Alive, and actually a page. `byId` answers for tombstones too — that is
+        // what makes undelete possible — so a deleted page would otherwise travel
+        // as a deleted page and arrive invisible.
+        val page = store.byId(pageId)
+            ?.takeIf { it.type == SoilType.PAGE && it.isAlive }
+            ?: return emptyList()
+        return listOf(page) + Subtrees.collect(pageId, store::childrenOf)
+    }
+
+    /**
+     * The write half: takes a subtree read from *another* document and lands it
+     * here as a new last page.
+     *
+     * Fresh ids for everything, through the one shared helper — [rows] carry the
+     * ids they had in the document they came from, and sending the same page
+     * twice, or sending it back where it came from, is otherwise a `UNIQUE`
+     * failure in the middle of somebody's work.
+     */
+    fun insertPage(rows: List<SoilObject>, sourcePageId: String): SoilObject? = store.transaction {
+        if (rows.none { it.id == sourcePageId }) return@transaction null
+        val copy = Subtrees.copyInto(
+            rows = rows,
+            rootId = sourcePageId,
+            newParentId = rootId,
+            order = Subtrees.nextOrder(store.childrenOfType(rootId, SoilType.PAGE)),
+            newId = newId,
+        )
+        val at = now()
+        // createdAt is stamped fresh — this page arrived here now, whatever age
+        // its source is — while updatedAt would be a lie either way; it is the
+        // same content.
+        store.upsertAll(copy.map { it.copy(createdAt = at, updatedAt = at) })
+        store.byId(copy.first().id) ?: copy.first()
+    }
+
     /** Moves a page to [toIndex] among its live siblings, renumbering the rest. */
     fun movePage(pageId: String, toIndex: Int) = store.transaction {
         val ordered = pages().toMutableList()

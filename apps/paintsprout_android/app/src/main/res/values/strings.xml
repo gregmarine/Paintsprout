@@ -72,4 +72,11 @@
         <item quantity="one">Pasted %1$d mark</item>
         <item quantity="other">Pasted %1$d marks</item>
     </plurals>
+    <string name="send_title">Send this page</string>
+    <string name="send_to_scratchpad">To the scratchpad</string>
+    <string name="send_to_sketchbook">To a sketchbook…</string>
+    <string name="send_to_new_sketchbook">To a new sketchbook…</string>
+    <string name="send_done">Sent to %1$s</string>
+    <string name="send_failed">That didn\'t send</string>
+    <string name="send_no_books">There\'s no other sketchbook to send it to</string>
 </resources>

@@ -56,6 +56,9 @@ class IndexRepository(
     /** Every folder, for a move picker and for ancestry walks. */
     suspend fun allFolders(): List<IndexObject> = objects.liveOfType(IndexType.FOLDER)
 
+    /** Every sketchbook, wherever it is filed — for a send-to picker. */
+    suspend fun allSketchbooks(): List<IndexObject> = objects.liveOfType(IndexType.SKETCHBOOK)
+
     /**
      * Whether a folder still holds anything.
      *

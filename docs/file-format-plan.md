@@ -617,7 +617,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 18 | Scratchpad | **yes** | ✅ |
 | 19 | Lasso tool | **yes** | ✅ |
 | 20 | Clipboard: copy/paste whole objects | **yes** | ✅ |
-| 21 | Send to scratchpad / send to sketchbook | **yes** | ⬜ |
+| 21 | Send to scratchpad / send to sketchbook | **yes** | ✅ |
 | 22 | Export `.soil` + `notebook_meta` upkeep | **yes** | ⬜ |
 | 23 | Import `.soil` | **yes** | ⬜ |
 | 24 | Encryption UX: per-document passphrase, rotation, lock states | **yes** | ⬜ |
@@ -1658,9 +1658,48 @@ made it visible, because Copy is the first button that would have acted on nothi
 | Clipboard survives process death | ✅ force-stop and cold launch, Paste still offered and still works |
 | Stale selection after a page switch | ❌ **rail still offered Copy** — fixed, then ✅ buttons clear on a page turn |
 
-## Phase 21 — Send to scratchpad / send to sketchbook 🧪
+## Phase 21 — Send to scratchpad / send to sketchbook ✅ 🧪
 Whole-page transfer both directions with a target picker, carrying the surface across.
 **Device test:** both directions, including into a brand-new sketchbook.
+
+**As built.** A page is a subtree and both ends of a transfer are a `SketchbookRepository`, so this
+phase is a read from one and a write to the other — `pageSubtree` and `insertPage`, twenty lines
+between them. The scratchpad is a repository over the index's own table and a sketchbook is one over
+its file; the direction of travel changes which is which and changes nothing else. That is the payoff
+for Phase 9's decision to parameterise the repository rather than write a second one. 469 tests.
+
+- **Everything under the page travels**: layers, ops, attachments, the raster cache, and the layer's
+  `undoDepth` — so a page arrives somewhere else *mid-history*, with its undo and redo intact, rather
+  than as a flattened result. The paper comes too without being handled: the surface a page was
+  created on is a column on the page row, and every later change is an op in the sequence.
+- **Size does not travel.** Marks keep their coordinates, because those coordinates are millimetres
+  on a calibrated screen. A page sent into a smaller book keeps the size it was drawn at and may run
+  off the sheet, which is the honest outcome rather than silently rescaling somebody's drawing — and
+  it is why a brand-new destination book takes the *source's* canvas size.
+- **Send is a copy, and the page stays put.** "Send" reads as though it leaves, which would be a
+  strange thing to do to somebody's only copy of a drawing.
+- **A new book made to receive a page holds only that page.** Creating a book mints a first sheet
+  nobody asked for; it is removed once the sent page has landed beside it — that order, so a failed
+  transfer never leaves a book with nothing to open.
+- **The picker excludes the book you are in.** That case is Duplicate Page, and it is also the one
+  file that cannot safely be written behind the editor's back — `toSketchbook` refuses an open
+  document outright rather than trusting the picker to have filtered it.
+- **`pageSubtree` refuses a tombstone.** `byId` answers for soft-deleted rows — that is what makes
+  undelete possible — so a deleted page would otherwise travel as a deleted page and arrive
+  invisible. Caught by a test, not on device.
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| Scratchpad → **a brand-new sketchbook** | ✅ "Scratch study", **1 page**, not two |
+| Its content | ✅ the scratch page exactly, at the size it was drawn |
+| Sketchbook → scratchpad | ✅ the pad went 3 → 4 pages |
+| **The round trip** | ✅ pad page 2 and the page that went pad → new book → pad are **pixel-identical** (3,641 dark pixels either side) |
+| Sketchbook → an existing sketchbook | ✅ Harbour 11 → **12 pages**, index count refreshed |
+| The picker's contents | ✅ the other two books; the one you are in is absent |
+| "To the scratchpad" while in the scratchpad | ✅ not offered |
+| The source page after sending | ✅ still there, unchanged |
 
 ## Phase 22 — Export 🧪
 `notebook_meta` continuous upkeep (create / open / close), then export as a raw file copy named
