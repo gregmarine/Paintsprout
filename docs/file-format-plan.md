@@ -610,7 +610,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | 11 | Editor save — selection ops, clips, wet state, palette | **yes** | ✅ |
 | 12 | Editor load — raster cache fast path, cross-session undo/redo | **yes** | ✅ |
 | 13 | Autosave, lifecycle, seal, crash safety | **yes** | ✅ |
-| 14 | Library screen (flat): create, open, rename, delete, covers | **yes** | ⬜ |
+| 14 | Library screen (flat): create, open, rename, delete, covers | **yes** | ✅ |
 | 15 | Folders, move, sort, name search | **yes** | ⬜ |
 | 16 | Pinned + recents | **yes** | ⬜ |
 | 17 | Multi-page UI: page strip, add/duplicate/delete/reorder | **yes** | ⬜ |
@@ -1282,11 +1282,54 @@ epoch-ms value before and after a full open/close cycle with no edits.
 the per-step `runCatching` it would exercise is visible by inspection. Left for Phase 25's hardening
 pass, where a fault-injection seam would earn its keep across the compactor too.
 
-## Phase 14 — Library screen (flat) 🧪
+## Phase 14 — Library screen (flat) ✅ 🧪
 `LibraryActivity`: list, create (with a canvas-size chooser — book-level), open, rename, delete,
 duplicate. Cover capture on seal. Launch routing wired to the library button.
 **Device test:** create several books, confirm covers, names, page counts, and that deleting scrubs
 cleanly.
+
+**As built.** `Sketchbooks` (the facade), `LibraryActivity`, `coverSnapshot()`,
+`restoreCanvasSize()`, a library button in the rail, and the **temporary long-press-Save debug hook
+removed**. 5 tests; 384 in the module.
+
+- **`Sketchbooks` makes and unmakes both halves together.** A file with no row is invisible; a row
+  with no file is a card that opens onto nothing — and, handed to a create-capable helper, an empty
+  ghost that masquerades as the real document. The file is created first, because a row pointing at a
+  document that failed to appear is the worse of the two half-states.
+- **Cards are drawn entirely from index rows.** Name, page count, cover — never by opening a
+  document. That is the rule the index exists for: deciding whether a book is locked must not require
+  the key you are deciding whether to ask for.
+- **Duplicate copies the bytes and then re-identifies the copy's root row.** The root carries the
+  document's own id, so without that the duplicate would insist it was the original. Pages, layers and
+  ops keep their ids, which is safe — they are private to the file and nothing outside refers to them.
+- **The grid is rebuilt wholesale, not diffed.** Folders and search (Phase 15) will change its shape
+  enough that a list adapter now would be scaffolding built to be torn down.
+
+**A gap the device found.** Creating a 5×7 sketchbook opened it **full-screen**: the canvas size was
+being written at creation and read by nothing. Phase 12 restored the surface, seed, palette and
+history but never the size. Worse, the obvious fix was wrong — `applyCanvasSize` clears the op
+history and re-rolls the surface seed, which is right when a *user* picks a new size (a new sheet)
+and catastrophic when reopening a book. So `restoreCanvasSize` exists alongside it: same buffers,
+same history, same seed. It runs first in `applyPage`, before any pixels or ops land.
+
+A smaller one, also from looking at it on glass: Material puts `setView` *below* `setSingleChoiceItems`,
+so the New dialog asked for the size before the name. It is one custom view now, in reading order.
+
+### Device test results (Movink 11, 2026-07-25)
+
+| Check | Result |
+|---|---|
+| The library lists existing books | ✅ |
+| A card shows the real artwork as its cover | ✅ 42 KB WEBP, thumbnailed from the seal |
+| Page count on the card | ✅ |
+| Create with a name and a print size | ✅ `Harbour`, `PRINT 7×5` |
+| A print-size book opens at true size in its mat | ✅ (after the fix above) |
+| A book with nothing painted has no cover | ✅ 0 B — `isDirty` never became true, so nothing was written |
+| Both files sealed in the garden, no sidecars | ✅ |
+| Opening a card routes to the editor | ✅ |
+
+That "no cover" row is the dirty-tracking discipline showing up where it should: a book created and
+opened but never painted in writes no cover and does not move `updatedAt`.
 
 ## Phase 15 — Folders, move, sort, search 🧪
 Folder rows, breadcrumb navigation, create/rename/delete folder (with a non-empty-folder policy),

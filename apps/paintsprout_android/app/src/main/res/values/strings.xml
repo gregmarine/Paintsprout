@@ -20,4 +20,26 @@
 
     <string name="bootstrap_failed_title">Couldn\'t open your library</string>
     <string name="bootstrap_retry">Try again</string>
+
+    <!-- Library -->
+    <string name="library_title">Sketchbooks</string>
+    <string name="library_new">New</string>
+    <string name="library_create">Create</string>
+    <string name="library_empty">No sketchbooks yet. Make one and start painting.</string>
+    <string name="library_name_hint">Name</string>
+    <string name="library_size">Size</string>
+    <string name="library_default_name">Sketchbook</string>
+    <string name="library_rename">Rename</string>
+    <string name="library_duplicate">Duplicate</string>
+    <string name="library_delete">Delete</string>
+    <string name="library_copy_of">%1$s copy</string>
+    <string name="library_delete_title">Delete “%1$s”?</string>
+    <string name="library_delete_body">The sketchbook and everything in it will be removed from this device.</string>
+    <string name="library_failed">That didn\'t work</string>
+    <string name="library_open">Library</string>
+
+    <plurals name="library_pages">
+        <item quantity="one">%d page</item>
+        <item quantity="other">%d pages</item>
+    </plurals>
 </resources>

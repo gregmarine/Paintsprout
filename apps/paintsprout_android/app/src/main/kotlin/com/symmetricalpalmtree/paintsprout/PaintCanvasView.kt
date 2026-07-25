@@ -905,6 +905,20 @@ class PaintCanvasView @JvmOverloads constructor(
      * different-sized sheet can't share the old buffers, so the paint and the undo
      * history are cleared (fresh paper, new surface seed).
      */
+    /**
+     * Sets the sheet's size when a saved book is reopened.
+     *
+     * Deliberately *not* [applyCanvasSize], which clears the history and re-rolls
+     * the seed because choosing a new size means starting a new sheet. This is the
+     * same sheet being picked up again: the buffers are resized and everything
+     * else is left exactly where it was, so the ops and the cache that follow land
+     * on a canvas of the right shape.
+     */
+    fun restoreCanvasSize(size: CanvasSize) {
+        canvasSize = size
+        if (width > 0 && height > 0) reconfigureBuffers(width, height)
+    }
+
     fun applyCanvasSize(size: CanvasSize) {
         canvasSize = size
         if (width <= 0 || height <= 0) return // onSizeChanged will apply it once laid out

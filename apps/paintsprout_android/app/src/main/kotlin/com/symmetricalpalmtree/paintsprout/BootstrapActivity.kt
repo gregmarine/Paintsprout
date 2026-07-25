@@ -214,15 +214,17 @@ class BootstrapActivity : AppCompatActivity() {
     // --- Routing ------------------------------------------------------------
 
     /**
-     * Back to wherever the user was.
+     * Back to wherever the user was, or to the library if that is nowhere.
      *
-     * The pointer is a hint, and Phase 12 is what teaches this to resolve a
-     * sketchbook page; until documents exist, every route lands on the editor.
-     * The fallback becomes the library in Phase 14.
+     * The pointer is only a hint: it names ids, and the editor checks that both
+     * the index row and the file still exist before opening anything. A library
+     * is the right landing place for someone with nothing open — and for someone
+     * whose last document has since been deleted.
      */
     private fun route() {
-        LastOpen.load(this) // resolved for real once documents exist
-        startActivity(Intent(this, MainActivity::class.java))
+        val pointer = LastOpen.load(this)
+        val destination = if (pointer?.documentId != null) MainActivity::class.java else LibraryActivity::class.java
+        startActivity(Intent(this, destination))
         finish()
     }
 

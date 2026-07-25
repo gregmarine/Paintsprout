@@ -9,6 +9,7 @@ import com.symmetricalpalmtree.paintsprout.data.soil.codec.Params
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import com.symmetricalpalmtree.paintsprout.paint.BrushLoad
+import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
@@ -206,6 +207,7 @@ class DocumentSession private constructor(
      * rather than a replay.
      */
     class PageSnapshot(
+        val canvasSize: CanvasSize,
         val surface: SurfaceOp,
         val surfaceSeed: Long?,
         val committed: List<PaintOp>,
@@ -236,6 +238,9 @@ class DocumentSession private constructor(
                 rows.mapNotNull { OpRows.readOp(it, attachments[it.id].orEmpty()) }
 
             PageSnapshot(
+                // The size is the book's, not the page's: a sketchbook is bought
+                // at one size and every page in it shares that.
+                canvasSize = repo.root()?.let(Sketchbooks::canvasSizeOfRoot) ?: CanvasSize.FullScreen,
                 surface = surface,
                 surfaceSeed = page?.seed,
                 committed = rebuild(committedRows),
@@ -390,39 +395,22 @@ class DocumentSession private constructor(
             if (existing != null) open(context, existing) else create(context, defaultName, surface)
         }
 
+        /** Creates the sketchbook, then opens it — one construction path, not two. */
         private suspend fun create(
             context: Context,
             name: String,
             surface: SurfaceKind,
-        ): DocumentSession {
-            val index = IndexGate.awaitReady()
-            val id = UUID.randomUUID().toString()
-            val soil = SketchbookStore.create(context, name, documentId = id)
-            val repo = repositoryFor(soil, id)
-            repo.createDocument(
-                title = name,
-                surfaceKind = surface.name,
-                surfaceSeed = java.util.Random().nextLong(),
-            )
-            index.createSketchbook(name = name, id = id, keyScope = KeyScope.GLOBAL)
-            index.setPageCount(id, repo.pageCount())
-            return sessionFor(id, soil, repo)
-        }
+        ): DocumentSession = open(context, Sketchbooks.create(context, name, surface = surface).id)
 
         private suspend fun open(context: Context, id: String): DocumentSession {
             val soil = SketchbookStore.open(context, id)
-            val repo = repositoryFor(soil, id)
+            val repo = Sketchbooks.repositoryFor(soil, id)
             // A document that somehow has no page is still openable; give it one
             // rather than failing in front of the user.
             if (repo.pages().isEmpty()) repo.createDocument(title = repo.root()?.text ?: "")
             IndexGate.awaitReady().recordOpened(id)
             return sessionFor(id, soil, repo)
         }
-
-        private fun repositoryFor(soil: SoilDatabase, id: String) = SketchbookRepository(
-            store = ObjectTable(soil.db, SchemaSql.SKETCHBOOK_TABLE),
-            rootId = id,
-        )
 
         private fun sessionFor(
             id: String,
