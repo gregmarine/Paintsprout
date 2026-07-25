@@ -1,6 +1,8 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("com.google.devtools.ksp")
+    id("org.jetbrains.kotlin.plugin.serialization")
 }
 
 android {
@@ -66,5 +68,34 @@ dependencies {
     // ink tail is drawn where the pen will be when the frame reaches glass.
     implementation("androidx.input:input-motionprediction:1.0.0-beta05")
 
+    // Room — one instance per open .soil sketchbook, plus one for the global
+    // index. The object tables are wide and sparse and read through hand-written
+    // SQL; Room is here for entity/DAO plumbing, migrations, and the
+    // schema-validation-on-open that catches a DDL drift before a user does.
+    implementation("androidx.room:room-runtime:2.7.0")
+    implementation("androidx.room:room-ktx:2.7.0")
+    ksp("androidx.room:room-compiler:2.7.0")
+
+    // SQLCipher — whole-file encryption for the index and every sketchbook, with
+    // stock defaults (PBKDF2-HMAC-SHA512 x256,000, AES-256) so a stock sqlcipher
+    // CLI opens our files with the same passphrase. Never customise kdf_iter or
+    // the page size: that portability IS the format.
+    implementation("net.zetetic:sqlcipher-android:4.6.1")
+    implementation("androidx.sqlite:sqlite:2.5.0")
+
+    // Keystore-backed storage for the GLOBAL passphrase and the derived raw keys.
+    // A per-sketchbook passphrase never lands here — that is the whole difference
+    // between the two key scopes.
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // The container's JSON payloads: notebook_meta, surface parameter bags, and
+    // pigment recipes. Code-generated, no reflection.
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+
     testImplementation("junit:junit:4.13.2")
+
+    // A real SQLite engine on the JVM, so the schema constants are executed and
+    // read back in unit tests rather than merely string-matched. A typo in a
+    // CREATE TABLE is otherwise invisible until a device opens a file with it.
+    testImplementation("org.xerial:sqlite-jdbc:3.41.2.2")
 }

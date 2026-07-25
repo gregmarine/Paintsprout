@@ -597,7 +597,7 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 | # | Phase | Device test | Status |
 |---|---|---|---|
 | 0 | Plan & decisions (this document) | — | ✅ |
-| 1 | Container skeleton: deps, paths, schema constants, WAL | no | ⬜ |
+| 1 | Container skeleton: deps, paths, schema constants, WAL | no | ✅ |
 | 2 | Non-destructive opens, probe, swap repair | no | ⬜ |
 | 3 | Crypto core: keystore stores, key mint, KDF cache, rate limiter | no | ⬜ |
 | 4 | Global index DB: Room entities, DAOs, repository, sentinels | no | ⬜ |
@@ -635,13 +635,34 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
 
 # Part 10 — Phase detail
 
-## Phase 1 — Container skeleton
+## Phase 1 — Container skeleton ✅
 Add Room + KSP, `net.zetetic:sqlcipher-android`, `androidx.sqlite`. Create
 `data/` package: `SoilFiles` (the *one* path-deriving function), `SchemaSql` (the single source of
 truth for every `CREATE TABLE` — referenced by every bootstrap site and every migration),
 `WalConfig` (`journal_mode=WAL`, `wal_autocheckpoint=100`, `auto_vacuum=INCREMENTAL`, applied on
 every open via a stepped `rawQuery`, never `execSQL`).
 **Verify:** builds; unit test asserts path shape and schema-constant identity across call sites.
+
+**As built.** Also added the serialization plugin + `kotlinx-serialization-json` (the container's
+JSON payloads) and `androidx.security:security-crypto` (Phase 3's keystore stores), so the dependency
+set is complete for the plumbing phases. Three deviations from the plan text, all deliberate:
+
+- **`org.xerial:sqlite-jdbc` as a test dependency.** It was already in the Gradle cache (Room's
+  compiler pulls it), so the schema constants are *executed* against a real SQLite engine in unit
+  tests and read back through `PRAGMA table_info` / `index_list` — column types, nullability,
+  defaults, the `order` quoting, and the `CHECK (id = 0)` are all proven on every build instead of
+  string-matched. A DDL typo now fails in Phase 1 rather than on a device in Phase 6.
+- **Index names follow Room's convention** (`index_<table>_<col>_<col>…`) rather than the plan's
+  `idx_sketchbook_parent_order`. Room compares indices *by name* during on-open validation, so
+  matching its default naming lets an entity declare `@Index` with no custom name and still validate
+  against a hand-created table. Index names are a per-database detail and carry no portability cost.
+- **The swap-in-flight name helpers** (`.old.bak` / `.tmp` / `.new`) landed here rather than in
+  Phase 2, because `SoilFiles` is the one place paths are constructed and splitting that rule across
+  two files would defeat it. Phase 2 consumes them.
+
+24 unit tests, including the hostile-id battery that proves `soilFile()` refuses to build a path from
+anything that isn't a bare UUID (invariant 25) and that `listDocuments` never mistakes a half-written
+swap file for a document.
 
 ## Phase 2 — Non-destructive opens, probe, swap repair
 `SafeOpenHelperFactory` wrapping every open with a corruption handler that **reports and never
