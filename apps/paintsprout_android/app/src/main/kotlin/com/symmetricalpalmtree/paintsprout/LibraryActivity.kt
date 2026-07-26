@@ -24,6 +24,8 @@ import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.slider.Slider
+import com.symmetricalpalmtree.paintsprout.paint.Calibration
 import com.symmetricalpalmtree.paintsprout.data.LastOpen
 import com.symmetricalpalmtree.paintsprout.data.index.IndexGate
 import com.symmetricalpalmtree.paintsprout.data.index.IndexObject
@@ -822,8 +824,49 @@ class LibraryActivity : AppCompatActivity() {
         }
         // A sketchbook is bought at one size: every page in it shares this, which
         // is what keeps the cards and the page strip a single shape.
-        val sizes = listOf<CanvasSize>(CanvasSize.FullScreen) + CanvasSize.PRESETS
+        //
+        // The same list the editor offers, and for the same reason: a book created
+        // larger than the panel could never be drawn at the size it claims.
+        val (maxW, maxH) = maxSheetInches()
+        val sizes = listOf<CanvasSize>(CanvasSize.FullScreen) + CanvasSize.offered(maxW, maxH)
         var chosen = 0
+
+        // Custom sits last, and its sliders appear only once it is picked — two
+        // sliders permanently open would make the size question look harder than
+        // choosing off the list, which is what nearly everyone wants.
+        var customW = sizes.filterIsInstance<CanvasSize.Print>().lastOrNull()?.wIn ?: maxW
+        var customH = sizes.filterIsInstance<CanvasSize.Print>().lastOrNull()?.hIn ?: maxH
+        val customLabel = TextView(this).apply {
+            textSize = 18f
+            gravity = Gravity.CENTER
+            setTextColor(Color.BLACK)
+        }
+        // The label is the size that will actually be made, truncation and all —
+        // a preview that rounds up shows a sheet you cannot have.
+        fun refreshCustom() {
+            customLabel.text = CanvasSize.custom(customW, customH).label
+        }
+        refreshCustom()
+        val wSlider = Slider(this).apply {
+            valueFrom = 1f; valueTo = maxW; value = customW.coerceIn(1f, maxW)
+            addOnChangeListener { _, v, _ -> customW = v; refreshCustom() }
+        }
+        val hSlider = Slider(this).apply {
+            valueFrom = 1f; valueTo = maxH; value = customH.coerceIn(1f, maxH)
+            addOnChangeListener { _, v, _ -> customH = v; refreshCustom() }
+        }
+        val customPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            addView(customLabel)
+            addView(label(getString(R.string.library_size_width)))
+            addView(wSlider)
+            addView(label(getString(R.string.library_size_height)))
+            addView(hSlider)
+            addView(label(getString(R.string.library_size_capped, CanvasSize.custom(maxW, maxH).label)))
+        }
+
+        val customIndex = sizes.size
         val choices = RadioGroup(this).apply {
             sizes.forEachIndexed { i, size ->
                 addView(
@@ -834,7 +877,16 @@ class LibraryActivity : AppCompatActivity() {
                     },
                 )
             }
-            setOnCheckedChangeListener { _, id -> chosen = id - 1 }
+            addView(
+                RadioButton(this@LibraryActivity).apply {
+                    text = getString(R.string.library_size_custom)
+                    id = customIndex + 1
+                },
+            )
+            setOnCheckedChangeListener { _, id ->
+                chosen = id - 1
+                customPanel.visibility = if (chosen == customIndex) View.VISIBLE else View.GONE
+            }
         }
         // One custom view rather than setView + setSingleChoiceItems, which puts
         // the list above the field and so asks for the size before the name.
@@ -845,6 +897,7 @@ class LibraryActivity : AppCompatActivity() {
             addView(field)
             addView(label(getString(R.string.library_size)).apply { setPadding(0, dp(16), 0, 0) })
             addView(ScrollView(this@LibraryActivity).apply { addView(choices) })
+            addView(customPanel)
         }
 
         MaterialAlertDialogBuilder(this)
@@ -853,15 +906,33 @@ class LibraryActivity : AppCompatActivity() {
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.library_create) { _, _ ->
                 val name = field.text.toString().trim().ifEmpty { getString(R.string.library_default_name) }
+                val size = if (chosen == customIndex) CanvasSize.custom(customW, customH) else sizes[chosen]
                 lifecycleScope.launch {
                     runCatching {
-                        Sketchbooks.create(this@LibraryActivity, name, sizes[chosen], parentId = folderId)
+                        Sketchbooks.create(this@LibraryActivity, name, size, parentId = folderId)
                     }
                         .onSuccess { open(it) }
                         .onFailure { toast(it.message ?: getString(R.string.library_failed)) }
                 }
             }
             .show()
+    }
+
+    /**
+     * The panel in inches at the calibrated PPI: long side, then short side.
+     *
+     * Measured from the window rather than the view because this dialog is built
+     * over a list, not over a canvas. Long and short rather than width and height
+     * because a sheet is bounded by the *editor's* orientation, and every activity
+     * here is landscape-locked — the sizes offered must not depend on which way
+     * round the window happened to be when the dialog opened.
+     */
+    private fun maxSheetInches(): Pair<Float, Float> {
+        val bounds = windowManager.currentWindowMetrics.bounds
+        val ppi = Calibration.effectivePpi(this)
+        val longPx = maxOf(bounds.width(), bounds.height()).toFloat()
+        val shortPx = minOf(bounds.width(), bounds.height()).toFloat()
+        return Calibration.pxToIn(longPx, ppi) to Calibration.pxToIn(shortPx, ppi)
     }
 
     private fun promptSort() = MaterialAlertDialogBuilder(this)

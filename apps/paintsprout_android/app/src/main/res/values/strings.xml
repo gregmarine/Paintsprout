@@ -48,6 +48,10 @@
     <string name="library_empty">No sketchbooks yet. Make one and start painting.</string>
     <string name="library_name_hint">Name</string>
     <string name="library_size">Size</string>
+    <string name="library_size_custom">Custom…</string>
+    <string name="library_size_width">Width</string>
+    <string name="library_size_height">Height</string>
+    <string name="library_size_capped">Capped to what fits the screen (%1$s).</string>
     <string name="library_default_name">Sketchbook</string>
     <string name="library_rename">Rename</string>
     <string name="library_duplicate">Duplicate</string>

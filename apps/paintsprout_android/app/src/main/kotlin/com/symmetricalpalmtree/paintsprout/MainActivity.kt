@@ -1678,17 +1678,19 @@ class MainActivity : AppCompatActivity() {
 
     // --- Canvas size --------------------------------------------------------
 
-    /** Full screen + the print presets that fit the calibrated screen + Custom. */
+    /** Full screen + every print size that fits the calibrated screen + Custom. */
     private fun pickCanvasSize() {
         val ppi = Calibration.effectivePpi(this)
         val vw = binding.canvas.width
         val vh = binding.canvas.height
-        fun fits(p: CanvasSize.Print) =
-            Calibration.inToPx(p.wIn, ppi) <= vw && Calibration.inToPx(p.hIn, ppi) <= vh
-
         val options = buildList<CanvasSize> {
             add(CanvasSize.FullScreen)
-            addAll(CanvasSize.PRESETS.filter { fits(it) })
+            addAll(
+                CanvasSize.offered(
+                    Calibration.pxToIn(vw.toFloat(), ppi),
+                    Calibration.pxToIn(vh.toFloat(), ppi),
+                ),
+            )
         }
         val labels = (options.map { it.label } + "Custom…").toTypedArray()
         MaterialAlertDialogBuilder(this)
@@ -1727,7 +1729,9 @@ class MainActivity : AppCompatActivity() {
         var w = ((canvasSize as? CanvasSize.Print)?.wIn ?: 6f).coerceIn(1f, maxW)
         var h = ((canvasSize as? CanvasSize.Print)?.hIn ?: 4f).coerceIn(1f, maxH)
         val label = TextView(this).apply { textSize = 22f; gravity = Gravity.CENTER }
-        fun refresh() { label.text = String.format("%.1f × %.1f in", w, h) }
+        // The label is the size that will actually be made, truncation and all —
+        // a preview that rounds up shows a sheet you cannot have.
+        fun refresh() { label.text = CanvasSize.custom(w, h).label }
         refresh()
         val wSlider = Slider(this).apply {
             valueFrom = 1f; valueTo = maxW; value = w
@@ -1741,21 +1745,15 @@ class MainActivity : AppCompatActivity() {
             label,
             sliderRow("Width", wSlider),
             sliderRow("Height", hSlider),
-            hint("Capped to what fits the screen (${String.format("%.1f × %.1f in", maxW, maxH)})."),
+            hint("Capped to what fits the screen (${CanvasSize.custom(maxW, maxH).label})."),
         )
         MaterialAlertDialogBuilder(this)
             .setTitle("Custom canvas")
             .setView(content)
             .setNegativeButton("Cancel", null)
-            .setPositiveButton("Use") { _, _ ->
-                val rw = round1(w)
-                val rh = round1(h)
-                chooseCanvasSize(CanvasSize.Print(rw, rh, String.format("%.1f × %.1f in", rw, rh)))
-            }
+            .setPositiveButton("Use") { _, _ -> chooseCanvasSize(CanvasSize.custom(w, h)) }
             .show()
     }
-
-    private fun round1(x: Float): Float = (x * 10f).roundToInt() / 10f
 
     private fun applyWandSettings() {
         binding.canvas.wandTolerance = wandTolerance
