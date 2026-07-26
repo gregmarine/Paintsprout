@@ -116,7 +116,19 @@ object Focus {
     /** The sheet's true print size. A piece has physical dimensions. */
     const val SHOW_CANVAS_SIZE = true
 
-    /** Re-measuring the screen against a reference card. Done, and it persists. */
+    /**
+     * Re-measuring the screen against a reference card.
+     *
+     * Off because both tablets are measured, not because calibration is a
+     * one-time thing — it is saved per device and does not travel. A new tablet
+     * arrives uncalibrated and says nothing about it: `effectivePpi` quietly
+     * falls back to whatever the OEM reports, and every physical size in the app
+     * is wrong by however wrong that figure is. The Movink 14 Pro reported 319.6
+     * PPI for a panel that measured 242.7 — a third too big, on the one number
+     * the whole 1:1 goal rests on.
+     *
+     * So: turn this back on when a new device appears, calibrate, turn it off.
+     */
     const val SHOW_CALIBRATE = false
 
     /** Back to bare paper, behind a confirm. Undoable. */
