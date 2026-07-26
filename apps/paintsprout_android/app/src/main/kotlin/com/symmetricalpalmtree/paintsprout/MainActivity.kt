@@ -74,9 +74,9 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
 
-    private var tool = Tool.PENCIL
-    private var color = Color.BLACK
-    private var surfaceIndex = AVAILABLE_SURFACES.indexOf(SurfaceKind.PAPER).coerceAtLeast(0)
+    private var tool = Focus.DEFAULT_TOOL
+    private var color = Focus.COLOR
+    private var surfaceIndex = AVAILABLE_SURFACES.indexOf(Focus.SURFACE).coerceAtLeast(0)
     private var plainColor = Color.WHITE
     private var canvasSize: CanvasSize = CanvasSize.FullScreen
     private var canvasParams = CanvasParams()
@@ -643,8 +643,13 @@ class MainActivity : AppCompatActivity() {
         binding.tray.tray = tray
         if (!page.load.recipe.isEmpty) {
             binding.canvas.loadBrush(page.load)
-            color = page.load.color
+            // A page remembers the colour it was last painted with. While the rail
+            // offers no way to change colour, that memory must not become one:
+            // restoring it would put a colour on a locked palette through the back
+            // door, and it would arrive looking like a bug.
+            if (Focus.SHOW_COLOR) color = page.load.color
         }
+        if (!Focus.SHOW_COLOR) onColorChanged(Focus.COLOR)
 
         binding.canvas.restore(page.committed, page.undone, page.cachedPaint)
         updateRail()
@@ -684,9 +689,17 @@ class MainActivity : AppCompatActivity() {
 
     // --- Rail construction --------------------------------------------------
 
+    /**
+     * Builds every control, adds only the ones in scope.
+     *
+     * The out-of-scope buttons are still *constructed* — `updateRail` reads them
+     * on every stroke and a half-built rail would be a crash waiting for a tool
+     * change — but they never reach the layout. What [Focus] leaves out is not
+     * disabled or greyed: it is simply not there.
+     */
     private fun buildRail() {
         val rail = binding.rail
-        for (t in Tool.values()) {
+        for (t in Focus.TOOLS) {
             val b = iconButton(toolIcon(t), t.label) { onToolChanged(t) }
             toolButtons[t] = b
             rail.addView(b)
@@ -694,56 +707,64 @@ class MainActivity : AppCompatActivity() {
         rail.addView(divider())
 
         colorBtn = iconButton(0, "Color") { pickColor("Stroke color", color) { onColorChanged(it) } }
-        rail.addView(colorBtn)
+        if (Focus.SHOW_COLOR) rail.addView(colorBtn)
 
         sizeBtn = textButton("Size") { pickSize() }
-        rail.addView(sizeBtn)
+        if (Focus.SHOW_SIZE) rail.addView(sizeBtn)
 
         waterBtn = iconButton(R.drawable.ic_water_mode, "Clean water") {
             waterMode = !waterMode
             binding.canvas.waterMode = waterMode
             updateRail()
         }
-        rail.addView(waterBtn)
+        if (Focus.SHOW_WATER_MODE) rail.addView(waterBtn)
         toleranceBtn = textButton("Wand tolerance") { pickWand() }
-        rail.addView(toleranceBtn)
+        if (Focus.SHOW_WAND_TOLERANCE) rail.addView(toleranceBtn)
 
         surfaceBtn = iconButton(surfaceIcon(currentSurface()), "Surface") { pickSurface() }
-        rail.addView(surfaceBtn)
+        if (Focus.SHOW_SURFACE) rail.addView(surfaceBtn)
 
         fillBtn = iconButton(R.drawable.ic_fill, "Fill selection") { binding.canvas.fillSelection(color) }
         eraseBtn = iconButton(R.drawable.ic_erase_sel, "Erase inside selection") { binding.canvas.deleteSelection() }
         deselectBtn = iconButton(R.drawable.ic_deselect, "Deselect") { binding.canvas.clearSelection() }
         copyBtn = iconButton(R.drawable.ic_copy, "Copy selection") { copySelection() }
         pasteBtn = iconButton(R.drawable.ic_paste, "Paste") { paste() }
-        rail.addView(fillBtn)
-        rail.addView(eraseBtn)
-        rail.addView(copyBtn)
-        rail.addView(deselectBtn)
-        rail.addView(pasteBtn)
+        if (Focus.SHOW_SELECTION_ACTIONS) {
+            rail.addView(fillBtn)
+            rail.addView(eraseBtn)
+            rail.addView(copyBtn)
+            rail.addView(deselectBtn)
+        }
+        if (Focus.SHOW_PASTE) rail.addView(pasteBtn)
 
         lineDoneBtn = iconButton(R.drawable.ic_done, "Finish shape") { binding.canvas.commitPendingShape() }
-        rail.addView(lineDoneBtn)
+        if (Focus.SHOW_SHAPE_COMMIT) rail.addView(lineDoneBtn)
 
-        rail.addView(divider())
         undoBtn = iconButton(R.drawable.ic_undo, "Undo") { binding.canvas.undo() }
         redoBtn = iconButton(R.drawable.ic_redo, "Redo") { binding.canvas.redo() }
-        rail.addView(undoBtn)
-        rail.addView(redoBtn)
+        if (Focus.SHOW_UNDO_REDO) {
+            rail.addView(divider())
+            rail.addView(undoBtn)
+            rail.addView(redoBtn)
+        }
 
         rail.addView(divider())
         pagesBtn = textButton("Pages") { showPages() }
-        rail.addView(pagesBtn)
+        if (Focus.SHOW_PAGES) rail.addView(pagesBtn)
         scratchBtn = iconButton(R.drawable.ic_scratchpad, "Scratchpad") { toggleScratchpad() }
-        rail.addView(scratchBtn)
-        rail.addView(iconButton(R.drawable.ic_send, "Send page") { sendPage() })
-        rail.addView(iconButton(R.drawable.ic_library, "Library") { openLibrary() })
-        rail.addView(iconButton(R.drawable.ic_save, "Save PNG") { save() })
+        if (Focus.SHOW_SCRATCHPAD) rail.addView(scratchBtn)
+        if (Focus.SHOW_SEND_PAGE) rail.addView(iconButton(R.drawable.ic_send, "Send page") { sendPage() })
+        if (Focus.SHOW_LIBRARY) rail.addView(iconButton(R.drawable.ic_library, "Library") { openLibrary() })
+        if (Focus.SHOW_SAVE_PNG) rail.addView(iconButton(R.drawable.ic_save, "Save PNG") { save() })
         canvasSizeBtn = iconButton(R.drawable.ic_canvas_size, "Canvas size") { pickCanvasSize() }
-        rail.addView(canvasSizeBtn)
-        rail.addView(iconButton(R.drawable.ic_calibrate, "Calibrate screen") { openCalibration() })
-        rail.addView(iconButton(R.drawable.ic_clear, "Clear") { confirmClear() })
-        rail.addView(iconButton(R.drawable.ic_hide, "Hide toolbar") { setRailVisible(false) })
+        if (Focus.SHOW_CANVAS_SIZE) rail.addView(canvasSizeBtn)
+        if (Focus.SHOW_CALIBRATE) {
+            rail.addView(iconButton(R.drawable.ic_calibrate, "Calibrate screen") { openCalibration() })
+        }
+        if (Focus.SHOW_CLEAR) rail.addView(iconButton(R.drawable.ic_clear, "Clear") { confirmClear() })
+        if (Focus.SHOW_HIDE_RAIL) {
+            rail.addView(iconButton(R.drawable.ic_hide, "Hide toolbar") { setRailVisible(false) })
+        }
     }
 
     /**
@@ -754,7 +775,7 @@ class MainActivity : AppCompatActivity() {
      * lines is worse than no restriction at all. So the selection moves too.
      */
     private fun constrainTools() {
-        if (isScratchpad && tool !in Scratchpad.TOOLS) onToolChanged(Scratchpad.DEFAULT_TOOL)
+        if (tool !in Focus.toolsFor(isScratchpad)) onToolChanged(Focus.DEFAULT_TOOL)
         updateRail()
     }
 
@@ -811,11 +832,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateRail() {
+        val offered = Focus.toolsFor(isScratchpad)
         for ((t, b) in toolButtons) {
-            // The scratchpad offers a subset; the buttons for the rest are not
-            // there rather than disabled, because a rail of greyed-out tools reads
-            // as something broken.
-            b.visibility = if (!isScratchpad || t in Scratchpad.TOOLS) View.VISIBLE else View.GONE
+            // The scratchpad offers a subset, and so does the current scope; the
+            // buttons for the rest are not there rather than disabled, because a
+            // rail of greyed-out tools reads as something broken.
+            b.visibility = if (t in offered) View.VISIBLE else View.GONE
             b.background = if (t == tool) selectedBg() else rippleBg()
         }
         scratchBtn.background = if (isScratchpad) selectedBg() else rippleBg()
@@ -905,6 +927,13 @@ class MainActivity : AppCompatActivity() {
      * canvas away every time you reach for the palette.
      */
     private fun setupTray() {
+        // A palette with one colour on it is furniture. The panel is dismissed
+        // outright rather than parked off-screen, so its tab is not left sitting
+        // on the edge of the sheet inviting a pull that opens nothing useful.
+        if (!Focus.SHOW_TRAY) {
+            binding.trayPanel.visibility = View.GONE
+            return
+        }
         binding.tray.tray = tray
         binding.tray.onLoadBrush = { load ->
             // Straight to the canvas, keeping the mixture: going via
