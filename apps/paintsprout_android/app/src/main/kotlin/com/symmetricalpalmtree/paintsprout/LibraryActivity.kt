@@ -24,7 +24,6 @@ import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.slider.Slider
 import com.symmetricalpalmtree.paintsprout.paint.Calibration
 import com.symmetricalpalmtree.paintsprout.data.LastOpen
 import com.symmetricalpalmtree.paintsprout.data.index.IndexGate
@@ -831,38 +830,35 @@ class LibraryActivity : AppCompatActivity() {
         val sizes = listOf<CanvasSize>(CanvasSize.FullScreen) + CanvasSize.offered(maxW, maxH)
         var chosen = 0
 
-        // Custom sits last, and its sliders appear only once it is picked — two
-        // sliders permanently open would make the size question look harder than
-        // choosing off the list, which is what nearly everyone wants.
-        var customW = sizes.filterIsInstance<CanvasSize.Print>().lastOrNull()?.wIn ?: maxW
-        var customH = sizes.filterIsInstance<CanvasSize.Print>().lastOrNull()?.hIn ?: maxH
+        // Custom sits last, and its fields appear only once it is picked — a size
+        // form permanently open would make the question look harder than choosing
+        // off the list, which is what nearly everyone wants.
+        val startW = sizes.filterIsInstance<CanvasSize.Print>().lastOrNull()?.wIn ?: maxW
+        val startH = sizes.filterIsInstance<CanvasSize.Print>().lastOrNull()?.hIn ?: maxH
         val customLabel = TextView(this).apply {
             textSize = 18f
             gravity = Gravity.CENTER
             setTextColor(Color.BLACK)
         }
-        // The label is the size that will actually be made, truncation and all —
-        // a preview that rounds up shows a sheet you cannot have.
+        val wField = inchField(startW)
+        val hField = inchField(startH)
+        fun typedCustom() =
+            CanvasSize.custom(wField.inches(startW), hField.inches(startH), maxW, maxH)
+        // The label is the size that will actually be made — clamped and truncated.
+        // A preview that rounds up, or that shows a number the screen will refuse,
+        // is a preview of a sheet you cannot have.
         fun refreshCustom() {
-            customLabel.text = CanvasSize.custom(customW, customH).label
+            customLabel.text = typedCustom().label
         }
         refreshCustom()
-        val wSlider = Slider(this).apply {
-            valueFrom = 1f; valueTo = maxW; value = customW.coerceIn(1f, maxW)
-            addOnChangeListener { _, v, _ -> customW = v; refreshCustom() }
-        }
-        val hSlider = Slider(this).apply {
-            valueFrom = 1f; valueTo = maxH; value = customH.coerceIn(1f, maxH)
-            addOnChangeListener { _, v, _ -> customH = v; refreshCustom() }
-        }
+        wField.onEdit(::refreshCustom)
+        hField.onEdit(::refreshCustom)
         val customPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
             addView(customLabel)
-            addView(label(getString(R.string.library_size_width)))
-            addView(wSlider)
-            addView(label(getString(R.string.library_size_height)))
-            addView(hSlider)
+            addView(fieldRow(getString(R.string.library_size_width), wField))
+            addView(fieldRow(getString(R.string.library_size_height), hField))
             addView(label(getString(R.string.library_size_capped, CanvasSize.custom(maxW, maxH).label)))
         }
 
@@ -906,7 +902,7 @@ class LibraryActivity : AppCompatActivity() {
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.library_create) { _, _ ->
                 val name = field.text.toString().trim().ifEmpty { getString(R.string.library_default_name) }
-                val size = if (chosen == customIndex) CanvasSize.custom(customW, customH) else sizes[chosen]
+                val size = if (chosen == customIndex) typedCustom() else sizes[chosen]
                 lifecycleScope.launch {
                     runCatching {
                         Sketchbooks.create(this@LibraryActivity, name, size, parentId = folderId)

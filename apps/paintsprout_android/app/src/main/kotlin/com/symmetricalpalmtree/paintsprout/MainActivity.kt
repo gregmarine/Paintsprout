@@ -1726,32 +1726,30 @@ class MainActivity : AppCompatActivity() {
     private fun pickCustomCanvasSize(ppi: Float, vw: Int, vh: Int) {
         val maxW = Calibration.pxToIn(vw.toFloat(), ppi)
         val maxH = Calibration.pxToIn(vh.toFloat(), ppi)
-        var w = ((canvasSize as? CanvasSize.Print)?.wIn ?: 6f).coerceIn(1f, maxW)
-        var h = ((canvasSize as? CanvasSize.Print)?.hIn ?: 4f).coerceIn(1f, maxH)
+        val w = ((canvasSize as? CanvasSize.Print)?.wIn ?: 6f).coerceIn(1f, maxW)
+        val h = ((canvasSize as? CanvasSize.Print)?.hIn ?: 4f).coerceIn(1f, maxH)
         val label = TextView(this).apply { textSize = 22f; gravity = Gravity.CENTER }
-        // The label is the size that will actually be made, truncation and all —
-        // a preview that rounds up shows a sheet you cannot have.
-        fun refresh() { label.text = CanvasSize.custom(w, h).label }
+        val wField = inchField(w)
+        val hField = inchField(h)
+        fun typed() = CanvasSize.custom(wField.inches(w), hField.inches(h), maxW, maxH)
+        // The label is the size that will actually be made — clamped and truncated.
+        // A preview that rounds up, or that shows a number the screen will refuse,
+        // is a preview of a sheet you cannot have.
+        fun refresh() { label.text = typed().label }
         refresh()
-        val wSlider = Slider(this).apply {
-            valueFrom = 1f; valueTo = maxW; value = w
-            addOnChangeListener { _, v, _ -> w = v; refresh() }
-        }
-        val hSlider = Slider(this).apply {
-            valueFrom = 1f; valueTo = maxH; value = h
-            addOnChangeListener { _, v, _ -> h = v; refresh() }
-        }
+        wField.onEdit(::refresh)
+        hField.onEdit(::refresh)
         val content = vbox(
             label,
-            sliderRow("Width", wSlider),
-            sliderRow("Height", hSlider),
+            fieldRow("Width", wField),
+            fieldRow("Height", hField),
             hint("Capped to what fits the screen (${CanvasSize.custom(maxW, maxH).label})."),
         )
         MaterialAlertDialogBuilder(this)
             .setTitle("Custom canvas")
             .setView(content)
             .setNegativeButton("Cancel", null)
-            .setPositiveButton("Use") { _, _ -> chooseCanvasSize(CanvasSize.custom(w, h)) }
+            .setPositiveButton("Use") { _, _ -> chooseCanvasSize(typed()) }
             .show()
     }
 

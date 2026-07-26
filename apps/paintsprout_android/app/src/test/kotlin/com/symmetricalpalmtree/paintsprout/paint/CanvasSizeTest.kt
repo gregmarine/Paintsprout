@@ -44,7 +44,7 @@ class CanvasSizeTest {
     }
 
     @Test
-    fun `the Movink 14 Pro is offered every rung plus both maxima, smallest first`() {
+    fun `the Movink 14 Pro is offered every rung plus all three maxima, smallest first`() {
         assertEquals(
             listOf(
                 "4 × 4 in",
@@ -55,9 +55,26 @@ class CanvasSizeTest {
                 "7 × 7 in",
                 "7.41 × 7.41 in",
                 "7.41 × 9.26 in",
+                "7.41 × 9.88 in",
             ),
             labels(movink14W, movink14H),
         )
+    }
+
+    /**
+     * The Reflection Frame's shape. Its pixels are not square — 1200×1600 is
+     * 1.3333 while its 8 × 10.5 in glass is 1.3125 — so the sheet matches the
+     * pixel ratio and the frame does the stretching.
+     */
+    @Test
+    fun `the 4 by 3 rung is the frame's pixel ratio, not its glass`() {
+        val frame = CanvasSize.largestFitting(4f / 3f, movink14W, movink14H)
+        assertNotNull(frame)
+        assertEquals(7.41f, frame!!.hIn, 0.001f)
+        assertEquals(9.88f, frame.wIn, 0.001f)
+        assertEquals(4f / 3f, frame.wIn / frame.hIn, 0.001f)
+        assertTrue(frame.wIn <= movink14W)
+        assertTrue(frame.hIn <= movink14H)
     }
 
     /**
@@ -72,7 +89,10 @@ class CanvasSizeTest {
         assertTrue(roomy.contains("5 × 7 in")) // 7 wide, 5 tall — fits
         assertTrue(roomy.contains("6 × 6 in"))
         assertTrue(!roomy.contains("7 × 7 in")) // 7 tall — does not
-        assertEquals("6.2 × 7.75 in", roomy.last()) // the 4:5 maximum
+        // All three maxima, at this panel's own short side.
+        assertTrue(roomy.contains("6.2 × 6.2 in"))
+        assertTrue(roomy.contains("6.2 × 7.75 in"))
+        assertEquals("6.2 × 8.26 in", roomy.last())
 
         val shallow = labels(12f, 4.5f)
         assertTrue(shallow.contains("4 × 4 in"))
@@ -119,8 +139,28 @@ class CanvasSizeTest {
         assertEquals(7.4f, custom.hIn, 0.001f)
     }
 
+    /**
+     * A typed field has no end stop, so anything at all can be entered. Whatever
+     * is, what comes back has to fit.
+     */
     @Test
-    fun `a custom size is labelled short by long whichever way the sliders sat`() {
+    fun `a typed size is held to the screen however large it is typed`() {
+        val huge = CanvasSize.custom(500f, 500f, movink14W, movink14H)
+        assertEquals(11.8f, huge.wIn, 0.001f)
+        assertEquals(7.4f, huge.hIn, 0.001f)
+
+        val negative = CanvasSize.custom(-9f, 0f, movink14W, movink14H)
+        assertTrue(negative.wIn >= 1f)
+        assertTrue(negative.hIn >= 1f)
+
+        // In range, it is left alone but for the truncation.
+        val fine = CanvasSize.custom(9.88f, 7.41f, movink14W, movink14H)
+        assertEquals(9.8f, fine.wIn, 0.001f)
+        assertEquals(7.4f, fine.hIn, 0.001f)
+    }
+
+    @Test
+    fun `a custom size is labelled short by long whichever way the fields sat`() {
         assertEquals("3 × 7 in", CanvasSize.custom(3f, 7f).label)
         assertEquals("3 × 7 in", CanvasSize.custom(7f, 3f).label)
     }

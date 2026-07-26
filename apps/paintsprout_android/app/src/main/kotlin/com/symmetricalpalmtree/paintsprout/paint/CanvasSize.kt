@@ -48,11 +48,16 @@ sealed interface CanvasSize {
         /**
          * Shapes that get a "largest that fits" rung of their own, as long ÷ short.
          *
-         * Square, and the 8×10 shape. The fixed rungs stop at whole inches, which
-         * on any real panel leaves a fraction of an inch unused; these two put the
-         * biggest sheet the screen can actually hold at the end of the list.
+         * Square, the 8×10 shape, and 4:3. The fixed rungs stop at whole inches,
+         * which on any real panel leaves a fraction of an inch unused; these put
+         * the biggest sheet the screen can actually hold at the end of the list.
+         *
+         * 4:3 is for a Reflection Frame, whose pixels are not square: 1200×1600 is
+         * 1.3333 while its 8 × 10.5 in glass is 1.3125. Matching the pixel ratio
+         * rather than the physical one is deliberate — the drawing is made in the
+         * shape the frame will store it in, and the frame does the stretching.
          */
-        private val MAX_ASPECTS: List<Float> = listOf(1f, 1.25f)
+        private val MAX_ASPECTS: List<Float> = listOf(1f, 1.25f, 4f / 3f)
 
         /** Smallest sheet worth offering, in inches, in either direction. */
         private const val MIN_IN = 1f
@@ -110,6 +115,20 @@ sealed interface CanvasSize {
             val h = floor1(hIn)
             return Print(w, h, "${num(min(w, h))} × ${num(max(w, h))} in")
         }
+
+        /**
+         * A typed size, held to the panel.
+         *
+         * Typing has no end stop the way a slider does, so the clamp lives here
+         * instead: whatever is entered, what comes back fits. The caller shows the
+         * result rather than rewriting the field, so a half-typed "1" on its way to
+         * "10" is not snatched away mid-keystroke.
+         */
+        fun custom(wIn: Float, hIn: Float, maxWIn: Float, maxHIn: Float): Print =
+            custom(
+                wIn.coerceIn(min(MIN_IN, maxWIn), maxWIn),
+                hIn.coerceIn(min(MIN_IN, maxHIn), maxHIn),
+            )
 
         /** Truncates to tenths — never up, see [custom]. */
         private fun floor1(x: Float): Float =
