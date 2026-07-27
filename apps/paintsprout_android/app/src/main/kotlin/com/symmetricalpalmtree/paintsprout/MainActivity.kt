@@ -5,7 +5,10 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.content.Intent
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.Gravity
@@ -726,14 +729,53 @@ class MainActivity : AppCompatActivity() {
     private fun refreshLayers() {
         val list = binding.layerList
         list.removeAllViews()
+        rowViews.clear()
+        edges.clear()
         val canvas = binding.canvas
         val entries = canvas.stackEntries()
         for (row in canvas.stackRows()) {
             val entry = entries.getOrNull(row) ?: continue
             val depth = canvas.stackDepth(row)
-            list.addView(if (entry.isFolder) folderRow(entry.id, depth, row) else layerRow(entry.id, depth, row))
+            val view = if (entry.isFolder) folderRow(entry.id, depth, row) else layerRow(entry.id, depth, row)
+            rowViews[row] = view
+            list.addView(view)
         }
+        // One more edge past the last row: the bottom of the stack is a place a
+        // drop can land, and it needs somewhere to be drawn.
+        tailEdge = rowEdge().also { list.addView(it) }
     }
+
+    /** Row containers and their top edges, by their place in the stack. */
+    private val rowViews = mutableMapOf<Int, View>()
+    private val edges = mutableMapOf<Int, View>()
+    private var tailEdge: View? = null
+
+    /**
+     * The strip above a row, which is two things at once.
+     *
+     * At rest it draws the hairline that separates one row from the next. Under a
+     * drag it fills solid, and that is the mark saying a drop lands *here*. They
+     * are the same view because they are the same place — the seam between two
+     * rows — and a separate indicator would have to be positioned to agree with a
+     * separator that was already there.
+     */
+    private fun rowEdge(depth: Int = 0): View = View(this).apply {
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3))
+        background = hairline(depth)
+        // Kept so the strip can be put back to a rule after being a drop mark.
+        tag = depth
+    }
+
+    /**
+     * A 1dp rule, centred in the 3dp strip so the solid state has room to grow
+     * into, and inset to match the row it sits above.
+     *
+     * The inset is what makes a folder's contents read as a block: the rules
+     * between them start where they start, so the run of them is visibly one
+     * thing rather than a stretch of evenly divided list.
+     */
+    private fun hairline(depth: Int): Drawable =
+        InsetDrawable(ColorDrawable(0x1F000000), indentFor(depth) + dp(4), dp(1), dp(4), dp(1))
 
     /** How far in a row sits for each folder above it. */
     private fun indentFor(depth: Int) = dp(14 * depth)
@@ -777,7 +819,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         val handle = iconButton(R.drawable.ic_drag, getString(R.string.layers_reorder)) {}
-        attachDragHandle(handle, id, row)
 
         val slider = opacitySlider(canvas.layerOpacityAt(index), percent) { value, done ->
             canvas.setLayerOpacity(index, value)
@@ -796,7 +837,7 @@ class MainActivity : AppCompatActivity() {
             addView(handle)
         }
 
-        return LinearLayout(this).apply {
+        val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(4) + indentFor(depth), dp(2), dp(4), dp(2))
             background = if (selected) selectedBg() else rippleBg()
@@ -807,6 +848,26 @@ class MainActivity : AppCompatActivity() {
             }
             setOnLongClickListener { deleteLayer(index); true }
         }
+
+        return rowContainer(handle, id, row, depth, body)
+    }
+
+    /**
+     * A row, wrapped with the seam above it, and wired to be dragged.
+     *
+     * The wrapper exists so the drag has something whole to move: the finger
+     * carries the row's own view, seam and all, rather than the panel redrawing
+     * around it.
+     */
+    private fun rowContainer(handle: View, id: String, row: Int, depth: Int, body: View): View {
+        val edge = rowEdge(depth).also { edges[row] = it }
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(edge)
+            addView(body)
+        }
+        attachDragHandle(handle, id, row, container)
+        return container
     }
 
     /**
@@ -856,7 +917,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         val handle = iconButton(R.drawable.ic_drag, getString(R.string.folders_reorder)) {}
-        attachDragHandle(handle, id, row)
 
         val slider = opacitySlider(folder.opacity, percent) { value, done ->
             canvas.setFolderOpacity(id, value)
@@ -876,7 +936,7 @@ class MainActivity : AppCompatActivity() {
             addView(handle)
         }
 
-        return LinearLayout(this).apply {
+        val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(4) + indentFor(depth), dp(2), dp(4), dp(2))
             background = rippleBg()
@@ -889,6 +949,8 @@ class MainActivity : AppCompatActivity() {
             }
             setOnLongClickListener { folderMenu(id); true }
         }
+
+        return rowContainer(handle, id, row, depth, body)
     }
 
     /**
@@ -988,7 +1050,7 @@ class MainActivity : AppCompatActivity() {
      * list reads top-down and so does the stack, so a row dragged down moves
      * further down the stack and the arithmetic is finally the plain kind.
      */
-    private fun attachDragHandle(handle: View, id: String, row: Int) {
+    private fun attachDragHandle(handle: View, id: String, row: Int, container: View) {
         val list = binding.layerList
         var startY = 0f
         var startX = 0f
@@ -1012,26 +1074,62 @@ class MainActivity : AppCompatActivity() {
                     // for the length of the drag is the whole fix, and it is why
                     // reordering by dragging only ever worked on a short list.
                     v.parent?.requestDisallowInterceptTouchEvent(true)
-                    v.parent?.parent?.let { (it as? View)?.alpha = 0.6f }
+                    lift(container)
                     true
                 }
+
+                // The row travels with the finger, and the seam it would drop into
+                // lights up as it goes. Neither changes anything yet: this is the
+                // question being asked, and the release is the answer.
+                MotionEvent.ACTION_MOVE -> {
+                    if (mine) {
+                        container.translationY = event.rawY - startY
+                        showLanding(landingFor(id, row, movedBy(list, event, startY), sidewaysBy(event, startX)))
+                    }
+                    true
+                }
+
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    v.parent?.parent?.let { (it as? View)?.alpha = 1f }
+                    setDown(container)
+                    clearLanding()
                     if (!mine) return@setOnTouchListener true
                     mine = false
-                    val rowHeight = (list.getChildAt(0)?.height ?: 1).coerceAtLeast(1)
-                    val moved = ((event.rawY - startY) / rowHeight).roundToInt()
-                    val sideways = when {
-                        event.rawX - startX > dp(NEST_REACH) -> 1
-                        event.rawX - startX < -dp(NEST_REACH) -> -1
-                        else -> 0
-                    }
+                    val moved = movedBy(list, event, startY)
+                    val sideways = sidewaysBy(event, startX)
                     if (moved != 0 || sideways != 0) dropAfterDrag(id, row, moved, sideways)
                     true
                 }
                 else -> true
             }
         }
+    }
+
+    /** How many rows the finger has travelled. Rows are uniform, so this is division. */
+    private fun movedBy(list: View, event: MotionEvent, startY: Float): Int {
+        val rowHeight = ((list as? ViewGroup)?.getChildAt(0)?.height ?: 1).coerceAtLeast(1)
+        return ((event.rawY - startY) / rowHeight).roundToInt()
+    }
+
+    private fun sidewaysBy(event: MotionEvent, startX: Float): Int = when {
+        event.rawX - startX > dp(NEST_REACH) -> 1
+        event.rawX - startX < -dp(NEST_REACH) -> -1
+        else -> 0
+    }
+
+    /** Picked up: off the page, and see-through enough to read what is under it. */
+    private fun lift(container: View) {
+        container.alpha = 0.85f
+        container.elevation = dp(8).toFloat()
+        container.scaleX = 1.02f
+        container.scaleY = 1.02f
+    }
+
+    private fun setDown(container: View) {
+        container.alpha = 1f
+        container.elevation = 0f
+        container.scaleX = 1f
+        container.scaleY = 1f
+        container.translationY = 0f
     }
 
     /**
@@ -1062,7 +1160,19 @@ class MainActivity : AppCompatActivity() {
      * is over the rows that are actually staying put, which is what the finger
      * was measuring against anyway.
      */
-    private fun dropAfterDrag(id: String, row: Int, moved: Int, sideways: Int) {
+    /**
+     * Where a drag would put the thing being dragged.
+     *
+     * Worked out on its own so that showing the answer and acting on it cannot
+     * disagree: the mark drawn under the finger comes from this, and so does the
+     * move made when the finger lifts.
+     *
+     * [seam] is the row whose top edge the drop falls on, and [inside] the folder
+     * whose row it falls *on* rather than between — exactly one of them is set.
+     */
+    private class Landing(val to: Int, val into: String, val seam: Int?, val inside: Int?)
+
+    private fun landingFor(id: String, row: Int, moved: Int, sideways: Int): Landing? {
         val canvas = binding.canvas
         val entries = canvas.stackEntries()
         val span = canvas.stackSpan(row)
@@ -1076,10 +1186,9 @@ class MainActivity : AppCompatActivity() {
         // row can. Land on the title to go in; carry on past it to go above it.
         val target = (shown.indexOf(row) + moved).coerceIn(0, shown.lastIndex)
         val onto = shown.getOrNull(target)?.takeIf { it !in span }
-        if (moved != 0 && onto != null && entries[onto].isFolder && sideways >= 0) {
+        if (moved != 0 && onto != null && entries.getOrNull(onto)?.isFolder == true && sideways >= 0) {
             // Just under the folder's title, which is the top of what it holds.
-            canvas.moveInStack(id, onto + 1, entries[onto].id)
-            return
+            return Landing(to = onto + 1, into = entries[onto].id, seam = null, inside = onto)
         }
 
         val staying = shown.filterNot { it in span }
@@ -1093,11 +1202,53 @@ class MainActivity : AppCompatActivity() {
         // because a panel pinned to the right edge has room for one of them.
         val landed = canvas.dropInto(above, below)
         val into = if (sideways < 0) canvas.holderOf(landed) else landed
+        // Landing back where it started is not a move, and saying so with no mark
+        // at all is how the panel admits nothing would happen.
+        if (gap == from && into == canvas.holderOf(id)) return null
+        return Landing(to = below ?: entries.size, into = into, seam = below, inside = null)
+    }
 
+    private fun dropAfterDrag(id: String, row: Int, moved: Int, sideways: Int) {
+        val landing = landingFor(id, row, moved, sideways) ?: return
         // The move puts a step on the timeline and the rows follow through
         // onLayersChanged; nothing more to do here.
-        canvas.moveInStack(id, below ?: entries.size, into)
+        binding.canvas.moveInStack(id, landing.to, landing.into)
     }
+
+    /** The seam that would catch a drop, drawn solid; or the folder that would. */
+    private fun showLanding(landing: Landing?) {
+        clearLanding()
+        if (landing == null) return
+        if (landing.inside != null) {
+            rowViews[landing.inside]?.background = catchingBg()
+        } else {
+            // No seam means the very bottom of the stack, which is the tail edge.
+            (landing.seam?.let { edges[it] } ?: tailEdge)?.setBackgroundColor(DROP_MARK)
+        }
+    }
+
+    private fun clearLanding() {
+        for (edge in edges.values) edge.background = hairline(edge.tag as? Int ?: 0)
+        tailEdge?.let { it.background = hairline(it.tag as? Int ?: 0) }
+        for (view in rowViews.values) view.background = null
+    }
+
+    /**
+     * The folder a drop would go into, shown as the row ringed to catch it.
+     *
+     * Outlined rather than merely tinted, because a tint is already spoken for:
+     * the selected layer wears one, in this same green, and a target that looked
+     * like a selection would be asking the eye to tell two different meanings
+     * apart by shade alone. A ring is not a fill, and reads as one thing.
+     */
+    private fun catchingBg(): Drawable = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = dp(12).toFloat()
+        setColor(0x1A3DA35A)
+        setStroke(dp(2), DROP_MARK)
+    }
+
+    private val DROP_MARK = 0xFF3DA35A.toInt()
 
     private fun addLayer() {
         val open = session ?: return
