@@ -12,6 +12,7 @@ by ordering. Add, split, and re-status freely.
 | 🚧 | In progress |
 | 🔬 | Prototyping / spike |
 | ⬜ | Not started |
+| 🐛 | Broken — something that shipped and no longer behaves |
 | ❄️ | Deferred — see [For consideration](#for-consideration-not-aligned-with-current-philosophy) |
 
 ## Guiding philosophy
@@ -248,6 +249,7 @@ Where Paintsprout could be genuinely unlike anything else — the hard parts are
 | ⬜ | Keyboard shortcuts | |
 | ⬜ | Left-handed UI mirroring | Rail is on one side |
 | ⬜ | Brush cursor outline | Shows actual tip shape + size before committing |
+| 🐛 | Page-turn swipe ignores how you're holding it | `PageTurn.of(dx, dy, …)` reads the sweep in the canvas's own coordinates, and since the orientation phase those are the *glass's* — the sheet is pinned there while the tablet turns around it. So the gesture turns with the tablet: hold it in portrait and a sideways sweep does nothing, while a sweep that looks vertical to you turns the page. Needs the sweep rotated into the viewer's frame (`MainActivity` already tracks the quarter-turn as `chromeQuarter`) before deciding forward or back — or a decision that the swipe belongs to the sheet rather than the reader, which is defensible but is not what it does today by intent |
 
 ---
 
