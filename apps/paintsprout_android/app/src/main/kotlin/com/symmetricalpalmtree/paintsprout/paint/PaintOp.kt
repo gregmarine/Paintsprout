@@ -117,6 +117,17 @@ class LayerAddOp(val name: String, val at: Int) : PaintOp()
 
 class LayerDeleteOp(val at: Int) : PaintOp()
 
+/**
+ * A layer moving in the stack, from one place to another.
+ *
+ * Unlike a deletion this is *not* replayed when a page loads: the layer rows
+ * record the order themselves, so the stack arrives already moved, and applying
+ * the steps again would move everything twice. It is here for undo alone, which
+ * still works after a reload — the layer is where the op says it ended up, so
+ * putting it back where it started needs nothing but the op.
+ */
+class LayerOrderOp(val from: Int, val to: Int) : PaintOp()
+
 class SurfaceOp(
     val kind: SurfaceKind,
     @param:ColorInt val plainColor: Int,

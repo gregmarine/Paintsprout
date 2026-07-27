@@ -34,6 +34,7 @@ import com.symmetricalpalmtree.paintsprout.paint.Layer
 import com.symmetricalpalmtree.paintsprout.paint.LayerAddOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerDeleteOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerOpacityOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerOrderOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerVisibilityOp
 import com.symmetricalpalmtree.paintsprout.paint.GalleryExport
 import com.symmetricalpalmtree.paintsprout.paint.GpuRender
@@ -3794,6 +3795,7 @@ class PaintCanvasView @JvmOverloads constructor(
                 is LayerVisibilityOp -> {}
                 is LayerAddOp -> {}
                 is LayerDeleteOp -> {}
+                is LayerOrderOp -> {}
             }
         }
         return cur
@@ -3911,11 +3913,17 @@ class PaintCanvasView @JvmOverloads constructor(
             }
         }
 
-        // A deleted layer is still a row in the file, because the step that
-        // deleted it is undoable and putting it back has to put back everything
-        // that was on it. The timeline is what says it is gone, so the timeline
-        // is replayed to find out which.
-        for (op in committed) applyStructure(op, forward = true)
+        // Only the deletions are replayed, and only because nothing else records
+        // them: a deleted layer is still a row in the file, so that the step can
+        // be undone and bring its paint back with it, and the timeline is the one
+        // place that says it is gone.
+        //
+        // Moves are deliberately not replayed. The layer rows carry the order
+        // themselves, so the stack arrives already arranged and applying the
+        // steps again would move everything a second time. Undo still reaches
+        // them after a reload: the layer is where the step says it ended up, so
+        // putting it back where it started needs nothing but the step.
+        for (op in committed) if (op is LayerDeleteOp) applyStructure(op, forward = true)
 
         syncLayerStateToHistory()
 
@@ -4858,6 +4866,7 @@ class PaintCanvasView @JvmOverloads constructor(
         when (op) {
             is LayerDeleteOp -> if (forward) shelve(op.layerId) else unshelve(op.layerId, op.at)
             is LayerAddOp -> if (forward) unshelve(op.layerId, op.at) else shelve(op.layerId)
+            is LayerOrderOp -> slide(op.layerId, if (forward) op.to else op.from)
             else -> return
         }
         activeIndex = activeIndex.coerceIn(0, layers.lastIndex.coerceAtLeast(0))
@@ -4871,6 +4880,21 @@ class PaintCanvasView @JvmOverloads constructor(
         // state the rest of this class is written to survive.
         if (i < 0 || layers.size <= 1) return
         retired[id] = layers.removeAt(i)
+    }
+
+    /**
+     * Moves a layer to [at], wherever it currently is.
+     *
+     * Found by identity rather than by the index the op recorded, because a step
+     * further back may have shifted it since. The step says which layer and where
+     * it belongs; where it happens to be right now is this list's business.
+     */
+    private fun slide(id: String, at: Int) {
+        val i = layers.indexOfFirst { it.id == id }
+        if (i < 0) return
+        val holding = layers.getOrNull(activeIndex)
+        layers.add(at.coerceIn(0, layers.size - 1), layers.removeAt(i))
+        holding?.let { h -> layers.indexOf(h).takeIf { it >= 0 }?.let { activeIndex = it } }
     }
 
     private fun unshelve(id: String, at: Int) {
@@ -4976,8 +5000,10 @@ class PaintCanvasView @JvmOverloads constructor(
     fun moveLayer(from: Int, to: Int): Boolean {
         if (from !in layers.indices || to !in layers.indices || from == to) return false
         val holding = layers[activeIndex]
-        layers.add(to, layers.removeAt(from))
+        val moved = layers.removeAt(from)
+        layers.add(to, moved)
         activeIndex = layers.indexOf(holding)
+        commitLayerOp(LayerOrderOp(from, to), moved)
         invalidate()
         onLayersChanged?.invoke()
         return true

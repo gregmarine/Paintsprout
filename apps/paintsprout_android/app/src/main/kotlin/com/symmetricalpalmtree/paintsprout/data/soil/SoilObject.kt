@@ -132,6 +132,15 @@ object SoilType {
     const val LAYER_DELETE = "layer_delete"
 
     /**
+     * A layer moving in the stack.
+     *
+     * Kept for undo only. The layer rows carry the order themselves, so a page
+     * loads already in its final arrangement and replaying these would move
+     * everything a second time.
+     */
+    const val LAYER_ORDER = "layer_order"
+
+    /**
      * A clipboard paste: one step in the timeline, holding the pasted ops as
      * child rows. The only op type with ops beneath it.
      */
@@ -157,7 +166,7 @@ object SoilType {
     /** Every op type, in the sense of "appears in a layer's undo timeline". */
     val OPS = setOf(
         STROKE, FILL, ERASE, MOVE, SURFACE_OP, PASTE,
-        LAYER_OPACITY, LAYER_VISIBILITY, LAYER_ADD, LAYER_DELETE,
+        LAYER_OPACITY, LAYER_VISIBILITY, LAYER_ADD, LAYER_DELETE, LAYER_ORDER,
     )
 }
 

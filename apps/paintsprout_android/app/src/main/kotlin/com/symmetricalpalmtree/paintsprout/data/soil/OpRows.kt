@@ -12,6 +12,7 @@ import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerAddOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerDeleteOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerOpacityOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerOrderOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerVisibilityOp
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
@@ -147,6 +148,23 @@ object OpRows {
         parentId = "",
         type = SoilType.LAYER_DELETE,
         opCount = op.at,
+    )
+
+    /**
+     * A layer moving, as where it went and where it came from.
+     *
+     * `opCount` is the destination, matching the other two structure steps;
+     * `amount` is the origin. That column is the format's general-purpose scalar
+     * already — a pigment quantity on one row type, a mask's downsample factor on
+     * another — and the columns here are shared by role rather than owned by a
+     * type. A stack index is small and whole, so a REAL holds it exactly.
+     */
+    fun layerOrderRow(op: LayerOrderOp): SoilObject = SoilObject(
+        id = "",
+        parentId = "",
+        type = SoilType.LAYER_ORDER,
+        opCount = op.to,
+        amount = op.from.toFloat(),
     )
 
     // --- Selection ops ------------------------------------------------------
@@ -332,6 +350,11 @@ object OpRows {
 
         SoilType.LAYER_ADD -> LayerAddOp(row.text.orEmpty(), (row.opCount ?: 0).coerceAtLeast(0))
         SoilType.LAYER_DELETE -> LayerDeleteOp((row.opCount ?: 0).coerceAtLeast(0))
+
+        SoilType.LAYER_ORDER -> LayerOrderOp(
+            from = (row.amount ?: 0f).toInt().coerceAtLeast(0),
+            to = (row.opCount ?: 0).coerceAtLeast(0),
+        )
 
         // The one op with ops beneath it. Each child is read on its own terms and
         // a damaged one is dropped, so a paste of thirty marks survives losing

@@ -16,6 +16,7 @@ import com.symmetricalpalmtree.paintsprout.paint.Layer
 import com.symmetricalpalmtree.paintsprout.paint.LayerAddOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerDeleteOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerOpacityOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerOrderOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerVisibilityOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
@@ -230,6 +231,7 @@ class DocumentSession private constructor(
             is LayerVisibilityOp -> repo.appendOp(target(op), OpRows.layerVisibilityRow(op))
             is LayerAddOp -> repo.appendOp(target(op), OpRows.layerAddRow(op))
             is LayerDeleteOp -> repo.appendOp(target(op), OpRows.layerDeleteRow(op))
+            is LayerOrderOp -> repo.appendOp(target(op), OpRows.layerOrderRow(op))
         }
     }
 
@@ -261,7 +263,8 @@ class DocumentSession private constructor(
             // Nothing a paste can contain. The clipboard holds marks, and how a
             // layer composites is not a mark.
             is MoveOp, is PasteOp, is SurfaceOp,
-            is LayerOpacityOp, is LayerVisibilityOp, is LayerAddOp, is LayerDeleteOp -> Unit
+            is LayerOpacityOp, is LayerVisibilityOp,
+            is LayerAddOp, is LayerDeleteOp, is LayerOrderOp -> Unit
         }
     }
 

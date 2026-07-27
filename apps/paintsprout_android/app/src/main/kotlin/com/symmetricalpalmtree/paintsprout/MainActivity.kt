@@ -180,7 +180,14 @@ class MainActivity : AppCompatActivity() {
         setupTray()
         binding.btnShowRail.setOnClickListener { setRailVisible(true) }
         binding.layerAdd.setOnClickListener { addLayer() }
-        binding.canvas.onLayersChanged = { refreshLayers() }
+        binding.canvas.onLayersChanged = {
+            refreshLayers()
+            // The rows carry the order, which is why a page loads already
+            // arranged and the moves on the timeline are not replayed. So the
+            // rows have to follow every rearrangement, including the ones an undo
+            // makes. Unchanged rows are skipped, so saying it often costs little.
+            persistLayerOrder()
+        }
         applyOrientation()
 
         binding.canvas.tool = tool
@@ -806,6 +813,12 @@ class MainActivity : AppCompatActivity() {
         refreshLayers()
     }
 
+    private fun persistLayerOrder() {
+        val open = session ?: return
+        val order = binding.canvas.layerIdsInOrder()
+        lifecycleScope.launch { open.recordLayerOrder(order) }
+    }
+
     private fun persistLayerState(index: Int) {
         val open = session ?: return
         val id = binding.canvas.layerIdAt(index)
@@ -858,13 +871,9 @@ class MainActivity : AppCompatActivity() {
                         // so a row dragged down moves *down* the stack.
                         val count = binding.canvas.layerCount
                         val target = (from - moved).coerceIn(0, count - 1)
-                        if (binding.canvas.moveLayer(from, target)) {
-                            session?.let { open ->
-                                lifecycleScope.launch {
-                                    open.recordLayerOrder(binding.canvas.layerIdsInOrder())
-                                }
-                            }
-                        }
+                        // The move puts a step on the timeline and the rows follow
+                        // through onLayersChanged; nothing more to do here.
+                        binding.canvas.moveLayer(from, target)
                     }
                     true
                 }
