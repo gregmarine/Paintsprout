@@ -30,6 +30,7 @@ import com.symmetricalpalmtree.paintsprout.paint.Calibration
 import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
+import com.symmetricalpalmtree.paintsprout.paint.Layer
 import com.symmetricalpalmtree.paintsprout.paint.GalleryExport
 import com.symmetricalpalmtree.paintsprout.paint.GpuRender
 import com.symmetricalpalmtree.paintsprout.paint.LassoLoop
@@ -293,7 +294,37 @@ class PaintCanvasView @JvmOverloads constructor(
 
     // --- Buffers ------------------------------------------------------------
     private var surfaceBmp: Bitmap? = null
-    private var paintBmp: Bitmap? = null
+
+    /**
+     * The stack, bottom-first. Never empty: a page always has somewhere to paint.
+     */
+    private val layers = mutableListOf(Layer(java.util.UUID.randomUUID().toString(), Layer.DEFAULT_NAME))
+
+    /** Index into [layers] of the one the pen is currently working on. */
+    private var activeIndex = 0
+
+    val layerCount: Int get() = layers.size
+    val activeLayerIndex: Int get() = activeIndex
+    fun layerNameAt(i: Int): String = layers[i].name
+    fun layerIdAt(i: Int): String = layers[i].id
+
+    /** Rebuilt-on-demand callback for the panel: the stack changed shape. */
+    var onLayersChanged: (() -> Unit)? = null
+
+    private val activeLayer: Layer get() = layers[activeIndex.coerceIn(0, layers.lastIndex)]
+
+    /**
+     * The paint being worked on — which is to say, the active layer's pixels.
+     *
+     * Everything that draws, bakes, smears, picks up colour or rebuilds history
+     * goes through this one property, and none of it knows there is a stack at
+     * all. Selecting a different layer swaps what it points at, and the whole
+     * pipeline carries on unchanged; that is the only reason layers could be
+     * added to this file without reopening the stroke path.
+     */
+    private var paintBmp: Bitmap?
+        get() = activeLayer.bmp
+        set(value) { activeLayer.bmp = value }
     private var bufW = 0
     private var bufH = 0
     private val srcRect = Rect()
@@ -884,12 +915,14 @@ class PaintCanvasView @JvmOverloads constructor(
         pickupCanvas = null
 
         val placeholder = createBitmap(bufW, bufH).apply { Canvas(this).drawColor(plainColor) }
-        val newPaint = createBitmap(bufW, bufH)
 
         surfaceBmp?.recycle()
-        paintBmp?.recycle()
         surfaceBmp = placeholder
-        paintBmp = newPaint
+        // Every layer is buffer-sized, so every layer is reallocated together.
+        for (l in layers) {
+            l.bmp?.recycle()
+            l.bmp = createBitmap(bufW, bufH)
+        }
         abortWet()
         unbaked.clear()
         unbakedClips.clear()
@@ -1137,10 +1170,52 @@ class PaintCanvasView @JvmOverloads constructor(
         )
     }
 
+    /**
+     * Surface, then the stack over it, bottom-first.
+     *
+     * Only the active layer is drawn through the live-edit path; the rest are
+     * finished pixels and go down as they are. Each gets its own `saveLayerAlpha`
+     * so its opacity applies to the layer as a whole rather than to each mark on
+     * it — two overlapping strokes at half opacity are one half-opaque layer, not
+     * a darker patch where they cross.
+     */
     private fun drawDocument(canvas: Canvas) {
         val surfaceLayer = surfaceBmp ?: return
         canvas.drawBitmap(surfaceLayer, srcRect, dstRect, null)
 
+        for ((i, layer) in layers.withIndex()) {
+            if (!layer.visible) continue
+            if (i == activeIndex) drawActiveLayer(canvas, layer) else drawRestingLayer(canvas, layer)
+        }
+
+        drawPendingLine(canvas)
+        drawPendingArc(canvas)
+        drawPendingPolyline(canvas)
+        drawPendingPolyarc(canvas)
+        drawSelectionOverlay(canvas)
+        drawLassoInProgress(canvas)
+    }
+
+    /** A layer nobody is drawing on: its pixels, at its opacity. */
+    private fun drawRestingLayer(canvas: Canvas, layer: Layer) {
+        val bmp = layer.bmp ?: return
+        if (layer.alpha <= 0) return
+        layerAlphaPaint.alpha = layer.alpha
+        canvas.drawBitmap(bmp, srcRect, dstRect, layerAlphaPaint)
+    }
+
+    private val layerAlphaPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+
+    private fun drawActiveLayer(canvas: Canvas, activeOne: Layer) {
+        if (activeOne.alpha <= 0) return
+        val group = canvas.saveLayerAlpha(
+            0f, 0f, logicalW.toFloat(), logicalH.toFloat(), activeOne.alpha,
+        )
+        drawActiveContent(canvas)
+        canvas.restoreToCount(group)
+    }
+
+    private fun drawActiveContent(canvas: Canvas) {
         // Moving a selection: the committed paint with a hole where the region was
         // lifted, then the floating paint on top under its live transform.
         val fl = floating
@@ -1151,7 +1226,6 @@ class PaintCanvasView @JvmOverloads constructor(
             canvas.concat(floatMatrix(1f))
             canvas.drawBitmap(fl, srcRect, dstRect, hqPaint)
             canvas.restore()
-            drawSelectionOverlay(canvas)
             return
         }
 
@@ -1187,8 +1261,9 @@ class PaintCanvasView @JvmOverloads constructor(
             a?.let { drawLiveStroke(canvas, it, isActive = true) }
         }
 
-        // Isolated layer so an eraser stroke (CLEAR) punches through to the surface
-        // rather than the window behind the view.
+        // Isolated so an eraser stroke (CLEAR) punches through this layer only —
+        // revealing whatever lies under it in the stack, or the paper if nothing
+        // does, rather than the window behind the view.
         val layer = canvas.saveLayer(0f, 0f, logicalW.toFloat(), logicalH.toFloat(), null)
         if (liveClip == null || !hasEdits) {
             drawEdited()
@@ -1207,13 +1282,6 @@ class PaintCanvasView @JvmOverloads constructor(
             canvas.restoreToCount(inside)
         }
         canvas.restoreToCount(layer)
-
-        drawPendingLine(canvas)
-        drawPendingArc(canvas)
-        drawPendingPolyline(canvas)
-        drawPendingPolyarc(canvas)
-        drawSelectionOverlay(canvas)
-        drawLassoInProgress(canvas)
     }
 
     /** Previews the editable line (as it will bake) plus its grab handles. */
@@ -3611,7 +3679,11 @@ class PaintCanvasView @JvmOverloads constructor(
         baking = true
         val batch = unbaked.toList()
         val clips = unbakedClips.toList()
-        val ops = batch.indices.map { StrokeOp(batch[it], clips[it]) }
+        // Tagged now, while the layer under the pen is still the one they landed
+        // on: the bake finishes on another thread, and by then the selection may
+        // have moved on.
+        val onto = activeLayer.id
+        val ops = batch.indices.map { StrokeOp(batch[it], clips[it]).also { op -> op.layerId = onto } }
         // The paint these strokes laid starts its wet window now (≈ pen-up):
         // while it lasts, a brush dragged through them smears them. Undo
         // rebuilds don't come through here, so replayed history never
@@ -3628,7 +3700,7 @@ class PaintCanvasView @JvmOverloads constructor(
             committed.addAll(ops)
             ops.forEach { onOpCommitted?.invoke(it) }
             clearRedo()
-            storeCheckpoint(committed.size, next)
+            storeCheckpoint(activeOpCount(), next)
             old?.recycle()
             baking = false
             pruneWetPending()
@@ -3731,7 +3803,6 @@ class PaintCanvasView @JvmOverloads constructor(
      */
     fun coverSnapshot(maxEdge: Int = 512): Bitmap? {
         val surface = surfaceBmp ?: return null
-        val paint = paintBmp ?: return null
         if (bufW <= 0 || bufH <= 0) return null
 
         val scale = minOf(maxEdge.toFloat() / bufW, maxEdge.toFloat() / bufH, 1f)
@@ -3742,7 +3813,13 @@ class PaintCanvasView @JvmOverloads constructor(
         return createBitmap(w, h).also { out ->
             Canvas(out).apply {
                 drawBitmap(surface, srcRect, dst, hqPaint)
-                drawBitmap(paint, srcRect, dst, hqPaint)
+                for (l in layers) {
+                    val bmp = l.bmp ?: continue
+                    if (!l.visible || l.alpha <= 0) continue
+                    hqPaint.alpha = l.alpha
+                    drawBitmap(bmp, srcRect, dst, hqPaint)
+                }
+                hqPaint.alpha = 255
             }
         }
     }
@@ -3786,11 +3863,19 @@ class PaintCanvasView @JvmOverloads constructor(
         // frontier has to be last; storage hands them over oldest-first.
         redoStack.addAll(undoneOps.reversed())
 
+        // A page written before layers existed has ops that name no layer, and a
+        // fold that matches ops to layers by name would match none of them and
+        // hand back a blank page. Everything from such a page belongs to the one
+        // layer it was painted on.
+        val home = activeLayer.id
+        for (op in committed) if (op.layerId.isEmpty()) op.layerId = home
+        for (op in redoStack) if (op.layerId.isEmpty()) op.layerId = home
+
         val usable = cached?.takeIf { it.width == bufW && it.height == bufH }
         if (usable != null) {
             paintBmp?.recycle()
             paintBmp = usable.copy(Bitmap.Config.ARGB_8888, true)
-            storeCheckpoint(committed.size, paintBmp!!)
+            storeCheckpoint(activeOpCount(), paintBmp!!)
             invalidate()
             onHistoryChanged?.invoke()
         } else {
@@ -3823,21 +3908,42 @@ class PaintCanvasView @JvmOverloads constructor(
         rebuild()
     }
 
+    /**
+     * Refolds the stack from history.
+     *
+     * An op only ever touched one layer, so each layer is folded from its own ops
+     * and nothing else — which is also why an undo on one layer cannot disturb
+     * what is on another. Checkpoints are kept for the layer under the pen alone,
+     * indexed by that layer's own op count: they are what makes undo instant
+     * while drawing, and holding six full-size copies for every layer at once is
+     * how a page runs out of memory.
+     */
     private fun rebuild() {
         rebuilding = true
-        val target = committed.size
-        val startIdx = checkpoints.floorKey(target) ?: 0
+        val stack = layers.toList()
+        val activeId = activeLayer.id
+        val perLayer = stack.associate { l -> l.id to committed.filter { it.layerId == l.id } }
+        val activeCount = perLayer[activeId]?.size ?: 0
+        val startIdx = checkpoints.floorKey(activeCount) ?: 0
         val startBmp = if (startIdx == 0) null else checkpoints[startIdx]
-        val ops = committed.subList(startIdx, target).toList()
         scope.launch {
-            val next = withContext(Dispatchers.Default) {
-                val base = startBmp?.copy(Bitmap.Config.ARGB_8888, true) ?: createBitmap(bufW, bufH)
-                foldOps(base, ops)
+            val folded = withContext(Dispatchers.Default) {
+                stack.map { l ->
+                    val ops = perLayer[l.id].orEmpty()
+                    val resume = if (l.id == activeId && startBmp != null) startIdx else 0
+                    val base = if (resume > 0) {
+                        startBmp!!.copy(Bitmap.Config.ARGB_8888, true)
+                    } else {
+                        createBitmap(bufW, bufH)
+                    }
+                    l to foldOps(base, ops.subList(resume, ops.size))
+                }
             }
-            val old = paintBmp
-            paintBmp = next
-            old?.recycle()
-            storeCheckpoint(target, next)
+            for ((l, bmp) in folded) {
+                l.bmp?.recycle()
+                l.bmp = bmp
+            }
+            activeLayer.bmp?.let { storeCheckpoint(activeCount, it) }
             rebuilding = false
             invalidate()
             onHistoryChanged?.invoke()
@@ -3848,7 +3954,13 @@ class PaintCanvasView @JvmOverloads constructor(
     private fun clearRedo() {
         for (op in redoStack) op.recycle()
         redoStack.clear()
-        dropCheckpointsAfter(committed.size)
+        dropCheckpointsAfter(activeOpCount())
+    }
+
+    /** How many committed ops belong to the layer under the pen. */
+    private fun activeOpCount(): Int {
+        val id = activeLayer.id
+        return committed.count { it.layerId == id }
     }
 
     /** Snapshots the paint at [index] ops (a copy of [source]) if it's on-stride. */
@@ -4058,7 +4170,7 @@ class PaintCanvasView @JvmOverloads constructor(
         committed.add(op)
         onOpCommitted?.invoke(op)
         clearRedo()
-        storeCheckpoint(committed.size, next)
+        storeCheckpoint(activeOpCount(), next)
         old?.recycle()
         invalidate()
         onHistoryChanged?.invoke()
@@ -4213,7 +4325,7 @@ class PaintCanvasView @JvmOverloads constructor(
         committed.add(op)
         onOpCommitted?.invoke(op)
         clearRedo()
-        storeCheckpoint(committed.size, newPaint)
+        storeCheckpoint(activeOpCount(), newPaint)
         if (movedMask != null) selectionMask = movedMask
         selRect.set(newRect)
         floating = null
@@ -4617,6 +4729,104 @@ class PaintCanvasView @JvmOverloads constructor(
         return sum / stroke.points.size
     }
 
+    // --- Layers ---------------------------------------------------------------
+
+    /**
+     * Adds an empty layer directly above the active one and selects it.
+     *
+     * Above rather than at the top of the stack: a new layer is nearly always
+     * wanted in front of what you were just working on, and a stack you have
+     * ordered deliberately should not be reordered by adding to it.
+     */
+    fun addLayer(id: String, name: String): Boolean {
+        if (layers.size >= Layer.MAX_PER_PAGE) return false
+        val layer = Layer(id, name)
+        if (bufW > 0 && bufH > 0) layer.bmp = createBitmap(bufW, bufH)
+        layers.add(activeIndex + 1, layer)
+        activeIndex += 1
+        invalidate()
+        onLayersChanged?.invoke()
+        return true
+    }
+
+    /**
+     * Removes a layer and everything drawn on it.
+     *
+     * The last layer standing cannot go: a page with nowhere to paint is not a
+     * state the rest of this class is written to survive. Its ops leave history
+     * with it, which is what makes the deletion undoable from the outside — the
+     * caller keeps them.
+     */
+    fun removeLayer(index: Int): List<PaintOp> {
+        if (layers.size <= 1 || index !in layers.indices) return emptyList()
+        val gone = layers.removeAt(index)
+        val orphaned = committed.filter { it.layerId == gone.id }
+        committed.removeAll { it.layerId == gone.id }
+        redoStack.removeAll { it.layerId == gone.id }
+        gone.recycle()
+        activeIndex = activeIndex.coerceAtMost(layers.lastIndex)
+        recycleCheckpoints()
+        invalidate()
+        onLayersChanged?.invoke()
+        onHistoryChanged?.invoke()
+        return orphaned
+    }
+
+    /**
+     * Selects a layer to paint on. Hidden layers cannot be selected: a stroke
+     * that lands somewhere invisible looks exactly like a stroke that failed.
+     */
+    fun selectLayer(index: Int): Boolean {
+        if (index !in layers.indices || !layers[index].visible) return false
+        if (index == activeIndex) return true
+        // A lifted selection belongs to the layer it was lifted from; carrying it
+        // across would set it down somewhere it never came from. Put it down first.
+        if (floating != null) return false
+        interruptWet()
+        activeIndex = index
+        // Checkpoints belong to whichever layer they were folded from.
+        recycleCheckpoints()
+        invalidate()
+        onLayersChanged?.invoke()
+        onHistoryChanged?.invoke()
+        return true
+    }
+
+    fun setLayerVisible(index: Int, visible: Boolean) {
+        val layer = layers.getOrNull(index) ?: return
+        layer.visible = visible
+        // Hiding the layer under the pen would leave the pen nowhere to draw.
+        if (!visible && index == activeIndex) {
+            layers.indexOfFirst { it.visible }.takeIf { it >= 0 }?.let { activeIndex = it }
+        }
+        invalidate()
+        onLayersChanged?.invoke()
+    }
+
+    fun setLayerOpacity(index: Int, opacity: Float) {
+        val layer = layers.getOrNull(index) ?: return
+        layer.opacity = opacity.coerceIn(0f, 1f)
+        invalidate()
+    }
+
+    fun layerVisibleAt(index: Int): Boolean = layers.getOrNull(index)?.visible ?: false
+    fun layerOpacityAt(index: Int): Float = layers.getOrNull(index)?.opacity ?: 1f
+
+    /** Replaces the whole stack on page load. [restore] follows with the paint. */
+    fun restoreLayers(loaded: List<Layer>, active: Int) {
+        if (loaded.isEmpty()) return
+        for (l in layers) l.recycle()
+        layers.clear()
+        layers.addAll(loaded)
+        activeIndex = active.coerceIn(0, layers.lastIndex)
+        if (bufW > 0 && bufH > 0) {
+            for (l in layers) if (l.bmp == null) l.bmp = createBitmap(bufW, bufH)
+        }
+        recycleCheckpoints()
+        invalidate()
+        onLayersChanged?.invoke()
+    }
+
     /** Clears painted strokes, history, and any selection, keeping the surface. */
     fun clear() {
         val old = paintBmp ?: return
@@ -4647,9 +4857,15 @@ class PaintCanvasView @JvmOverloads constructor(
         // A cleared canvas is a new piece of art: fresh paper for organic surfaces.
         surfaceSeed = java.util.Random().nextLong()
         regenerateSurface()
-        paintBmp = createBitmap(bufW, bufH)
-        old.recycle()
+        // Clearing the page clears every layer. The stack itself survives: the
+        // layers you set up are how you were working, not what you drew.
+        for (l in layers) {
+            l.bmp?.recycle()
+            l.bmp = createBitmap(bufW, bufH)
+        }
+        if (old.isRecycled.not() && layers.none { it.bmp === old }) old.recycle()
         invalidate()
+        onLayersChanged?.invoke()
         onHistoryChanged?.invoke()
     }
 
@@ -4669,9 +4885,8 @@ class PaintCanvasView @JvmOverloads constructor(
         pickupBuf = null
         pickupCanvas = null
         surfaceBmp?.recycle()
-        paintBmp?.recycle()
         surfaceBmp = null
-        paintBmp = null
+        for (l in layers) l.recycle()
         GpuRender.release()
     }
 

@@ -15,6 +15,17 @@ import androidx.annotation.ColorInt
  * being cleared or replaced. Recycle them with [recycle] when an op is dropped.
  */
 sealed class PaintOp {
+    /**
+     * Which layer this edit landed on.
+     *
+     * Set when the op is committed and carried for the rest of its life, because
+     * rebuilding after an undo has to fold each layer from its own ops and
+     * nothing else can say which those are. Empty until committed, and ignored by
+     * [SurfaceOp], which changes the ground the whole page sits on rather than
+     * anything in the stack.
+     */
+    var layerId: String = ""
+
     /** Releases any bitmaps this op owns. Called when the op leaves history. */
     open fun recycle() {}
 }
