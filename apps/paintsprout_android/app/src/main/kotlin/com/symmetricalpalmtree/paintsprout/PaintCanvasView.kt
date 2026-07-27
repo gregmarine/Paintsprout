@@ -4828,6 +4828,25 @@ class PaintCanvasView @JvmOverloads constructor(
         invalidate()
     }
 
+    /**
+     * Moves a layer to a new place in the stack.
+     *
+     * The selection follows the layer rather than the position: you dragged this
+     * sheet, so this sheet is still the one under the pen when it lands.
+     */
+    fun moveLayer(from: Int, to: Int): Boolean {
+        if (from !in layers.indices || to !in layers.indices || from == to) return false
+        val holding = layers[activeIndex]
+        layers.add(to, layers.removeAt(from))
+        activeIndex = layers.indexOf(holding)
+        invalidate()
+        onLayersChanged?.invoke()
+        return true
+    }
+
+    /** The stack bottom-first, for writing the order back to the file. */
+    fun layerIdsInOrder(): List<String> = layers.map { it.id }
+
     fun layerVisibleAt(index: Int): Boolean = layers.getOrNull(index)?.visible ?: false
     fun layerOpacityAt(index: Int): Float = layers.getOrNull(index)?.opacity ?: 1f
 

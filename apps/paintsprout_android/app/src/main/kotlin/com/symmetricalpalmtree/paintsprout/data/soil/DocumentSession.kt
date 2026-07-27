@@ -298,6 +298,14 @@ class DocumentSession private constructor(
         }
     }
 
+    /** Persists the stack's order, bottom-first. */
+    suspend fun recordLayerOrder(bottomFirst: List<String>) = withContext(Dispatchers.IO) {
+        lock.withLock {
+            isDirty = true
+            repo.setLayerOrder(pageId, bottomFirst)
+        }
+    }
+
     /** Persists a layer's opacity and visibility — how it composites, not what it holds. */
     suspend fun recordLayerState(id: String, visible: Boolean, opacity: Float) =
         withContext(Dispatchers.IO) {

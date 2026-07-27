@@ -720,25 +720,152 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun layerRow(index: Int): View {
-        val selected = index == binding.canvas.activeLayerIndex
+        val canvas = binding.canvas
+        val selected = index == canvas.activeLayerIndex
+        val visible = canvas.layerVisibleAt(index)
+
+        val eye = iconButton(
+            if (visible) R.drawable.ic_eye else R.drawable.ic_eye_off,
+            getString(if (visible) R.string.layers_hide else R.string.layers_reveal),
+        ) { setLayerVisible(index, !visible) }
+
         val name = TextView(this).apply {
-            text = binding.canvas.layerNameAt(index)
+            text = canvas.layerNameAt(index)
             textSize = 14f
+            // A layer that cannot be drawn on should not look like one that can.
+            alpha = if (visible) 1f else 0.45f
             setTextColor(if (selected) 0xFF1B5E20.toInt() else 0xFF37474F.toInt())
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
-        val remove = iconButton(R.drawable.ic_clear, getString(R.string.layers_delete)) {
-            deleteLayer(index)
+
+        val percent = TextView(this).apply {
+            text = percentOf(canvas.layerOpacityAt(index))
+            textSize = 12f
+            gravity = Gravity.END
+            setTextColor(0xFF6B7075.toInt())
+            width = dp(38)
+            isClickable = true
+            background = rippleBg()
+            // Typed, because a slider is for judging by eye and a number you
+            // already know is faster said than found.
+            setOnClickListener { typeOpacity(index) }
         }
-        return LinearLayout(this).apply {
+
+        val handle = iconButton(R.drawable.ic_drag, getString(R.string.layers_reorder)) {}
+        attachDragHandle(handle, index)
+
+        val slider = Slider(this).apply {
+            valueFrom = 0f
+            valueTo = 100f
+            value = (canvas.layerOpacityAt(index) * 100f).coerceIn(0f, 100f)
+            addOnChangeListener { _, v, fromUser ->
+                if (!fromUser) return@addOnChangeListener
+                // Straight to the canvas on every tick: the point of a slider is
+                // watching the page answer while you move it.
+                canvas.setLayerOpacity(index, v / 100f)
+                percent.text = percentOf(v / 100f)
+            }
+            addOnSliderTouchListener(object : com.google.android.material.slider.Slider.OnSliderTouchListener {
+                override fun onStartTrackingTouch(slider: com.google.android.material.slider.Slider) = Unit
+
+                // Written once, on release — a drag is one decision, not a hundred.
+                override fun onStopTrackingTouch(slider: com.google.android.material.slider.Slider) =
+                    persistLayerState(index)
+            })
+        }
+
+        val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), dp(4), dp(4), dp(4))
-            background = if (selected) selectedBg() else rippleBg()
+            addView(eye)
             addView(name)
-            addView(remove)
+            addView(percent)
+            addView(handle)
+        }
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(4), dp(2), dp(4), dp(2))
+            background = if (selected) selectedBg() else rippleBg()
+            addView(top)
+            addView(slider)
             setOnClickListener {
-                if (binding.canvas.selectLayer(index)) refreshLayers()
+                if (canvas.selectLayer(index)) refreshLayers() else toast(getString(R.string.layers_hidden))
+            }
+            setOnLongClickListener { deleteLayer(index); true }
+        }
+    }
+
+    private fun percentOf(opacity: Float): String = "${(opacity * 100f).roundToInt()}%"
+
+    private fun setLayerVisible(index: Int, visible: Boolean) {
+        binding.canvas.setLayerVisible(index, visible)
+        persistLayerState(index)
+        refreshLayers()
+    }
+
+    private fun persistLayerState(index: Int) {
+        val open = session ?: return
+        val id = binding.canvas.layerIdAt(index)
+        val visible = binding.canvas.layerVisibleAt(index)
+        val opacity = binding.canvas.layerOpacityAt(index)
+        lifecycleScope.launch { open.recordLayerState(id, visible, opacity) }
+    }
+
+    private fun typeOpacity(index: Int) {
+        val field = inchField(binding.canvas.layerOpacityAt(index) * 100f)
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.layers_opacity)
+            .setView(vbox(fieldRow(getString(R.string.layers_opacity), field)))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.library_size_use) { _, _ ->
+                val pct = field.inches(binding.canvas.layerOpacityAt(index) * 100f).coerceIn(0f, 100f)
+                binding.canvas.setLayerOpacity(index, pct / 100f)
+                persistLayerState(index)
+                refreshLayers()
+            }
+            .show()
+    }
+
+    /**
+     * Drag to reorder.
+     *
+     * The handle owns the gesture rather than the row, so a drag can never be
+     * mistaken for the tap that selects. Rows are a uniform height, so where the
+     * finger is tells you which position it is over without measuring anything.
+     */
+    private fun attachDragHandle(handle: View, index: Int) {
+        val list = binding.layerList
+        var startY = 0f
+        var from = index
+        handle.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startY = event.rawY
+                    from = index
+                    v.parent?.parent?.let { (it as? View)?.alpha = 0.6f }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    v.parent?.parent?.let { (it as? View)?.alpha = 1f }
+                    val rowHeight = (list.getChildAt(0)?.height ?: 1).coerceAtLeast(1)
+                    val moved = ((event.rawY - startY) / rowHeight).roundToInt()
+                    if (moved != 0) {
+                        // The list reads top-down but the stack is bottom-first,
+                        // so a row dragged down moves *down* the stack.
+                        val count = binding.canvas.layerCount
+                        val target = (from - moved).coerceIn(0, count - 1)
+                        if (binding.canvas.moveLayer(from, target)) {
+                            session?.let { open ->
+                                lifecycleScope.launch {
+                                    open.recordLayerOrder(binding.canvas.layerIdsInOrder())
+                                }
+                            }
+                        }
+                    }
+                    true
+                }
+                else -> true
             }
         }
     }

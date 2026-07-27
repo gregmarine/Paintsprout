@@ -56,6 +56,12 @@
     <string name="layers_full">That is as many layers as a page will hold.</string>
     <string name="layers_last">A page needs somewhere to paint.</string>
     <string name="layers_default_name">Layer %1$d</string>
+    <string name="layers_hide">Hide layer</string>
+    <string name="layers_reveal">Show layer</string>
+    <string name="layers_reorder">Reorder layer</string>
+    <string name="layers_opacity">Opacity</string>
+    <string name="layers_hidden">Show a layer before drawing on it.</string>
+    <string name="library_size_use">Use</string>
     <string name="library_size_width">Width</string>
     <string name="library_size_height">Height</string>
     <string name="library_size_capped">Capped to what fits the screen (%1$s).</string>

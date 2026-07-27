@@ -328,6 +328,22 @@ class SketchbookRepository(
     }
 
     /**
+     * Writes the stack's order, bottom-first.
+     *
+     * Renumbered wholesale rather than shuffled, for the same reason pages are:
+     * a sequence that is rewritten cannot end up with two layers claiming the
+     * same place.
+     */
+    fun setLayerOrder(pageId: String, bottomFirst: List<String>) {
+        val at = now()
+        val rows = layers(pageId).associateBy { it.id }
+        bottomFirst.forEachIndexed { i, id ->
+            val row = rows[id] ?: return@forEachIndexed
+            if (row.order != i) store.upsert(row.copy(order = i, updatedAt = at))
+        }
+    }
+
+    /**
      * How a layer composites: whether it shows, and how strongly.
      *
      * Not an op. These change the way the layer is drawn, never what is on it,
