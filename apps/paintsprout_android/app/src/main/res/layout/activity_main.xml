@@ -131,4 +131,76 @@
 
     </FrameLayout>
 
+    <!--
+        The layers panel.
+
+        Outside deviceFrame on purpose, and the only piece of chrome that is. The
+        tools are objects on the desk and stay where they were put; this is a
+        thing you read, so it stays where you can read it — on your right,
+        upright, however the tablet is turned. Being a sibling of the frame is
+        the whole implementation: the activity rotates with you, so anything
+        laid out in here is already in your space.
+    -->
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/layerPanel"
+        android:layout_width="248dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end|center_vertical"
+        android:layout_marginEnd="12dp"
+        android:layout_marginTop="12dp"
+        android:layout_marginBottom="12dp"
+        android:visibility="gone"
+        app:cardBackgroundColor="#F5FFFFFF"
+        app:cardCornerRadius="20dp"
+        app:cardElevation="6dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="8dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingStart="8dp"
+                android:paddingEnd="4dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/layers_title"
+                    android:textColor="#FF37474F"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <ImageButton
+                    android:id="@+id/layerAdd"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/layers_add"
+                    android:padding="8dp"
+                    android:src="@drawable/ic_layer_add"
+                    app:tint="#FF37474F" />
+            </LinearLayout>
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:maxHeight="420dp"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/layerList"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" />
+            </ScrollView>
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

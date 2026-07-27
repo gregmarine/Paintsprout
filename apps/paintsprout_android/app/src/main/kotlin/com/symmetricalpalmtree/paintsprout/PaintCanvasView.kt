@@ -498,8 +498,12 @@ class PaintCanvasView @JvmOverloads constructor(
      * stored history and this one be the same history.
      */
     var onOpCommitted: ((PaintOp) -> Unit)? = null
-    var onUndone: (() -> Unit)? = null
-    var onRedone: (() -> Unit)? = null
+    /**
+     * Told which layer the step belonged to, because storage keeps each layer's
+     * undo boundary separately and cannot work it out from the step alone.
+     */
+    var onUndone: ((layerId: String) -> Unit)? = null
+    var onRedone: ((layerId: String) -> Unit)? = null
 
     /** A finger swept across the sheet: [PageTurn.FORWARD] or [PageTurn.BACK]. */
     var onPageTurn: ((PageTurn) -> Unit)? = null
@@ -3792,7 +3796,12 @@ class PaintCanvasView @JvmOverloads constructor(
     /**
      * A copy of the composited paint, for the raster cache. Null before layout.
      */
-    fun paintSnapshot(): Bitmap? = paintBmp?.copy(Bitmap.Config.ARGB_8888, false)
+    fun paintSnapshot(): Bitmap? =
+        // Only a page with a single layer has a paint that one bitmap can stand
+        // for. On a stack this used to hand back whichever layer was selected,
+        // which was then filed as the page's cache — so adding a layer and leaving
+        // the page wrote its blank pixels over the real drawing's cache.
+        if (layers.size == 1) paintBmp?.copy(Bitmap.Config.ARGB_8888, false) else null
 
     /**
      * A small flattened picture of the page — paper and paint — for a library card.
@@ -3871,7 +3880,15 @@ class PaintCanvasView @JvmOverloads constructor(
         for (op in committed) if (op.layerId.isEmpty()) op.layerId = home
         for (op in redoStack) if (op.layerId.isEmpty()) op.layerId = home
 
-        val usable = cached?.takeIf { it.width == bufW && it.height == bufH }
+        // The cache is one raster, and one raster cannot describe a stack: it says
+        // nothing about which layer its pixels belong to or what is under them.
+        // Taken at face value on a page with more than one layer, it would be laid
+        // on whichever layer happened to be selected and the fold skipped, leaving
+        // every other layer blank — which is exactly what it did. A page of layers
+        // replays instead. Slower to open; never wrong. Per-layer caches can earn
+        // the speed back later.
+        val single = layers.size == 1
+        val usable = cached?.takeIf { single && it.width == bufW && it.height == bufH }
         if (usable != null) {
             paintBmp?.recycle()
             paintBmp = usable.copy(Bitmap.Config.ARGB_8888, true)
@@ -3893,8 +3910,9 @@ class PaintCanvasView @JvmOverloads constructor(
         // and the guard below makes this undo a no-op while that bake runs).
         interruptWet()
         if (baking || rebuilding || committed.isEmpty()) return
-        redoStack.add(committed.removeAt(committed.lastIndex))
-        onUndone?.invoke()
+        val undone = committed.removeAt(committed.lastIndex)
+        redoStack.add(undone)
+        onUndone?.invoke(undone.layerId)
         syncSurfaceToHistory()
         rebuild()
     }
@@ -3902,8 +3920,9 @@ class PaintCanvasView @JvmOverloads constructor(
     fun redo() {
         interruptWet()
         if (baking || rebuilding || redoStack.isEmpty()) return
-        committed.add(redoStack.removeAt(redoStack.lastIndex))
-        onRedone?.invoke()
+        val again = redoStack.removeAt(redoStack.lastIndex)
+        committed.add(again)
+        onRedone?.invoke(again.layerId)
         syncSurfaceToHistory()
         rebuild()
     }

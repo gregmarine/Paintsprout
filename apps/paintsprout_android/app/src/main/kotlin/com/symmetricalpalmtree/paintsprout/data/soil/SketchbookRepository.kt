@@ -315,6 +315,32 @@ class SketchbookRepository(
         return layer
     }
 
+    /**
+     * Drops a layer and, with it, every op filed beneath it.
+     *
+     * Soft, like a page: the same delete a sketchbook uses everywhere else, so a
+     * layer removed by mistake is recoverable by the same means as anything else.
+     */
+    fun removeLayer(layerId: String) {
+        val row = store.byId(layerId) ?: return
+        if (row.type != SoilType.LAYER) return
+        store.softDelete(layerId, now())
+    }
+
+    /**
+     * How a layer composites: whether it shows, and how strongly.
+     *
+     * Not an op. These change the way the layer is drawn, never what is on it,
+     * so they are written straight to the row rather than onto the timeline.
+     */
+    fun setLayerState(layerId: String, visible: Boolean, opacity: Float) {
+        val row = store.byId(layerId) ?: return
+        val flags = (row.flags ?: SoilFlags.LAYER_DEFAULT).let {
+            if (visible) it or SoilFlags.LAYER_VISIBLE else it and SoilFlags.LAYER_VISIBLE.inv()
+        }
+        store.upsert(row.copy(flags = flags, opacity = opacity, updatedAt = now()))
+    }
+
     // --- Ops ----------------------------------------------------------------
 
     fun undoDepth(layerId: String): Int = store.byId(layerId)?.undoDepth ?: 0

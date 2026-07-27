@@ -144,6 +144,15 @@ object Focus {
     const val SHOW_TRAY = false
 
     /**
+     * The layers panel.
+     *
+     * The one piece of chrome that is not glued to the glass: the tools stay
+     * where they were put, but a list is something you read, so it stays on your
+     * right whichever way the tablet is turned.
+     */
+    const val SHOW_LAYERS = true
+
+    /**
      * The tools on offer in a given document.
      *
      * The scratchpad names its own subset for its own reasons; this scope names

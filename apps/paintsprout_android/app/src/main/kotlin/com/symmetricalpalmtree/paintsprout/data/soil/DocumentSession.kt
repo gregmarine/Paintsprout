@@ -12,6 +12,7 @@ import android.graphics.BitmapFactory
 import com.symmetricalpalmtree.paintsprout.paint.BrushLoad
 import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
+import com.symmetricalpalmtree.paintsprout.paint.Layer
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
@@ -107,14 +108,19 @@ class DocumentSession private constructor(
 
     private class PaletteSnapshot(val pots: List<Pot>, val mixture: Recipe, val load: BrushLoad)
 
-    fun recordUndo() = scope.launch {
+    /**
+     * [onLayer] is the layer the undone step was on — each layer keeps its own
+     * boundary, so moving the wrong one would leave that layer's paint and its
+     * count disagreeing.
+     */
+    fun recordUndo(onLayer: String) = scope.launch {
         isDirty = true
-        lock.withLock { flushNow(); repo.undo(layerId) }
+        lock.withLock { flushNow(); repo.undo(onLayer.ifEmpty { layerId }) }
     }
 
-    fun recordRedo() = scope.launch {
+    fun recordRedo(onLayer: String) = scope.launch {
         isDirty = true
-        lock.withLock { flushNow(); repo.redo(layerId) }
+        lock.withLock { flushNow(); repo.redo(onLayer.ifEmpty { layerId }) }
     }
 
     private fun scheduleFlush() {
@@ -164,10 +170,20 @@ class DocumentSession private constructor(
         wanted.forEachIndexed { i, pot -> repo.addPot(pot.name, ArgbHex.encode(pot.color), pot.custom) }
     }
 
+    /**
+     * The layer an op is filed under.
+     *
+     * The op names its own, because by the time this runs the pen may well have
+     * moved to a different layer — writes are debounced, and the selection is
+     * not. An op from before layers existed names none, and belongs to the one
+     * layer such a page has.
+     */
+    private fun target(op: PaintOp): String = op.layerId.ifEmpty { layerId }
+
     private fun write(op: PaintOp) {
         when (op) {
             is StrokeOp -> {
-                val row = repo.appendOp(layerId, OpRows.strokeRow(op.stroke))
+                val row = repo.appendOp(target(op), OpRows.strokeRow(op.stroke))
                 // The frisket and the wet state are properties of this one stroke,
                 // not steps in the history, so they hang off it as children and
                 // replay with it.
@@ -178,22 +194,22 @@ class DocumentSession private constructor(
             }
 
             is FillOp -> maskOf(op.mask)?.let {
-                repo.appendOp(layerId, OpRows.fillRow(op.color, it, DOWNSAMPLE))
+                repo.appendOp(target(op), OpRows.fillRow(op.color, it, DOWNSAMPLE))
             }
 
             is EraseOp -> maskOf(op.mask)?.let {
-                repo.appendOp(layerId, OpRows.eraseRow(it, DOWNSAMPLE))
+                repo.appendOp(target(op), OpRows.eraseRow(it, DOWNSAMPLE))
             }
 
             is MoveOp -> maskOf(op.sourceMask)?.let {
                 val matrix = FloatArray(9).also { m -> op.transform.getValues(m) }
-                repo.appendOp(layerId, OpRows.moveRow(matrix, it, DOWNSAMPLE))
+                repo.appendOp(target(op), OpRows.moveRow(matrix, it, DOWNSAMPLE))
             }
 
             // One row on the timeline, with the pasted ops beneath it — so undo
             // takes the whole paste back, which is what a paste is.
             is PasteOp -> {
-                val parent = repo.appendOp(layerId, OpRows.pasteRow(op.ops.size))
+                val parent = repo.appendOp(target(op), OpRows.pasteRow(op.ops.size))
                 op.ops.forEachIndexed { i, child -> writeUnder(parent.id, child, i) }
             }
 
@@ -202,7 +218,7 @@ class DocumentSession private constructor(
             // Caching the current surface there instead looked obviously right and
             // was wrong: undoing a surface change moved the history and left the
             // cached answer behind, so the page reloaded on the wrong paper.
-            is SurfaceOp -> repo.appendOp(layerId, OpRows.surfaceRow(op))
+            is SurfaceOp -> repo.appendOp(target(op), OpRows.surfaceRow(op))
         }
     }
 
@@ -244,6 +260,53 @@ class DocumentSession private constructor(
     private fun maskOf(bitmap: Bitmap): MaskBitmaps.Cropped? =
         runCatching { MaskBitmaps.encode(bitmap) }.getOrNull()
 
+    /**
+     * Page-wide order, rebuilt from what the rows remember.
+     *
+     * When it was made comes first, because that is the order it was worked in.
+     * The rest is only there so the sort is total: two ops from different layers
+     * cannot share a moment while there is one pen, and two from the same layer
+     * already have a stored sequence.
+     */
+    private val byWhenMade =
+        compareBy<SoilObject>({ it.createdAt }, { it.parentId }, { it.order })
+
+    // --- Layers ---------------------------------------------------------------
+
+    /**
+     * Writes a new layer and hands back its id, or null at the ceiling.
+     *
+     * The row is written before the canvas makes room for it, so a layer that
+     * exists on screen always exists on disk — the other way round leaves paint
+     * with nowhere to be filed.
+     */
+    suspend fun addLayer(name: String): String? = withContext(Dispatchers.IO) {
+        lock.withLock {
+            flushNow()
+            if (repo.layers(pageId).size >= Layer.MAX_PER_PAGE) return@withLock null
+            isDirty = true
+            repo.addLayer(pageId, name).id
+        }
+    }
+
+    /** Removes a layer and everything filed under it. */
+    suspend fun deleteLayer(id: String) = withContext(Dispatchers.IO) {
+        lock.withLock {
+            flushNow()
+            isDirty = true
+            repo.removeLayer(id)
+        }
+    }
+
+    /** Persists a layer's opacity and visibility — how it composites, not what it holds. */
+    suspend fun recordLayerState(id: String, visible: Boolean, opacity: Float) =
+        withContext(Dispatchers.IO) {
+            lock.withLock {
+                isDirty = true
+                repo.setLayerState(id, visible, opacity)
+            }
+        }
+
     // --- Loading ------------------------------------------------------------
 
     /**
@@ -263,6 +326,10 @@ class DocumentSession private constructor(
         val pots: List<Pot>,
         val mixture: Recipe,
         val load: BrushLoad,
+        /** The stack, bottom-first. Never empty. */
+        val layers: List<Layer> = emptyList(),
+        /** Index into [layers] of the one to paint on. */
+        val activeLayer: Int = 0,
     )
 
     suspend fun load(): PageSnapshot = withContext(Dispatchers.IO) {
@@ -276,8 +343,27 @@ class DocumentSession private constructor(
             val surface = resolved?.let(OpRows::readSurfaceOp)
                 ?: SurfaceOp(SurfaceKind.PAPER, 0xFFFFFFFF.toInt())
 
-            val committedRows = repo.committedOps(layerId)
-            val undoneRows = repo.redoableOps(layerId)
+            // The whole stack, bottom-first, and every layer's timeline with it.
+            val layerRows = repo.layers(pageId)
+            val stack = layerRows.map { row ->
+                Layer(
+                    id = row.id,
+                    name = row.text ?: Layer.DEFAULT_NAME,
+                    visible = (row.flags ?: SoilFlags.LAYER_DEFAULT) and SoilFlags.LAYER_VISIBLE != 0,
+                    opacity = row.opacity ?: 1f,
+                )
+            }
+
+            // Each layer keeps its own sequence; the page has none. Ordering every
+            // layer's ops by when they were made puts the timeline back the way it
+            // was worked, and since one pen can only be on one layer at a time,
+            // two ops from different layers cannot share a moment. Within a layer
+            // the stored order settles any that do.
+            val perLayer = layerRows.associate { it.id to repo.committedOps(it.id) }
+            val perLayerUndone = layerRows.associate { it.id to repo.redoableOps(it.id) }
+            val committedRows = perLayer.values.flatten().sortedWith(byWhenMade)
+            val undoneRows = perLayerUndone.values.flatten().sortedWith(byWhenMade)
+
             val attachments = repo.attachmentsOf((committedRows + undoneRows).map { it.id })
             // A paste's children are ops, which have children of their own — one
             // level deeper than anything else on the timeline. Fetched only when
@@ -290,8 +376,14 @@ class DocumentSession private constructor(
             }
             val children = (attachments + nested).groupBy { it.parentId }
 
+            // An op's layer is its parent. Tagged on the way in, because from here
+            // on the canvas folds each layer from its own ops and nothing else can
+            // say which those are.
             fun rebuild(rows: List<SoilObject>) =
-                rows.mapNotNull { OpRows.readOp(it) { id -> children[id].orEmpty() } }
+                rows.mapNotNull { row ->
+                    OpRows.readOp(row) { id -> children[id].orEmpty() }
+                        ?.also { it.layerId = row.parentId }
+                }
 
             PageSnapshot(
                 // The size is the book's, not the page's: a sketchbook is bought
@@ -311,6 +403,11 @@ class DocumentSession private constructor(
                 },
                 mixture = OpRows.readMixture(repo.paletteState()),
                 load = OpRows.readLoad(repo.paletteState()),
+                layers = stack,
+                // Which layer was last painted on is not something the file
+                // records, so the topmost one that can be painted on wins — the
+                // nearest sheet is the one a hand reaches for.
+                activeLayer = stack.indexOfLast { it.visible }.coerceAtLeast(0),
             )
         }
     }

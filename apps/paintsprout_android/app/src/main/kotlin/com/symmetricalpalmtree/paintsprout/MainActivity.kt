@@ -32,6 +32,7 @@ import com.google.android.material.snackbar.Snackbar
 import com.symmetricalpalmtree.paintsprout.databinding.ActivityMainBinding
 import com.symmetricalpalmtree.paintsprout.paint.AVAILABLE_SURFACES
 import com.symmetricalpalmtree.paintsprout.paint.Calibration
+import com.symmetricalpalmtree.paintsprout.paint.Layer
 import com.symmetricalpalmtree.paintsprout.paint.CanvasParams
 import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.ChalkboardParams
@@ -138,6 +139,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var undoBtn: ImageButton
     private lateinit var redoBtn: ImageButton
     private lateinit var pagesBtn: TextView
+    private lateinit var layersBtn: ImageButton
     private lateinit var scratchBtn: ImageButton
     private lateinit var canvasSizeBtn: ImageButton
     private lateinit var copyBtn: ImageButton
@@ -177,6 +179,8 @@ class MainActivity : AppCompatActivity() {
         buildRail()
         setupTray()
         binding.btnShowRail.setOnClickListener { setRailVisible(true) }
+        binding.layerAdd.setOnClickListener { addLayer() }
+        binding.canvas.onLayersChanged = { refreshLayers() }
         applyOrientation()
 
         binding.canvas.tool = tool
@@ -302,8 +306,8 @@ class MainActivity : AppCompatActivity() {
             runCatching { opened.load() }.getOrNull()?.let(::applyPage)
 
             binding.canvas.onOpCommitted = { opened.record(it) }
-            binding.canvas.onUndone = { opened.recordUndo() }
-            binding.canvas.onRedone = { opened.recordRedo() }
+            binding.canvas.onUndone = { layer -> opened.recordUndo(layer) }
+            binding.canvas.onRedone = { layer -> opened.recordRedo(layer) }
             binding.canvas.onBrushLoadChanged = { recordPalette() }
             binding.canvas.onPageTurn = ::turnPage
             refreshPageLabel()
@@ -657,7 +661,11 @@ class MainActivity : AppCompatActivity() {
         }
         if (!Focus.SHOW_COLOR) onColorChanged(Focus.COLOR)
 
+        // The stack before the paint: restore() folds ops into layers, so the
+        // layers have to be there to be folded into.
+        if (page.layers.isNotEmpty()) binding.canvas.restoreLayers(page.layers, page.activeLayer)
         binding.canvas.restore(page.committed, page.undone, page.cachedPaint)
+        refreshLayers()
         updateRail()
     }
 
@@ -684,6 +692,85 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         val open = session ?: return
         applicationScope.launch { open.flush() }
+    }
+
+    // --- Layers ---------------------------------------------------------------
+
+    private fun toggleLayerPanel() {
+        val showing = binding.layerPanel.visibility == View.VISIBLE
+        binding.layerPanel.visibility = if (showing) View.GONE else View.VISIBLE
+        if (!showing) refreshLayers()
+        updateRail()
+    }
+
+    /**
+     * Redraws the list from the canvas.
+     *
+     * Rebuilt wholesale rather than diffed: a page holds a handful of layers, and
+     * a list that is regenerated cannot drift out of step with what it describes.
+     */
+    private fun refreshLayers() {
+        val list = binding.layerList
+        list.removeAllViews()
+        // Topmost first, because that is the order they are stacked on the page
+        // and reading them upside-down from how they are drawn is a puzzle.
+        for (i in binding.canvas.layerCount - 1 downTo 0) {
+            list.addView(layerRow(i))
+        }
+    }
+
+    private fun layerRow(index: Int): View {
+        val selected = index == binding.canvas.activeLayerIndex
+        val name = TextView(this).apply {
+            text = binding.canvas.layerNameAt(index)
+            textSize = 14f
+            setTextColor(if (selected) 0xFF1B5E20.toInt() else 0xFF37474F.toInt())
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val remove = iconButton(R.drawable.ic_clear, getString(R.string.layers_delete)) {
+            deleteLayer(index)
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(4), dp(4), dp(4))
+            background = if (selected) selectedBg() else rippleBg()
+            addView(name)
+            addView(remove)
+            setOnClickListener {
+                if (binding.canvas.selectLayer(index)) refreshLayers()
+            }
+        }
+    }
+
+    private fun addLayer() {
+        val open = session ?: return
+        if (binding.canvas.layerCount >= Layer.MAX_PER_PAGE) {
+            toast(getString(R.string.layers_full))
+            return
+        }
+        lifecycleScope.launch {
+            val name = getString(R.string.layers_default_name, binding.canvas.layerCount + 1)
+            // Written first: a layer the canvas knows about but the file does not
+            // is paint with nowhere to be filed.
+            val id = open.addLayer(name) ?: run { toast(getString(R.string.layers_full)); return@launch }
+            binding.canvas.addLayer(id, name)
+            refreshLayers()
+        }
+    }
+
+    private fun deleteLayer(index: Int) {
+        val open = session ?: return
+        if (binding.canvas.layerCount <= 1) {
+            toast(getString(R.string.layers_last))
+            return
+        }
+        val id = binding.canvas.layerIdAt(index)
+        lifecycleScope.launch {
+            binding.canvas.removeLayer(index).forEach { it.recycle() }
+            open.deleteLayer(id)
+            refreshLayers()
+        }
     }
 
     // --- Which way up ---------------------------------------------------------
@@ -832,6 +919,9 @@ class MainActivity : AppCompatActivity() {
             rail.addView(undoBtn)
             rail.addView(redoBtn)
         }
+
+        layersBtn = iconButton(R.drawable.ic_layers, getString(R.string.layers_show)) { toggleLayerPanel() }
+        if (Focus.SHOW_LAYERS) rail.addView(layersBtn)
 
         rail.addView(divider())
         pagesBtn = textButton("Pages") { showPages() }
