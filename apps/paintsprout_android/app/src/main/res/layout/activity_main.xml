@@ -178,6 +178,16 @@
                     android:textStyle="bold" />
 
                 <ImageButton
+                    android:id="@+id/folderAdd"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/folders_add"
+                    android:padding="8dp"
+                    android:src="@drawable/ic_folder_add"
+                    app:tint="#FF37474F" />
+
+                <ImageButton
                     android:id="@+id/layerAdd"
                     android:layout_width="40dp"
                     android:layout_height="40dp"

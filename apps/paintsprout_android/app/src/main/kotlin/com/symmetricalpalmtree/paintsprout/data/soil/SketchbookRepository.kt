@@ -1,6 +1,7 @@
 package com.symmetricalpalmtree.paintsprout.data.soil
 
 import com.symmetricalpalmtree.paintsprout.data.soil.codec.Params
+import com.symmetricalpalmtree.paintsprout.paint.LayerStack
 import java.util.UUID
 
 /**
@@ -291,18 +292,58 @@ class SketchbookRepository(
 
     // --- Layers -------------------------------------------------------------
 
-    fun layers(pageId: String): List<SoilObject> = store.childrenOfType(pageId, SoilType.LAYER)
+    /**
+     * Every layer and folder on the page, at whatever depth, in no order.
+     *
+     * Walked a level at a time rather than through [Subtrees.collect], which
+     * would bring back every stroke on the page as well: a stack has a handful
+     * of rows and a page's history has thousands, and the panel wants the first
+     * of those without paying for the second.
+     */
+    fun stackRows(pageId: String): List<SoilObject> {
+        val out = mutableListOf<SoilObject>()
+        val seen = hashSetOf(pageId)
+        var frontier = setOf(pageId)
+        var depth = 0
+        while (frontier.isNotEmpty() && depth <= LayerStack.MAX_NESTING) {
+            val next = store.childrenOf(frontier)
+                .filter { (it.type == SoilType.LAYER || it.type == SoilType.GROUP) && seen.add(it.id) }
+            out += next
+            frontier = next.filter { it.type == SoilType.GROUP }.mapTo(hashSetOf()) { it.id }
+            depth++
+        }
+        return out
+    }
 
-    /** Today every page has exactly one; the schema is ready for more. */
+    /** The page's stack top-down, as the panel reads it: folders and layers both. */
+    fun stack(pageId: String): List<SoilObject> = Stacks.topDown(pageId, stackRows(pageId))
+
+    /**
+     * Every layer on the page, bottom-first — the order they are painted in.
+     *
+     * Folders drop out entirely: they hold layers, they are not layers, and
+     * nothing that paints or folds ops has any use for them. That a layer may
+     * now live one or six levels down is invisible from here, which is the
+     * point — a folder passes its contents through, so the paint order is the
+     * whole stack's layers flattened and nothing more.
+     */
+    fun layers(pageId: String): List<SoilObject> =
+        stack(pageId).filter { it.type == SoilType.LAYER }.asReversed()
+
+    /** The bottom layer of the page, wherever in the stack it has been filed. */
     fun contentLayer(pageId: String): SoilObject? = layers(pageId).firstOrNull()
 
-    fun addLayer(pageId: String, label: String = "Paint"): SoilObject {
+    /**
+     * [parentId] is the page, or a folder on it. The caller has already decided
+     * which; a layer does not care what holds it.
+     */
+    fun addLayer(parentId: String, label: String = "Paint"): SoilObject {
         val at = now()
         val layer = SoilObject(
             id = newId(),
-            parentId = pageId,
+            parentId = parentId,
             type = SoilType.LAYER,
-            order = Subtrees.nextOrder(store.childrenOfType(pageId, SoilType.LAYER)),
+            order = Subtrees.nextOrder(stackSiblings(parentId)),
             createdAt = at,
             updatedAt = at,
             text = label,
@@ -313,6 +354,110 @@ class SketchbookRepository(
         )
         store.insert(layer)
         return layer
+    }
+
+    /**
+     * A folder, holding nothing yet.
+     *
+     * It carries the same composition columns a layer does — the eye and the
+     * dial — because a folder has both, and they mean the same thing there:
+     * something multiplied onto what is inside rather than applied to pixels of
+     * its own. It has no `undoDepth` because it has no ops; the steps that make,
+     * move and dim a folder are filed on layers, where the timeline already is.
+     */
+    fun addFolder(parentId: String, label: String = "Folder"): SoilObject {
+        val at = now()
+        val folder = SoilObject(
+            id = newId(),
+            parentId = parentId,
+            type = SoilType.GROUP,
+            order = Subtrees.nextOrder(stackSiblings(parentId)),
+            createdAt = at,
+            updatedAt = at,
+            text = label,
+            flags = SoilFlags.LAYER_DEFAULT,
+            opacity = 1f,
+        )
+        store.insert(folder)
+        return folder
+    }
+
+    /**
+     * Layers and folders share one sequence within whatever holds them, so a new
+     * one of either goes above both.
+     */
+    private fun stackSiblings(parentId: String): List<SoilObject> =
+        store.children(parentId).filter { it.type == SoilType.LAYER || it.type == SoilType.GROUP }
+
+    /** Every folder alive on the page, at whatever depth. */
+    fun folders(pageId: String): List<SoilObject> =
+        stackRows(pageId).filter { it.type == SoilType.GROUP }
+
+    /**
+     * A folder row with this id, whether or not there was one a moment ago.
+     *
+     * Undo brings folders back, and it brings back *the same folder* — every step
+     * still on the timeline names it by the id it had, so a new id would leave
+     * them all pointing at nothing. A tombstoned row is revived rather than
+     * replaced for the same reason the rest of this format soft-deletes: the row
+     * is still the record of that folder, and the delete was only ever a mark
+     * saying it had gone.
+     */
+    fun ensureFolder(id: String, parentId: String, label: String): SoilObject {
+        val at = now()
+        val existing = store.byId(id)
+        val row = existing?.copy(
+            parentId = parentId,
+            text = label,
+            deletedAt = null,
+            updatedAt = at,
+        ) ?: SoilObject(
+            id = id,
+            parentId = parentId,
+            type = SoilType.GROUP,
+            order = Subtrees.nextOrder(stackSiblings(parentId)),
+            createdAt = at,
+            updatedAt = at,
+            text = label,
+            flags = SoilFlags.LAYER_DEFAULT,
+            opacity = 1f,
+        )
+        store.upsert(row)
+        return row
+    }
+
+    fun renameStackEntry(id: String, label: String) {
+        val row = store.byId(id) ?: return
+        if (row.type != SoilType.LAYER && row.type != SoilType.GROUP) return
+        store.upsert(row.copy(text = label, updatedAt = now()))
+    }
+
+    /**
+     * Drops a folder. What was inside it is *not* dropped with it.
+     *
+     * The caller has already lifted the contents out and back into the stack,
+     * and written where they went — a folder is a place to keep layers, so
+     * throwing one away is throwing away the place, never the work. That is also
+     * why this is the one structural delete with no undo step of its own: by the
+     * time it runs, the folder is empty, and an empty folder holds nothing that
+     * could be lost.
+     */
+    fun removeFolder(folderId: String) = store.transaction {
+        val row = store.byId(folderId) ?: return@transaction
+        if (row.type != SoilType.GROUP) return@transaction
+        // Anything still filed in it comes out first, into whatever held the
+        // folder. Normally the caller has already emptied it — but a *deleted
+        // layer* keeps its row exactly where it was, on purpose, so that the step
+        // that removed it stays undoable, and that row is invisible to the caller.
+        // Tombstoning over the top of one would strand it: no walk from the page
+        // would reach it again, and the undo that was supposed to bring the layer
+        // back with all its paint would find nothing to bring.
+        val at = now()
+        for (child in store.children(folderId)) {
+            if (child.type != SoilType.LAYER && child.type != SoilType.GROUP) continue
+            store.upsert(child.copy(parentId = row.parentId, updatedAt = at))
+        }
+        store.softDelete(folderId, at)
     }
 
     /**
@@ -328,26 +473,33 @@ class SketchbookRepository(
     }
 
     /**
-     * Writes the stack's order, bottom-first.
+     * Writes the whole arrangement: what holds what, and in what order.
      *
-     * Renumbered wholesale rather than shuffled, for the same reason pages are:
-     * a sequence that is rewritten cannot end up with two layers claiming the
-     * same place.
+     * One call for both, because with folders they are one fact. A layer dragged
+     * out of a folder changes its parent *and* its place among its new siblings
+     * *and* the numbering of the siblings it left, and writing those separately
+     * is three chances to leave the file describing a stack that never existed.
+     *
+     * Renumbered wholesale rather than shuffled, for the reason pages are: a
+     * sequence rewritten from 0 cannot end up with two rows claiming one place.
      */
-    fun setLayerOrder(pageId: String, bottomFirst: List<String>) {
+    fun setStackOrder(pageId: String, stack: LayerStack) = store.transaction {
         val at = now()
-        val rows = layers(pageId).associateBy { it.id }
-        bottomFirst.forEachIndexed { i, id ->
-            val row = rows[id] ?: return@forEachIndexed
-            if (row.order != i) store.upsert(row.copy(order = i, updatedAt = at))
+        val rows = stackRows(pageId).associateBy { it.id }
+        for ((id, place) in Stacks.placements(pageId, stack)) {
+            val row = rows[id] ?: continue
+            if (row.parentId == place.parentId && row.order == place.order) continue
+            store.upsert(row.copy(parentId = place.parentId, order = place.order, updatedAt = at))
         }
     }
 
     /**
-     * How a layer composites: whether it shows, and how strongly.
+     * How a layer or a folder composites: whether it shows, and how strongly.
      *
-     * Not an op. These change the way the layer is drawn, never what is on it,
+     * Not an op. These change the way something is drawn, never what is on it,
      * so they are written straight to the row rather than onto the timeline.
+     * A folder takes the same two because it means the same two by them — its
+     * eye and its dial reach through onto everything it holds.
      */
     fun setLayerState(layerId: String, visible: Boolean, opacity: Float) {
         val row = store.byId(layerId) ?: return
@@ -355,6 +507,20 @@ class SketchbookRepository(
             if (visible) it or SoilFlags.LAYER_VISIBLE else it and SoilFlags.LAYER_VISIBLE.inv()
         }
         store.upsert(row.copy(flags = flags, opacity = opacity, updatedAt = now()))
+    }
+
+    /**
+     * Whether a folder is folded shut.
+     *
+     * Off the timeline, unlike the eye beside it, and the difference is what the
+     * two do. Hiding a folder changes the picture; shutting one changes only how
+     * much of the panel it takes up. Undo retraces what you did to the drawing,
+     * and folding a list is not something you did to the drawing.
+     */
+    fun setFolderCollapsed(folderId: String, collapsed: Boolean) {
+        val row = store.byId(folderId) ?: return
+        if (row.type != SoilType.GROUP) return
+        store.upsert(row.withFlag(SoilFlags.FOLDER_COLLAPSED, collapsed).copy(updatedAt = now()))
     }
 
     // --- Ops ----------------------------------------------------------------

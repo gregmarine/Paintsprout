@@ -12,12 +12,19 @@ import android.graphics.BitmapFactory
 import com.symmetricalpalmtree.paintsprout.paint.BrushLoad
 import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
+import com.symmetricalpalmtree.paintsprout.paint.Folder
+import com.symmetricalpalmtree.paintsprout.paint.FolderAddOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderDeleteOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderOpacityOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderVisibilityOp
 import com.symmetricalpalmtree.paintsprout.paint.Layer
 import com.symmetricalpalmtree.paintsprout.paint.LayerAddOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerDeleteOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerOpacityOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerOrderOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerStack
 import com.symmetricalpalmtree.paintsprout.paint.LayerVisibilityOp
+import com.symmetricalpalmtree.paintsprout.paint.StackEntry
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
@@ -232,6 +239,14 @@ class DocumentSession private constructor(
             is LayerAddOp -> repo.appendOp(target(op), OpRows.layerAddRow(op))
             is LayerDeleteOp -> repo.appendOp(target(op), OpRows.layerDeleteRow(op))
             is LayerOrderOp -> repo.appendOp(target(op), OpRows.layerOrderRow(op))
+
+            // Filed under whichever layer was being worked on, because a folder
+            // has none of its own. The row names the folder, so which layer
+            // caught it never has to be known again.
+            is FolderAddOp -> repo.appendOp(target(op), OpRows.folderAddRow(op))
+            is FolderDeleteOp -> repo.appendOp(target(op), OpRows.folderDeleteRow(op))
+            is FolderOpacityOp -> repo.appendOp(target(op), OpRows.folderOpacityRow(op))
+            is FolderVisibilityOp -> repo.appendOp(target(op), OpRows.folderVisibilityRow(op))
         }
     }
 
@@ -264,7 +279,9 @@ class DocumentSession private constructor(
             // layer composites is not a mark.
             is MoveOp, is PasteOp, is SurfaceOp,
             is LayerOpacityOp, is LayerVisibilityOp,
-            is LayerAddOp, is LayerDeleteOp, is LayerOrderOp -> Unit
+            is LayerAddOp, is LayerDeleteOp, is LayerOrderOp,
+            is FolderAddOp, is FolderDeleteOp,
+            is FolderOpacityOp, is FolderVisibilityOp -> Unit
         }
     }
 
@@ -315,13 +332,65 @@ class DocumentSession private constructor(
         }
     }
 
-    /** Persists the stack's order, bottom-first. */
-    suspend fun recordLayerOrder(bottomFirst: List<String>) = withContext(Dispatchers.IO) {
+    /** Writes a new folder and hands back its id. */
+    suspend fun addFolder(name: String): String = withContext(Dispatchers.IO) {
         lock.withLock {
+            flushNow()
             isDirty = true
-            repo.setLayerOrder(pageId, bottomFirst)
+            repo.addFolder(pageId, name).id
         }
     }
+
+    /** A folder as the canvas holds it, on its way to the row that records it. */
+    class FolderState(
+        val id: String,
+        val name: String,
+        val visible: Boolean,
+        val opacity: Float,
+        val collapsed: Boolean,
+    )
+
+    /**
+     * Writes the whole arrangement: which folders exist, what holds what, and in
+     * what order.
+     *
+     * One reconciling call rather than a change per edit, because the canvas is
+     * the authority on the shape of a stack and this makes the file agree with it
+     * whatever happened — a drag, a deletion, or an undo of either. Idempotent,
+     * which matters: it runs on every change to the stack, including ones that
+     * moved nothing, and rows that already say the right thing are not written.
+     *
+     * Folder rows are made and unmade here and nowhere else. A folder that undo
+     * brought back comes back under its own id, because every step still on the
+     * timeline names it by that id and a new one would leave them pointing at
+     * nothing.
+     */
+    suspend fun recordStack(entries: List<StackEntry>, folders: List<FolderState>) =
+        withContext(Dispatchers.IO) {
+            lock.withLock {
+                isDirty = true
+                repo.transaction {
+                    val held = folders.associateBy { it.id }
+                    val present = hashSetOf<String>()
+                    for (entry in entries) {
+                        if (!entry.isFolder) continue
+                        val state = held[entry.id] ?: continue
+                        present += entry.id
+                        val home = entry.parentId.ifEmpty { pageId }
+                        repo.ensureFolder(state.id, home, state.name)
+                        repo.setLayerState(state.id, state.visible, state.opacity)
+                        repo.setFolderCollapsed(state.id, state.collapsed)
+                    }
+                    // A folder the canvas no longer has is a folder that went. Its
+                    // contents did not: they are elsewhere in the same arrangement,
+                    // and the write below puts them where they now belong.
+                    for (row in repo.folders(pageId)) {
+                        if (row.id !in present) repo.removeFolder(row.id)
+                    }
+                    repo.setStackOrder(pageId, LayerStack(entries))
+                }
+            }
+        }
 
     /** Persists a layer's opacity and visibility — how it composites, not what it holds. */
     suspend fun recordLayerState(id: String, visible: Boolean, opacity: Float) =
@@ -351,10 +420,14 @@ class DocumentSession private constructor(
         val pots: List<Pot>,
         val mixture: Recipe,
         val load: BrushLoad,
-        /** The stack, bottom-first. Never empty. */
+        /** The layers, bottom-first. Never empty. */
         val layers: List<Layer> = emptyList(),
         /** Index into [layers] of the one to paint on. */
         val activeLayer: Int = 0,
+        /** The folders holding them, in no particular order. */
+        val folders: List<Folder> = emptyList(),
+        /** The arrangement of both, top-down, as the panel reads it. */
+        val shape: List<StackEntry> = emptyList(),
     )
 
     suspend fun load(): PageSnapshot = withContext(Dispatchers.IO) {
@@ -368,14 +441,35 @@ class DocumentSession private constructor(
             val surface = resolved?.let(OpRows::readSurfaceOp)
                 ?: SurfaceOp(SurfaceKind.PAPER, 0xFFFFFFFF.toInt())
 
-            // The whole stack, bottom-first, and every layer's timeline with it.
-            val layerRows = repo.layers(pageId)
+            // The whole stack in one read — folders included — and every layer's
+            // timeline with it. Read top-down, as the panel has it, and turned
+            // bottom-first for the layers because that is the order they paint in.
+            val topDown = Stacks.topDown(pageId, repo.stackRows(pageId))
+            val layerRows = topDown.filter { it.type == SoilType.LAYER }.asReversed()
             val stack = layerRows.map { row ->
                 Layer(
                     id = row.id,
                     name = row.text ?: Layer.DEFAULT_NAME,
                     visible = (row.flags ?: SoilFlags.LAYER_DEFAULT) and SoilFlags.LAYER_VISIBLE != 0,
                     opacity = row.opacity ?: 1f,
+                )
+            }
+            val folders = topDown.filter { it.type == SoilType.GROUP }.map { row ->
+                Folder(
+                    id = row.id,
+                    name = row.text ?: Folder.DEFAULT_NAME,
+                    visible = (row.flags ?: SoilFlags.LAYER_DEFAULT) and SoilFlags.LAYER_VISIBLE != 0,
+                    opacity = row.opacity ?: 1f,
+                    collapsed = row.hasFlag(SoilFlags.FOLDER_COLLAPSED),
+                )
+            }
+            // The page itself stands in for "nothing holds this" on the way out,
+            // the same swap the write side makes on the way in.
+            val shape = topDown.map { row ->
+                StackEntry(
+                    id = row.id,
+                    isFolder = row.type == SoilType.GROUP,
+                    parentId = if (row.parentId == pageId) StackEntry.LOOSE else row.parentId,
                 )
             }
 
@@ -431,10 +525,27 @@ class DocumentSession private constructor(
                 layers = stack,
                 // Which layer was last painted on is not something the file
                 // records, so the topmost one that can be painted on wins — the
-                // nearest sheet is the one a hand reaches for.
-                activeLayer = stack.indexOfLast { it.visible }.coerceAtLeast(0),
+                // nearest sheet is the one a hand reaches for. A layer inside a
+                // hidden folder cannot be painted on either, so it is skipped
+                // here the way a hidden one always was.
+                activeLayer = stack
+                    .indexOfLast { layer -> layer.visible && showsThrough(layer.id, shape, folders) }
+                    .coerceAtLeast(0),
+                folders = folders,
+                shape = shape,
             )
         }
+    }
+
+    /** Whether every folder above [layerId] is open-eyed. */
+    private fun showsThrough(
+        layerId: String,
+        shape: List<StackEntry>,
+        folders: List<Folder>,
+    ): Boolean {
+        val hidden = folders.filterNot { it.visible }.mapTo(hashSetOf()) { it.id }
+        if (hidden.isEmpty()) return true
+        return LayerStack(shape).ancestors(layerId).none { it in hidden }
     }
 
     /** The cache, only when it describes the history as it currently stands. */

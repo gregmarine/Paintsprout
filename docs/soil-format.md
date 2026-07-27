@@ -145,7 +145,9 @@ buys is that a new object type costs no migration, no join and no per-type reade
 ```
 sketchbook            root meta row, parentId = ""
 ├── page              "order" = page index
-│   └── layer         exactly one for now; the schema allows more
+│   ├── group         a folder in the stack; may hold layers and other groups
+│   │   └── layer
+│   └── layer         "order" = position among its siblings, counting UP from the bottom
 │       ├── stroke        "order" = op index
 │       │   ├── stroke_clip   frisket mask, if drawn inside a selection
 │       │   └── wet_state     watercolor: tick schedule, crop, dry freeze
@@ -155,6 +157,8 @@ sketchbook            root meta row, parentId = ""
 │       ├── paste         a clipboard paste — the one op with ops beneath it
 │       │   └── stroke/fill/erase …
 │       ├── surface_op    a surface change, on the undo timeline
+│       ├── layer_*   }  how a layer or folder composites, and where it sits —
+│       ├── folder_*  }  all on the undo timeline, none of them paint
 │       └── raster_cache  composited pixels — NOT an op (see below)
 └── palette
     └── pot
@@ -163,6 +167,44 @@ sketchbook            root meta row, parentId = ""
 **Shipped beyond the plan:** `paste`. A paste is one step in the timeline holding
 several marks, because a paste of thirty marks that takes thirty presses to undo
 is not one paste. It is the only op with op children.
+
+### Folders in the stack
+
+A `group` is somewhere to keep layers, and structure is all it is: a name, and
+whatever names it as a parent. It needed no new column and no migration — the
+stack was already a tree the format knew how to hold.
+
+- **A folder does not composite.** Its eye and its dial reach *through* onto what
+  it holds rather than flattening them first, so a layer's effective opacity is
+  its own times its ancestors' and nothing more. Nesting therefore costs no buffer
+  at any depth, and no folder anywhere changes the order paint goes down in — the
+  paint order is the stack's layers flattened, exactly as it was before folders
+  existed.
+- **`order` counts up from the bottom, among siblings.** That is why no step
+  already on a timeline needed rewriting: a page with no folders is one set of
+  siblings, and counting up from the bottom of it gives the very numbers those
+  steps carry. A structural step records `(folder, position)`, and an absent
+  folder reads as none — which is what it always meant.
+- **Depth is capped** at `LayerStack.MAX_NESTING`, a floor under `Subtrees.MAX_DEPTH`.
+  A page's rows already run sketchbook → page → layer → op → attachment; the
+  folders in between get what is left. Without the cap a stack could be built that
+  cannot be read back off the disk.
+- **A folder's own steps are filed under the layer being worked on**, because a
+  folder holds no paint and so has no timeline of its own. The row names the
+  folder, so which layer caught it never matters again.
+- **Deleting a folder never deletes what is in it.** The contents come out where
+  it stood; the step records the loss of a place, and how many things spilled out,
+  which is what undo needs and cannot work out for itself. The row is tombstoned
+  and comes back under *the same id*, because every step still on the timeline
+  names it by that id.
+- **A folder is never tombstoned over a live child.** A deleted layer keeps its
+  row exactly where it was so its deletion stays undoable, and that row is
+  invisible to the editor — so removal re-homes whatever is still filed inside
+  before it marks the folder gone. Otherwise the undo that was meant to bring a
+  layer back with all its paint would find nothing to bring.
+- **Folded shut is not hidden.** `FOLDER_COLLAPSED` sits on the row and off the
+  timeline: shutting a folder changes how much of a list you are looking at, not
+  the picture, and undo is for the picture.
 
 ### The undo model
 

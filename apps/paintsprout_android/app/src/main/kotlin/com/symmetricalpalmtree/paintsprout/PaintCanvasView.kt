@@ -30,12 +30,20 @@ import com.symmetricalpalmtree.paintsprout.paint.Calibration
 import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
+import com.symmetricalpalmtree.paintsprout.paint.Folder
+import com.symmetricalpalmtree.paintsprout.paint.FolderAddOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderDeleteOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderOpacityOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderVisibilityOp
 import com.symmetricalpalmtree.paintsprout.paint.Layer
 import com.symmetricalpalmtree.paintsprout.paint.LayerAddOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerDeleteOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerOpacityOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerOrderOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerStack
 import com.symmetricalpalmtree.paintsprout.paint.LayerVisibilityOp
+import com.symmetricalpalmtree.paintsprout.paint.StackEntry
+import com.symmetricalpalmtree.paintsprout.paint.StackSpot
 import com.symmetricalpalmtree.paintsprout.paint.GalleryExport
 import com.symmetricalpalmtree.paintsprout.paint.GpuRender
 import com.symmetricalpalmtree.paintsprout.paint.LassoLoop
@@ -301,9 +309,29 @@ class PaintCanvasView @JvmOverloads constructor(
     private var surfaceBmp: Bitmap? = null
 
     /**
-     * The stack, bottom-first. Never empty: a page always has somewhere to paint.
+     * The shape of the stack: what is in it, in what order, and inside which
+     * folder. Structure only — it knows ids and nothing about paint.
      */
-    private val layers = mutableListOf(Layer(java.util.UUID.randomUUID().toString(), Layer.DEFAULT_NAME))
+    private val stack = LayerStack(listOf(StackEntry(java.util.UUID.randomUUID().toString())))
+
+    /** Everything in the stack that holds paint, and everything that holds those. */
+    private val layersById = linkedMapOf(
+        stack.entries.first().id to Layer(stack.entries.first().id, Layer.DEFAULT_NAME),
+    )
+    private val foldersById = linkedMapOf<String, Folder>()
+
+    /**
+     * The layers bottom-first — the order they are painted in. Never empty: a
+     * page always has somewhere to paint.
+     *
+     * Derived from [stack] and rebuilt by [reflow] whenever its shape changes,
+     * which is what let folders arrive without reopening anything that draws.
+     * Everything below this line works from a flat list of layers exactly as it
+     * did before there was anything to file them in — because a folder passes
+     * its contents through rather than compositing them, so nesting changes
+     * nothing about what goes down when.
+     */
+    private val layers = mutableListOf(layersById.values.first())
 
     /** Index into [layers] of the one the pen is currently working on. */
     private var activeIndex = 0
@@ -312,6 +340,23 @@ class PaintCanvasView @JvmOverloads constructor(
     val activeLayerIndex: Int get() = activeIndex
     fun layerNameAt(i: Int): String = layers[i].name
     fun layerIdAt(i: Int): String = layers[i].id
+
+    /**
+     * Puts [layers] back in step with [stack].
+     *
+     * The pen keeps hold of the same sheet across it: the active layer is
+     * followed by identity, not by the index it happened to be at, because a
+     * move or a deletion elsewhere in the stack shifts indices and does not
+     * change what you were drawing on.
+     */
+    private fun reflow() {
+        val holding = layers.getOrNull(activeIndex)
+        layers.clear()
+        stack.drawOrder().mapNotNullTo(layers) { layersById[it] }
+        if (layers.isEmpty()) layersById.values.firstOrNull()?.let { layers += it }
+        activeIndex = layers.indexOf(holding).takeIf { it >= 0 } ?: activeIndex
+        activeIndex = activeIndex.coerceIn(0, layers.lastIndex.coerceAtLeast(0))
+    }
 
     /** Rebuilt-on-demand callback for the panel: the stack changed shape. */
     var onLayersChanged: (() -> Unit)? = null
@@ -1193,7 +1238,7 @@ class PaintCanvasView @JvmOverloads constructor(
         canvas.drawBitmap(surfaceLayer, srcRect, dstRect, null)
 
         for ((i, layer) in layers.withIndex()) {
-            if (!layer.visible) continue
+            if (!shown(layer)) continue
             if (i == activeIndex) drawActiveLayer(canvas, layer) else drawRestingLayer(canvas, layer)
         }
 
@@ -1205,20 +1250,45 @@ class PaintCanvasView @JvmOverloads constructor(
         drawLassoInProgress(canvas)
     }
 
+    /**
+     * Whether a layer shows at all: its own eye, and every folder's above it.
+     *
+     * A folder gates rather than composites, so hiding one hides what it holds
+     * without any of them being drawn together first.
+     */
+    private fun shown(layer: Layer): Boolean =
+        layer.visible && stack.ancestors(layer.id).all { foldersById[it]?.visible != false }
+
+    /**
+     * A layer's opacity as it actually paints: its own, times every folder's
+     * above it.
+     *
+     * The whole of what nesting costs. Because a folder scales what it holds
+     * instead of flattening it, this is a product down a chain and never a
+     * buffer — which is why folders can sit inside folders for nothing.
+     */
+    private fun effectiveAlpha(layer: Layer): Int {
+        var opacity = layer.opacity
+        for (id in stack.ancestors(layer.id)) opacity *= foldersById[id]?.opacity ?: 1f
+        return (opacity.coerceIn(0f, 1f) * 255f).toInt()
+    }
+
     /** A layer nobody is drawing on: its pixels, at its opacity. */
     private fun drawRestingLayer(canvas: Canvas, layer: Layer) {
         val bmp = layer.bmp ?: return
-        if (layer.alpha <= 0) return
-        layerAlphaPaint.alpha = layer.alpha
+        val alpha = effectiveAlpha(layer)
+        if (alpha <= 0) return
+        layerAlphaPaint.alpha = alpha
         canvas.drawBitmap(bmp, srcRect, dstRect, layerAlphaPaint)
     }
 
     private val layerAlphaPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
     private fun drawActiveLayer(canvas: Canvas, activeOne: Layer) {
-        if (activeOne.alpha <= 0) return
+        val alpha = effectiveAlpha(activeOne)
+        if (alpha <= 0) return
         val group = canvas.saveLayerAlpha(
-            0f, 0f, logicalW.toFloat(), logicalH.toFloat(), activeOne.alpha,
+            0f, 0f, logicalW.toFloat(), logicalH.toFloat(), alpha,
         )
         drawActiveContent(canvas)
         canvas.restoreToCount(group)
@@ -3796,6 +3866,14 @@ class PaintCanvasView @JvmOverloads constructor(
                 is LayerAddOp -> {}
                 is LayerDeleteOp -> {}
                 is LayerOrderOp -> {}
+
+                // A folder holds no pixels at all, so there is even less here to
+                // do. Where it sits is the stack's business and how far it is
+                // turned down is applied when the stack is drawn, not folded in.
+                is FolderAddOp -> {}
+                is FolderDeleteOp -> {}
+                is FolderOpacityOp -> {}
+                is FolderVisibilityOp -> {}
             }
         }
         return cur
@@ -3910,6 +3988,18 @@ class PaintCanvasView @JvmOverloads constructor(
             if (!onTheTimeline) {
                 l.baseVisible = l.visible
                 l.baseOpacity = l.opacity
+            }
+        }
+        // Folders, by the same rule and for the same reason. They are named by the
+        // step rather than filed under it, so this asks what the step is about.
+        for (f in foldersById.values) {
+            val onTheTimeline = committed.any {
+                (it is FolderOpacityOp && it.folderId == f.id) ||
+                    (it is FolderVisibilityOp && it.folderId == f.id)
+            }
+            if (!onTheTimeline) {
+                f.baseVisible = f.visible
+                f.baseOpacity = f.opacity
             }
         }
 
@@ -4812,14 +4902,29 @@ class PaintCanvasView @JvmOverloads constructor(
         if (layers.size >= Layer.MAX_PER_PAGE) return false
         val layer = Layer(id, name)
         if (bufW > 0 && bufH > 0) layer.bmp = createBitmap(bufW, bufH)
-        val at = activeIndex + 1
-        layers.add(at, layer)
-        activeIndex = at
-        commitLayerOp(LayerAddOp(name, at), layer)
+        layersById[id] = layer
+        // Directly above the layer being worked on means inside whatever folder
+        // that layer is in: a new sheet joins the thing you were drawing on, and
+        // arriving beside its folder instead would be somewhere else entirely.
+        val spot = spotAbove(activeLayer.id)
+        stack.insertAt(StackEntry(id), spot.folder, spot.at)
+        reflow()
+        activeIndex = layers.indexOf(layer).coerceAtLeast(0)
+        commitLayerOp(LayerAddOp(name, spot), layer)
         invalidate()
         onLayersChanged?.invoke()
         return true
     }
+
+    /** The place immediately above [id], inside whatever holds it. */
+    private fun spotAbove(id: String): StackSpot {
+        val (folder, at) = stack.spotOf(id) ?: return StackSpot(StackSpot.LOOSE, stack.size)
+        return StackSpot(folder, at + 1)
+    }
+
+    private fun spotOf(id: String): StackSpot =
+        stack.spotOf(id)?.let { (folder, at) -> StackSpot(folder, at) }
+            ?: StackSpot(StackSpot.LOOSE, 0)
 
     /**
      * Layers taken out of the stack but not thrown away.
@@ -4840,14 +4945,17 @@ class PaintCanvasView @JvmOverloads constructor(
      */
     fun removeLayer(index: Int): List<PaintOp> {
         if (layers.size <= 1 || index !in layers.indices) return emptyList()
-        val gone = layers.removeAt(index)
+        val gone = layers[index]
+        val spot = spotOf(gone.id)
         // The layer goes on the shelf rather than in the bin, and its ops stay on
         // the timeline: the step that removed it is itself undoable, and putting
         // it back has to put back everything that was on it.
+        stack.remove(gone.id)
+        layersById.remove(gone.id)
         retired[gone.id] = gone
-        activeIndex = activeIndex.coerceAtMost(layers.lastIndex)
+        reflow()
         recycleCheckpoints()
-        commitLayerOp(LayerDeleteOp(index), gone)
+        commitLayerOp(LayerDeleteOp(spot), gone)
         invalidate()
         onLayersChanged?.invoke()
         onHistoryChanged?.invoke()
@@ -4864,43 +4972,157 @@ class PaintCanvasView @JvmOverloads constructor(
      */
     private fun applyStructure(op: PaintOp, forward: Boolean) {
         when (op) {
-            is LayerDeleteOp -> if (forward) shelve(op.layerId) else unshelve(op.layerId, op.at)
-            is LayerAddOp -> if (forward) unshelve(op.layerId, op.at) else shelve(op.layerId)
-            is LayerOrderOp -> slide(op.layerId, if (forward) op.to else op.from)
+            is LayerDeleteOp -> if (forward) shelve(op.layerId) else unshelve(op.layerId, op.spot)
+            is LayerAddOp -> if (forward) unshelve(op.layerId, op.spot) else shelve(op.layerId)
+            is LayerOrderOp -> slide(op.moved, if (forward) op.to else op.from)
+            is FolderDeleteOp -> if (forward) {
+                closeFolder(op.folderId)
+            } else {
+                openFolder(op.folderId, op.name, op.spot, op.held)
+            }
+            // A folder is made empty, and a timeline unwinds in order, so by the
+            // time this is undone whatever was filed in it since has come back
+            // out. It arrives holding nothing, and leaves holding nothing.
+            is FolderAddOp -> if (forward) {
+                openFolder(op.folderId, op.name, op.spot, held = 0)
+            } else {
+                closeFolder(op.folderId)
+            }
             else -> return
         }
-        activeIndex = activeIndex.coerceIn(0, layers.lastIndex.coerceAtLeast(0))
+        reflow()
         recycleCheckpoints()
         onLayersChanged?.invoke()
     }
 
     private fun shelve(id: String) {
-        val i = layers.indexOfFirst { it.id == id }
         // The last layer standing stays: a page with nowhere to paint is not a
         // state the rest of this class is written to survive.
-        if (i < 0 || layers.size <= 1) return
-        retired[id] = layers.removeAt(i)
+        if (!stack.contains(id) || layers.size <= 1) return
+        stack.remove(id)
+        layersById.remove(id)?.let { retired[id] = it }
     }
 
     /**
-     * Moves a layer to [at], wherever it currently is.
+     * Moves a layer or a folder to [spot], wherever it currently is.
      *
-     * Found by identity rather than by the index the op recorded, because a step
-     * further back may have shifted it since. The step says which layer and where
-     * it belongs; where it happens to be right now is this list's business.
+     * Found by identity rather than by where the op says it was, because a step
+     * further back may have shifted it since. The step says which thing and
+     * where it belongs; where it happens to be right now is the stack's business.
      */
-    private fun slide(id: String, at: Int) {
-        val i = layers.indexOfFirst { it.id == id }
-        if (i < 0) return
-        val holding = layers.getOrNull(activeIndex)
-        layers.add(at.coerceIn(0, layers.size - 1), layers.removeAt(i))
-        holding?.let { h -> layers.indexOf(h).takeIf { it >= 0 }?.let { activeIndex = it } }
+    private fun slide(id: String, spot: StackSpot) {
+        if (!stack.contains(id)) return
+        // A step that names a folder deleted since points nowhere. Left alone
+        // rather than dropped loose: the folder comes back if the undo carries
+        // on far enough, and moving it out now would be a change nobody made.
+        if (spot.folder != StackSpot.LOOSE && !stack.contains(spot.folder)) return
+        stack.placeAt(id, spot.folder, spot.at)
     }
 
-    private fun unshelve(id: String, at: Int) {
+    private fun unshelve(id: String, spot: StackSpot) {
         val layer = retired.remove(id) ?: return
         if (layer.bmp == null && bufW > 0 && bufH > 0) layer.bmp = createBitmap(bufW, bufH)
-        layers.add(at.coerceIn(0, layers.size), layer)
+        layersById[id] = layer
+        val home = spot.folder.takeIf { it == StackSpot.LOOSE || stack.contains(it) } ?: StackSpot.LOOSE
+        stack.insertAt(StackEntry(id), home, spot.at)
+    }
+
+    // --- Folders --------------------------------------------------------------
+
+    /**
+     * Makes a folder above the layer being worked on, holding nothing yet.
+     *
+     * Empty rather than wrapped around the selection, because those are two
+     * different intentions and only one of them can be undone by dragging a
+     * layer back out.
+     */
+    fun addFolder(id: String, name: String): Boolean {
+        val spot = spotAbove(activeLayer.id)
+        if (!canNest(spot.folder)) return false
+        foldersById[id] = Folder(id, name)
+        stack.insertAt(StackEntry(id, isFolder = true), spot.folder, spot.at)
+        reflow()
+        commitFolderOp(FolderAddOp(id, name, spot))
+        invalidate()
+        onLayersChanged?.invoke()
+        return true
+    }
+
+    /** Whether another folder will fit inside [folder] without passing the cap. */
+    fun canNest(folder: String): Boolean =
+        folder == StackSpot.LOOSE ||
+            (stack.contains(folder) && stack.depth(stack.indexOf(folder)) + 1 < LayerStack.MAX_NESTING)
+
+    /** Whether [addFolder] would find room where it means to put one. */
+    fun canAddFolder(): Boolean = canNest(spotAbove(activeLayer.id).folder)
+
+    /**
+     * Takes a folder away, and leaves everything that was in it.
+     *
+     * The contents come out where the folder stood, in the order they were in,
+     * because a folder is a place to keep work and not the work. Nothing here
+     * needs shelving for that reason: no paint is going anywhere.
+     */
+    fun removeFolder(id: String): Boolean {
+        val folder = foldersById[id] ?: return false
+        if (!stack.contains(id)) return false
+        val spot = spotOf(id)
+        val held = stack.childrenOf(id).size
+        closeFolder(id)
+        reflow()
+        commitFolderOp(FolderDeleteOp(id, folder.name, spot, held))
+        invalidate()
+        onLayersChanged?.invoke()
+        return true
+    }
+
+    /**
+     * Tips a folder's contents out where it stood, and takes the folder away.
+     *
+     * Lifted as one block and put back without its first entry, so everything
+     * inside keeps its order and its own nesting and lands one shelf shallower.
+     * The folder object is kept: undo may want it back, and it is a name and two
+     * numbers.
+     */
+    private fun closeFolder(id: String) {
+        if (!stack.contains(id)) return
+        val spot = spotOf(id)
+        val block = stack.remove(id)
+        val freed = block.drop(1).map {
+            if (it.parentId == id) it.copy(parentId = spot.folder) else it
+        }
+        stack.insertAll(freed, stack.flatIndexFor(spot.folder, spot.at))
+    }
+
+    /**
+     * The inverse: the place comes back, and takes its contents in again.
+     *
+     * The [held] things that spilled out are the run standing where the folder
+     * stood, so the folder goes in directly above the topmost of them and each
+     * is refiled in turn. Each is moved rather than relabelled because a folder
+     * among them brings its own contents along, and how far that reaches is not
+     * something a count knows.
+     */
+    private fun openFolder(id: String, name: String, spot: StackSpot, held: Int) {
+        if (stack.contains(id)) return
+        foldersById.getOrPut(id) { Folder(id, name) }.name = name
+
+        val siblings = stack.childrenOf(spot.folder)
+        // Siblings read top-down and the spot counts up from the bottom.
+        val topmost = (siblings.size - spot.at - held).coerceIn(0, siblings.size)
+        val taken = siblings
+            .subList(topmost, (topmost + held).coerceAtMost(siblings.size))
+            .map { it.id }
+
+        val landing = taken.firstOrNull()?.let { stack.indexOf(it) }
+            ?: stack.flatIndexFor(spot.folder, spot.at)
+        stack.insert(StackEntry(id, isFolder = true, parentId = spot.folder), landing)
+
+        var at = landing + 1
+        for (child in taken) {
+            stack.move(child, at, id)
+            at = stack.span(stack.indexOf(child)).last + 1
+        }
     }
 
     /**
@@ -4908,7 +5130,7 @@ class PaintCanvasView @JvmOverloads constructor(
      * that lands somewhere invisible looks exactly like a stroke that failed.
      */
     fun selectLayer(index: Int): Boolean {
-        if (index !in layers.indices || !layers[index].visible) return false
+        if (index !in layers.indices || !shown(layers[index])) return false
         if (index == activeIndex) return true
         // A lifted selection belongs to the layer it was lifted from; carrying it
         // across would set it down somewhere it never came from. Put it down first.
@@ -4926,13 +5148,22 @@ class PaintCanvasView @JvmOverloads constructor(
     fun setLayerVisible(index: Int, visible: Boolean) {
         val layer = layers.getOrNull(index) ?: return
         layer.visible = visible
-        // Hiding the layer under the pen would leave the pen nowhere to draw.
-        if (!visible && index == activeIndex) {
-            layers.indexOfFirst { it.visible }.takeIf { it >= 0 }?.let { activeIndex = it }
-        }
+        moveThePenSomewhereItShows()
         commitLayerOp(LayerVisibilityOp(visible), layer)
         invalidate()
         onLayersChanged?.invoke()
+    }
+
+    /**
+     * The pen cannot be left on a layer that no longer shows.
+     *
+     * "No longer shows" now includes a layer whose folder was closed over it,
+     * which is why this is one routine rather than a check at each eye: hiding a
+     * folder can take the layer under the pen out of sight without touching it.
+     */
+    private fun moveThePenSomewhereItShows() {
+        if (layers.getOrNull(activeIndex)?.let(::shown) == true) return
+        layers.indexOfFirst { shown(it) }.takeIf { it >= 0 }?.let { activeIndex = it }
     }
 
     /**
@@ -4956,6 +5187,24 @@ class PaintCanvasView @JvmOverloads constructor(
 
     private fun commitLayerOp(op: PaintOp, layer: Layer) {
         op.layerId = layer.id
+        commit(op)
+    }
+
+    /**
+     * Files a folder's step under the layer being worked on.
+     *
+     * A folder has no ops of its own to hang one from — it holds no paint, so it
+     * has no timeline — and every step has to be filed somewhere it will be read
+     * back from. The layer under the pen is that somewhere, and the step names
+     * the folder itself, so which layer it happened to be filed under never
+     * matters again.
+     */
+    private fun commitFolderOp(op: PaintOp) {
+        op.layerId = activeLayer.id
+        commit(op)
+    }
+
+    private fun commit(op: PaintOp) {
         committed.add(op)
         onOpCommitted?.invoke(op)
         clearRedo()
@@ -4963,64 +5212,163 @@ class PaintCanvasView @JvmOverloads constructor(
     }
 
     /**
-     * Re-derives every layer's opacity and visibility from the timeline.
+     * Re-derives every layer's and folder's opacity and visibility from the
+     * timeline.
      *
      * The same shape as [syncSurfaceToHistory], and for the same reason: an undo
      * moves the boundary, and state that was written straight onto the layer
-     * would sit there contradicting the history it came from. Each layer starts
-     * at its anchored base and the surviving ops are applied over it in order.
+     * would sit there contradicting the history it came from. Each starts at its
+     * anchored base and the surviving ops are applied over it in order.
      */
     private fun syncLayerStateToHistory() {
-        for (l in layers) {
+        for (l in layersById.values) {
             l.visible = l.baseVisible
             l.opacity = l.baseOpacity
         }
-        val byId = layers.associateBy { it.id }
+        for (f in foldersById.values) {
+            f.visible = f.baseVisible
+            f.opacity = f.baseOpacity
+        }
         for (op in committed) {
-            val l = byId[op.layerId] ?: continue
             when (op) {
-                is LayerOpacityOp -> l.opacity = op.opacity
-                is LayerVisibilityOp -> l.visible = op.visible
+                is LayerOpacityOp -> layersById[op.layerId]?.opacity = op.opacity
+                is LayerVisibilityOp -> layersById[op.layerId]?.visible = op.visible
+                is FolderOpacityOp -> foldersById[op.folderId]?.opacity = op.opacity
+                is FolderVisibilityOp -> foldersById[op.folderId]?.visible = op.visible
                 else -> Unit
             }
         }
-        // The pen cannot be left on a layer an undo has just hidden.
-        if (!layers[activeIndex.coerceIn(0, layers.lastIndex)].visible) {
-            layers.indexOfFirst { it.visible }.takeIf { it >= 0 }?.let { activeIndex = it }
-        }
+        moveThePenSomewhereItShows()
         onLayersChanged?.invoke()
     }
 
     /**
-     * Moves a layer to a new place in the stack.
+     * Moves a layer or a folder to a new place in the stack, and possibly into or
+     * out of a folder.
      *
      * The selection follows the layer rather than the position: you dragged this
-     * sheet, so this sheet is still the one under the pen when it lands.
+     * sheet, so this sheet is still the one under the pen when it lands. A folder
+     * takes its contents with it, and one step covers all of them — dragging a
+     * folder is one thing you did, however many layers travelled with it.
      */
-    fun moveLayer(from: Int, to: Int): Boolean {
-        if (from !in layers.indices || to !in layers.indices || from == to) return false
-        val holding = layers[activeIndex]
-        val moved = layers.removeAt(from)
-        layers.add(to, moved)
-        activeIndex = layers.indexOf(holding)
-        commitLayerOp(LayerOrderOp(from, to), moved)
+    fun moveInStack(id: String, to: Int, into: String): Boolean {
+        val from = spotOf(id)
+        if (!stack.move(id, to, into)) return false
+        reflow()
+        val landed = spotOf(id)
+        // Filed under a layer either way: under itself when a layer moved, and
+        // under the layer being worked on when a folder did — a folder has no
+        // timeline of its own, so the step has to name what it was about.
+        val layer = layersById[id]
+        if (layer != null) {
+            commitLayerOp(LayerOrderOp(from, landed), layer)
+        } else {
+            commitFolderOp(LayerOrderOp(from, landed, subject = id))
+        }
         invalidate()
         onLayersChanged?.invoke()
         return true
     }
 
+    /** The whole stack as the panel reads it, top-down: folders and layers both. */
+    fun stackEntries(): List<StackEntry> = stack.entries.toList()
+
+    fun stackRows(): List<Int> = stack.visibleRows(foldersById.filterValues { it.collapsed }.keys)
+
+    fun stackDepth(index: Int): Int = stack.depth(index)
+
+    /** The row at [index] together with everything filed inside it. */
+    fun stackSpan(index: Int): IntRange = stack.span(index)
+
+    fun folderAt(id: String): Folder? = foldersById[id]
+
+    val folderCount: Int get() = stack.entries.count { it.isFolder }
+
+    fun layerAt(id: String): Layer? = layersById[id]
+
+    /** Which folder catches a drop made in the gap between two panel rows. */
+    fun dropInto(above: Int?, below: Int?): String = stack.dropInto(above, below)
+
+    /** The folder holding [id], or nothing when nothing holds it. */
+    fun holderOf(id: String): String = stack.entry(id)?.parentId ?: StackSpot.LOOSE
+
     /** The stack bottom-first, for writing the order back to the file. */
     fun layerIdsInOrder(): List<String> = layers.map { it.id }
+
+    /** Where a layer sits in the paint order — the index everything else takes. */
+    fun indexOfLayer(id: String): Int = layers.indexOfFirst { it.id == id }
 
     fun layerVisibleAt(index: Int): Boolean = layers.getOrNull(index)?.visible ?: false
     fun layerOpacityAt(index: Int): Float = layers.getOrNull(index)?.opacity ?: 1f
 
-    /** Replaces the whole stack on page load. [restore] follows with the paint. */
-    fun restoreLayers(loaded: List<Layer>, active: Int) {
+    /** Whether a folder above this layer is hiding it, whatever its own eye says. */
+    fun layerHiddenByFolder(index: Int): Boolean =
+        layers.getOrNull(index)?.let { it.visible && !shown(it) } ?: false
+
+    // --- A folder's eye and its dial -------------------------------------------
+
+    fun setFolderVisible(id: String, visible: Boolean) {
+        val folder = foldersById[id] ?: return
+        folder.visible = visible
+        moveThePenSomewhereItShows()
+        commitFolderOp(FolderVisibilityOp(id, visible))
+        invalidate()
+        onLayersChanged?.invoke()
+    }
+
+    /** Live, off the timeline — the slider's every tick. See [setLayerOpacity]. */
+    fun setFolderOpacity(id: String, opacity: Float) {
+        val folder = foldersById[id] ?: return
+        folder.opacity = opacity.coerceIn(0f, 1f)
+        invalidate()
+    }
+
+    fun commitFolderOpacity(id: String) {
+        val folder = foldersById[id] ?: return
+        commitFolderOp(FolderOpacityOp(id, folder.opacity))
+    }
+
+    /** Off the timeline: folding a list is not something you did to the drawing. */
+    fun setFolderCollapsed(id: String, collapsed: Boolean) {
+        foldersById[id]?.collapsed = collapsed
+        onLayersChanged?.invoke()
+    }
+
+    fun renameStackEntry(id: String, name: String) {
+        layersById[id]?.name = name
+        foldersById[id]?.name = name
+        onLayersChanged?.invoke()
+    }
+
+    /**
+     * Replaces the whole stack on page load. [restore] follows with the paint.
+     *
+     * [shape] is the arrangement as the file records it, top-down. A page saved
+     * before folders existed has none, and then the loaded layers are the whole
+     * stack in the order they came, which is what they were.
+     */
+    fun restoreLayers(
+        loaded: List<Layer>,
+        active: Int,
+        folders: List<Folder> = emptyList(),
+        shape: List<StackEntry> = emptyList(),
+    ) {
         if (loaded.isEmpty()) return
-        for (l in layers) l.recycle()
+        for (l in layersById.values) l.recycle()
+        for (l in retired.values) l.recycle()
+        retired.clear()
+        layersById.clear()
+        foldersById.clear()
+        for (l in loaded) layersById[l.id] = l
+        for (f in folders) foldersById[f.id] = f
+
+        val arrangement = shape.takeIf { it.isNotEmpty() }
+            ?: loaded.asReversed().map { StackEntry(it.id) }
+        stack.replaceWith(arrangement.filter { layersById.containsKey(it.id) || foldersById.containsKey(it.id) })
+
         layers.clear()
-        layers.addAll(loaded)
+        stack.drawOrder().mapNotNullTo(layers) { layersById[it] }
+        if (layers.isEmpty()) layers.addAll(loaded)
         activeIndex = active.coerceIn(0, layers.lastIndex)
         if (bufW > 0 && bufH > 0) {
             for (l in layers) if (l.bmp == null) l.bmp = createBitmap(bufW, bufH)

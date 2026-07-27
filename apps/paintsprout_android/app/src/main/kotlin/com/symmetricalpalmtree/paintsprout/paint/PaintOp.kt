@@ -103,6 +103,25 @@ class LayerOpacityOp(val opacity: Float) : PaintOp()
 class LayerVisibilityOp(val visible: Boolean) : PaintOp()
 
 /**
+ * Where something in the stack sits: inside which folder, and how far up from the
+ * bottom of what that folder holds.
+ *
+ * Recorded this way rather than as a position in the whole stack, and the reason
+ * is worth keeping. A page with no folders is one set of siblings, and counting
+ * up from the bottom of it gives exactly the numbers the stack was recorded with
+ * before folders existed — so every step already on a timeline reads correctly
+ * under this, with [folder] empty meaning what it has always meant: nothing
+ * holds this. Nesting cost the format no migration and it costs the timeline
+ * none either.
+ */
+class StackSpot(val folder: String, val at: Int) {
+    companion object {
+        /** Not in any folder — loose at the top of the stack. */
+        const val LOOSE = ""
+    }
+}
+
+/**
  * A layer arriving, and a layer going away.
  *
  * The pair that makes deletion survivable. A deleted layer is not erased from
@@ -110,23 +129,87 @@ class LayerVisibilityOp(val visible: Boolean) : PaintOp()
  * step is the only thing that says it is gone. Take the step back and the layer
  * comes back with everything that was on it, because none of it ever left.
  *
- * [at] is where in the stack it sat, counting from the bottom, so undoing puts
- * it back where it was rather than on top.
+ * [spot] is where in the stack it sat, so undoing puts it back where it was
+ * rather than on top — and back into the folder it was filed in.
  */
-class LayerAddOp(val name: String, val at: Int) : PaintOp()
+class LayerAddOp(val name: String, val spot: StackSpot) : PaintOp()
 
-class LayerDeleteOp(val at: Int) : PaintOp()
+class LayerDeleteOp(val spot: StackSpot) : PaintOp()
 
 /**
- * A layer moving in the stack, from one place to another.
+ * A layer or a folder moving in the stack: out of one place, into another.
  *
- * Unlike a deletion this is *not* replayed when a page loads: the layer rows
- * record the order themselves, so the stack arrives already moved, and applying
+ * Unlike a deletion this is *not* replayed when a page loads: the rows record
+ * the arrangement themselves, so the stack arrives already moved, and applying
  * the steps again would move everything twice. It is here for undo alone, which
- * still works after a reload — the layer is where the op says it ended up, so
+ * still works after a reload — the thing is where the op says it ended up, so
  * putting it back where it started needs nothing but the op.
+ *
+ * A folder moves with everything inside it, so one step covers the folder and
+ * its contents however many there are. What is *in* a folder does not move when
+ * the folder does; it is still in the folder.
  */
-class LayerOrderOp(val from: Int, val to: Int) : PaintOp()
+class LayerOrderOp(
+    val from: StackSpot,
+    val to: StackSpot,
+    /**
+     * Which thing moved, when it is not the layer this step is filed under.
+     *
+     * Empty for a layer, which is filed under itself and needs no second name.
+     * A folder has no timeline to be filed on, so its move rides under the layer
+     * being worked on — and then [PaintOp.layerId] names the wrong thing
+     * entirely, which is what this is for.
+     */
+    val subject: String = "",
+) : PaintOp() {
+    /** The thing this step is about, whichever way it was filed. */
+    val moved: String get() = subject.ifEmpty { layerId }
+}
+
+/**
+ * A folder arriving, and a folder going away.
+ *
+ * Not the same event as a layer's, despite the shape, because a folder is a
+ * place to keep work rather than work. Deleting one never deletes what is inside
+ * it: the contents come out where the folder was, and the step records only that
+ * the place is gone. Undo puts the place back and files them in it again.
+ *
+ * [folderId] rather than [PaintOp.layerId] says which folder, because these are
+ * filed on the timeline under whichever layer was being worked on — a folder has
+ * no ops of its own to hang them from.
+ */
+class FolderAddOp(val folderId: String, val name: String, val spot: StackSpot) : PaintOp()
+
+/**
+ * [held] is how many things were directly inside the folder when it went.
+ *
+ * Undo needs it and cannot work it out. The contents were tipped out into the
+ * spot the folder occupied, where they are now indistinguishable from whatever
+ * was already beside it — so the step has to say how many of the things standing
+ * there came out of it. A count is enough rather than a list of ids, because a
+ * timeline unwinds in order: by the time this step is undone, everything done
+ * after it has been undone already, and the stack is exactly as the deletion
+ * left it.
+ */
+class FolderDeleteOp(
+    val folderId: String,
+    val name: String,
+    val spot: StackSpot,
+    val held: Int,
+) : PaintOp()
+
+/**
+ * How a folder composites — which is to say, how everything inside it does.
+ *
+ * The layer pair's siblings, and they mean the same thing one level up. A folder
+ * holds no pixels: turning it down multiplies onto what it holds rather than
+ * flattening them together first, so two half-opaque layers in a folder at half
+ * are two quarter-opaque layers and the place they overlap is darker. A folder
+ * is a shelf, and a shelf does not change what is on it.
+ */
+class FolderOpacityOp(val folderId: String, val opacity: Float) : PaintOp()
+
+class FolderVisibilityOp(val folderId: String, val visible: Boolean) : PaintOp()
 
 class SurfaceOp(
     val kind: SurfaceKind,

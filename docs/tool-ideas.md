@@ -149,7 +149,7 @@ Biggest structural gap. Two layers today (surface, paint); paint layer is flat r
 | ⬜ | Alpha lock | Paint only where pixels already exist |
 | ⬜ | Layer masks | |
 | ⬜ | Adjustment layers | |
-| ⬜ | Groups / folders | Merge down, duplicate, flatten |
+| ✅ | Groups / folders | Nest freely; a folder passes its contents through rather than compositing them, so its eye and dial multiply onto each layer and two half-opaque layers in a half folder still darken where they cross. Make, name, fold shut, drag in and out; deleting one keeps the layers. Merge down, duplicate and flatten are still to come |
 | ⬜ | Reference layer | Line art the bucket respects while filling on a layer beneath |
 | ⬜ | Onion skinning | If animation is ever on the table |
 

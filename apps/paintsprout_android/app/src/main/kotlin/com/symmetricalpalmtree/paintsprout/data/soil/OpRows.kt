@@ -9,6 +9,11 @@ import android.graphics.Matrix
 import com.symmetricalpalmtree.paintsprout.paint.BrushLoad
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderAddOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderDeleteOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderOpacityOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderVisibilityOp
+import com.symmetricalpalmtree.paintsprout.paint.StackSpot
 import com.symmetricalpalmtree.paintsprout.paint.LayerAddOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerDeleteOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerOpacityOp
@@ -130,41 +135,105 @@ object OpRows {
     /**
      * A layer arriving and a layer going away.
      *
-     * `opCount` carries where it sat in the stack, counting from the bottom, so
-     * undoing a deletion puts the layer back where it was rather than on top. The
-     * column belongs to the raster cache elsewhere and means nothing to a step in
-     * a timeline, which is why it was free to mean this.
+     * `opCount` carries how far up from the bottom of its folder's contents it
+     * sat, and `refId` which folder that was — empty for the ones nothing holds.
+     * Undoing a deletion therefore puts the layer back where it was rather than
+     * on top, and back inside rather than beside. The `opCount` column belongs to
+     * the raster cache elsewhere and means nothing to a step in a timeline, which
+     * is why it was free to mean this.
+     *
+     * A step written before folders existed carries no `refId`, and reads back as
+     * a layer nothing holds — which is what it was.
      */
     fun layerAddRow(op: LayerAddOp): SoilObject = SoilObject(
         id = "",
         parentId = "",
         type = SoilType.LAYER_ADD,
         text = op.name,
-        opCount = op.at,
+        refId = op.spot.folder,
+        opCount = op.spot.at,
     )
 
     fun layerDeleteRow(op: LayerDeleteOp): SoilObject = SoilObject(
         id = "",
         parentId = "",
         type = SoilType.LAYER_DELETE,
-        opCount = op.at,
+        refId = op.spot.folder,
+        opCount = op.spot.at,
     )
 
     /**
-     * A layer moving, as where it went and where it came from.
+     * A move, as where it went and where it came from — both of them a folder and
+     * a place in it.
      *
-     * `opCount` is the destination, matching the other two structure steps;
-     * `amount` is the origin. That column is the format's general-purpose scalar
-     * already — a pigment quantity on one row type, a mask's downsample factor on
-     * another — and the columns here are shared by role rather than owned by a
-     * type. A stack index is small and whole, so a REAL holds it exactly.
+     * `opCount`/`refId` are the destination, matching the other two structure
+     * steps; `amount`/`kind` are the origin. `amount` is the format's
+     * general-purpose scalar already — a pigment quantity on one row type, a
+     * mask's downsample factor on another — and the columns here are shared by
+     * role rather than owned by a type. A stack index is small and whole, so a
+     * REAL holds it exactly.
      */
     fun layerOrderRow(op: LayerOrderOp): SoilObject = SoilObject(
         id = "",
         parentId = "",
         type = SoilType.LAYER_ORDER,
-        opCount = op.to,
-        amount = op.from.toFloat(),
+        refId = op.to.folder,
+        opCount = op.to.at,
+        kind = op.from.folder,
+        amount = op.from.at.toFloat(),
+        // Empty for a layer, which is filed under itself. A folder's move is
+        // filed under the working layer, so it has to say what it was about.
+        text = op.subject,
+    )
+
+    // --- Folders --------------------------------------------------------------
+
+    /**
+     * A folder arriving and a folder going away.
+     *
+     * `refId` is the folder itself, because these are filed under whichever layer
+     * was being worked on and the row is the only thing that says which folder it
+     * is about. `kind` is the folder that held it and `opCount` where in that
+     * folder it sat — the same pair the layer steps use, in the columns left over
+     * once `refId` is spoken for.
+     */
+    fun folderAddRow(op: FolderAddOp): SoilObject = SoilObject(
+        id = "",
+        parentId = "",
+        type = SoilType.FOLDER_ADD,
+        text = op.name,
+        refId = op.folderId,
+        kind = op.spot.folder,
+        opCount = op.spot.at,
+    )
+
+    /** `amount` counts what spilled out of it, which is what undo has to take back. */
+    fun folderDeleteRow(op: FolderDeleteOp): SoilObject = SoilObject(
+        id = "",
+        parentId = "",
+        type = SoilType.FOLDER_DELETE,
+        text = op.name,
+        refId = op.folderId,
+        kind = op.spot.folder,
+        opCount = op.spot.at,
+        amount = op.held.toFloat(),
+    )
+
+    /** How a folder composites, as a step. The layer pair, one level up. */
+    fun folderOpacityRow(op: FolderOpacityOp): SoilObject = SoilObject(
+        id = "",
+        parentId = "",
+        type = SoilType.FOLDER_OPACITY,
+        refId = op.folderId,
+        opacity = op.opacity,
+    )
+
+    fun folderVisibilityRow(op: FolderVisibilityOp): SoilObject = SoilObject(
+        id = "",
+        parentId = "",
+        type = SoilType.FOLDER_VISIBILITY,
+        refId = op.folderId,
+        flags = if (op.visible) SoilFlags.LAYER_VISIBLE else 0,
     )
 
     // --- Selection ops ------------------------------------------------------
@@ -348,13 +417,37 @@ object OpRows {
         SoilType.LAYER_VISIBILITY ->
             row.flags?.let { LayerVisibilityOp(it and SoilFlags.LAYER_VISIBLE != 0) }
 
-        SoilType.LAYER_ADD -> LayerAddOp(row.text.orEmpty(), (row.opCount ?: 0).coerceAtLeast(0))
-        SoilType.LAYER_DELETE -> LayerDeleteOp((row.opCount ?: 0).coerceAtLeast(0))
+        SoilType.LAYER_ADD -> LayerAddOp(row.text.orEmpty(), destinationOf(row))
+        SoilType.LAYER_DELETE -> LayerDeleteOp(destinationOf(row))
 
         SoilType.LAYER_ORDER -> LayerOrderOp(
-            from = (row.amount ?: 0f).toInt().coerceAtLeast(0),
-            to = (row.opCount ?: 0).coerceAtLeast(0),
+            from = originOf(row),
+            to = destinationOf(row),
+            subject = row.text.orEmpty(),
         )
+
+        // A folder step with no folder to name is a step about nothing, and a
+        // step about nothing in the middle of a timeline swallows an undo.
+        SoilType.FOLDER_ADD -> row.refId?.takeIf { it.isNotEmpty() }?.let {
+            FolderAddOp(it, row.text.orEmpty(), spotOf(row.kind, row.opCount))
+        }
+
+        SoilType.FOLDER_DELETE -> row.refId?.takeIf { it.isNotEmpty() }?.let {
+            FolderDeleteOp(
+                folderId = it,
+                name = row.text.orEmpty(),
+                spot = spotOf(row.kind, row.opCount),
+                held = (row.amount ?: 0f).toInt().coerceAtLeast(0),
+            )
+        }
+
+        SoilType.FOLDER_OPACITY -> row.refId?.takeIf { it.isNotEmpty() }?.let { folder ->
+            row.opacity?.let { FolderOpacityOp(folder, it.coerceIn(0f, 1f)) }
+        }
+
+        SoilType.FOLDER_VISIBILITY -> row.refId?.takeIf { it.isNotEmpty() }?.let { folder ->
+            row.flags?.let { FolderVisibilityOp(folder, it and SoilFlags.LAYER_VISIBLE != 0) }
+        }
 
         // The one op with ops beneath it. Each child is read on its own terms and
         // a damaged one is dropped, so a paste of thirty marks survives losing
@@ -369,6 +462,20 @@ object OpRows {
         // adds that this one has not heard of. Skipping beats guessing.
         else -> null
     }
+
+    /**
+     * The place a structural step points at, and the place it came from.
+     *
+     * A missing folder reads as no folder, which is the right answer twice over:
+     * it is what a step written before folders existed meant, and it is what a
+     * step written since means when nothing held the thing it moved.
+     */
+    private fun destinationOf(row: SoilObject) = spotOf(row.refId, row.opCount)
+
+    private fun originOf(row: SoilObject) = spotOf(row.kind, row.amount?.toInt())
+
+    private fun spotOf(folder: String?, at: Int?) =
+        StackSpot(folder.orEmpty(), (at ?: 0).coerceAtLeast(0))
 
     /** The parent row of a paste. It carries no payload of its own. */
     fun pasteRow(count: Int): SoilObject = SoilObject(

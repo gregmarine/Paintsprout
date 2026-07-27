@@ -103,6 +103,20 @@ object SoilType {
     const val PAGE = "page"
     const val LAYER = "layer"
 
+    /**
+     * A folder in a page's stack: somewhere to keep layers.
+     *
+     * Structure and nothing else. Layers inside one name it as their parent the
+     * way they otherwise name the page, so the stack is a tree the format
+     * already knew how to hold — which is why this needed no new column and no
+     * migration, only a name that was reserved before anything used it.
+     *
+     * It holds no pixels and no ops, and it does not composite: a folder's eye
+     * and dial reach through onto what is inside rather than flattening it
+     * first, so nesting never changes the order paint goes down in.
+     */
+    const val GROUP = "group"
+
     // Ops, in `order` sequence under a layer
     const val STROKE = "stroke"
     const val FILL = "fill"
@@ -132,13 +146,34 @@ object SoilType {
     const val LAYER_DELETE = "layer_delete"
 
     /**
-     * A layer moving in the stack.
+     * A layer or a folder moving in the stack.
      *
-     * Kept for undo only. The layer rows carry the order themselves, so a page
-     * loads already in its final arrangement and replaying these would move
-     * everything a second time.
+     * Kept for undo only. The rows carry the arrangement themselves, so a page
+     * loads already in its final shape and replaying these would move everything
+     * a second time.
      */
     const val LAYER_ORDER = "layer_order"
+
+    /**
+     * A folder arriving and a folder going away.
+     *
+     * Filed under whichever layer was being worked on, because a folder has no
+     * ops of its own to hang a step from — the row says which folder it is
+     * about. Deleting a folder never deletes what was inside it, so unlike a
+     * layer's, this step records the loss of a place and not of any work.
+     */
+    const val FOLDER_ADD = "folder_add"
+    const val FOLDER_DELETE = "folder_delete"
+
+    /**
+     * How a folder composites, as steps — the layer pair one level up.
+     *
+     * Also filed under the working layer, and also paint-neutral: a folder holds
+     * no pixels, and its eye and dial reach through onto what it holds rather
+     * than flattening them first.
+     */
+    const val FOLDER_OPACITY = "folder_opacity"
+    const val FOLDER_VISIBILITY = "folder_visibility"
 
     /**
      * A clipboard paste: one step in the timeline, holding the pasted ops as
@@ -158,7 +193,6 @@ object SoilType {
     const val POT = "pot"
 
     /** Reserved. Named now so two phases don't invent different spellings. */
-    const val GROUP = "group"
     const val RASTER = "raster"
     const val TEXT = "text"
     const val SHAPE = "shape"
@@ -167,6 +201,7 @@ object SoilType {
     val OPS = setOf(
         STROKE, FILL, ERASE, MOVE, SURFACE_OP, PASTE,
         LAYER_OPACITY, LAYER_VISIBILITY, LAYER_ADD, LAYER_DELETE, LAYER_ORDER,
+        FOLDER_ADD, FOLDER_DELETE, FOLDER_OPACITY, FOLDER_VISIBILITY,
     )
 }
 
@@ -174,6 +209,15 @@ object SoilType {
 object SoilFlags {
     const val LAYER_LOCKED = 1
     const val LAYER_VISIBLE = 2
+
+    /**
+     * A folder folded shut in the panel.
+     *
+     * Kept on the row and not on the timeline: shutting a folder changes how
+     * much of a list you are looking at, not the picture, and undo is for the
+     * picture.
+     */
+    const val FOLDER_COLLAPSED = 4
 
     /** A clean-water stroke: deposits no pigment, only re-wets. */
     const val STROKE_WATER = 1

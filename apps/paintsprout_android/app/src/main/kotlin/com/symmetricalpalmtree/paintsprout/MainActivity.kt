@@ -180,13 +180,14 @@ class MainActivity : AppCompatActivity() {
         setupTray()
         binding.btnShowRail.setOnClickListener { setRailVisible(true) }
         binding.layerAdd.setOnClickListener { addLayer() }
+        binding.folderAdd.setOnClickListener { addFolder() }
         binding.canvas.onLayersChanged = {
             refreshLayers()
-            // The rows carry the order, which is why a page loads already
+            // The rows carry the arrangement, which is why a page loads already
             // arranged and the moves on the timeline are not replayed. So the
             // rows have to follow every rearrangement, including the ones an undo
             // makes. Unchanged rows are skipped, so saying it often costs little.
-            persistLayerOrder()
+            persistStack()
         }
         applyOrientation()
 
@@ -670,7 +671,9 @@ class MainActivity : AppCompatActivity() {
 
         // The stack before the paint: restore() folds ops into layers, so the
         // layers have to be there to be folded into.
-        if (page.layers.isNotEmpty()) binding.canvas.restoreLayers(page.layers, page.activeLayer)
+        if (page.layers.isNotEmpty()) {
+            binding.canvas.restoreLayers(page.layers, page.activeLayer, page.folders, page.shape)
+        }
         binding.canvas.restore(page.committed, page.undone, page.cachedPaint)
         refreshLayers()
         updateRail()
@@ -715,21 +718,36 @@ class MainActivity : AppCompatActivity() {
      *
      * Rebuilt wholesale rather than diffed: a page holds a handful of layers, and
      * a list that is regenerated cannot drift out of step with what it describes.
+     *
+     * The canvas hands over the stack already top-down and already knowing which
+     * rows a shut folder is hiding, so this walks a flat list and indents by the
+     * depth it is told. The panel does not model the tree; it draws one.
      */
     private fun refreshLayers() {
         val list = binding.layerList
         list.removeAllViews()
-        // Topmost first, because that is the order they are stacked on the page
-        // and reading them upside-down from how they are drawn is a puzzle.
-        for (i in binding.canvas.layerCount - 1 downTo 0) {
-            list.addView(layerRow(i))
+        val canvas = binding.canvas
+        val entries = canvas.stackEntries()
+        for (row in canvas.stackRows()) {
+            val entry = entries.getOrNull(row) ?: continue
+            val depth = canvas.stackDepth(row)
+            list.addView(if (entry.isFolder) folderRow(entry.id, depth, row) else layerRow(entry.id, depth, row))
         }
     }
 
-    private fun layerRow(index: Int): View {
+    /** How far in a row sits for each folder above it. */
+    private fun indentFor(depth: Int) = dp(14 * depth)
+
+    private fun layerRow(id: String, depth: Int, row: Int): View {
         val canvas = binding.canvas
+        val index = canvas.indexOfLayer(id)
+        if (index < 0) return View(this)
         val selected = index == canvas.activeLayerIndex
         val visible = canvas.layerVisibleAt(index)
+        // A layer whose folder is shut over it is showing nothing either, and
+        // saying so with the same dimming is how the panel stays honest about
+        // what is on the page.
+        val showing = visible && !canvas.layerHiddenByFolder(index)
 
         val eye = iconButton(
             if (visible) R.drawable.ic_eye else R.drawable.ic_eye_off,
@@ -740,7 +758,7 @@ class MainActivity : AppCompatActivity() {
             text = canvas.layerNameAt(index)
             textSize = 14f
             // A layer that cannot be drawn on should not look like one that can.
-            alpha = if (visible) 1f else 0.45f
+            alpha = if (showing) 1f else 0.45f
             setTextColor(if (selected) 0xFF1B5E20.toInt() else 0xFF37474F.toInt())
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
@@ -759,28 +777,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         val handle = iconButton(R.drawable.ic_drag, getString(R.string.layers_reorder)) {}
-        attachDragHandle(handle, index)
+        attachDragHandle(handle, id, row)
 
-        val slider = Slider(this).apply {
-            valueFrom = 0f
-            valueTo = 100f
-            value = (canvas.layerOpacityAt(index) * 100f).coerceIn(0f, 100f)
-            addOnChangeListener { _, v, fromUser ->
-                if (!fromUser) return@addOnChangeListener
-                // Straight to the canvas on every tick: the point of a slider is
-                // watching the page answer while you move it.
-                canvas.setLayerOpacity(index, v / 100f)
-                percent.text = percentOf(v / 100f)
+        val slider = opacitySlider(canvas.layerOpacityAt(index), percent) { value, done ->
+            canvas.setLayerOpacity(index, value)
+            if (done) {
+                canvas.commitLayerOpacity(index)
+                persistLayerState(index)
             }
-            addOnSliderTouchListener(object : com.google.android.material.slider.Slider.OnSliderTouchListener {
-                override fun onStartTrackingTouch(slider: com.google.android.material.slider.Slider) = Unit
-
-                // One step on release — a drag is one decision, not a hundred.
-                override fun onStopTrackingTouch(slider: com.google.android.material.slider.Slider) {
-                    canvas.commitLayerOpacity(index)
-                    persistLayerState(index)
-                }
-            })
         }
 
         val top = LinearLayout(this).apply {
@@ -794,7 +798,7 @@ class MainActivity : AppCompatActivity() {
 
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(4), dp(2), dp(4), dp(2))
+            setPadding(dp(4) + indentFor(depth), dp(2), dp(4), dp(2))
             background = if (selected) selectedBg() else rippleBg()
             addView(top)
             addView(slider)
@@ -805,6 +809,118 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * A folder's row: the same shape as a layer's, one notch further in.
+     *
+     * Deliberately the same height and the same controls, because it is the same
+     * two decisions — is this showing, and how strongly — and because the drag
+     * that reorders the stack measures itself in rows and wants them uniform.
+     * The twisty replaces nothing; it takes the place a layer leaves empty.
+     */
+    private fun folderRow(id: String, depth: Int, row: Int): View {
+        val canvas = binding.canvas
+        val folder = canvas.folderAt(id) ?: return View(this)
+
+        val twisty = iconButton(
+            if (folder.collapsed) R.drawable.ic_chevron_right else R.drawable.ic_chevron_down,
+            getString(if (folder.collapsed) R.string.folders_expand else R.string.folders_collapse),
+        ) {
+            canvas.setFolderCollapsed(id, !folder.collapsed)
+            persistStack()
+            refreshLayers()
+        }
+
+        val eye = iconButton(
+            if (folder.visible) R.drawable.ic_eye else R.drawable.ic_eye_off,
+            getString(if (folder.visible) R.string.folders_hide else R.string.folders_reveal),
+        ) {
+            canvas.setFolderVisible(id, !folder.visible)
+            refreshLayers()
+        }
+
+        val name = TextView(this).apply {
+            text = folder.name
+            textSize = 14f
+            alpha = if (folder.visible) 1f else 0.45f
+            setTextColor(0xFF37474F.toInt())
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
+        val percent = TextView(this).apply {
+            text = percentOf(folder.opacity)
+            textSize = 12f
+            gravity = Gravity.END
+            setTextColor(0xFF6B7075.toInt())
+            width = dp(38)
+        }
+
+        val handle = iconButton(R.drawable.ic_drag, getString(R.string.folders_reorder)) {}
+        attachDragHandle(handle, id, row)
+
+        val slider = opacitySlider(folder.opacity, percent) { value, done ->
+            canvas.setFolderOpacity(id, value)
+            if (done) {
+                canvas.commitFolderOpacity(id)
+                persistStack()
+            }
+        }
+
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(twisty)
+            addView(eye)
+            addView(name)
+            addView(percent)
+            addView(handle)
+        }
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(4) + indentFor(depth), dp(2), dp(4), dp(2))
+            background = rippleBg()
+            addView(top)
+            addView(slider)
+            setOnClickListener {
+                canvas.setFolderCollapsed(id, !folder.collapsed)
+                persistStack()
+                refreshLayers()
+            }
+            setOnLongClickListener { folderMenu(id); true }
+        }
+    }
+
+    /**
+     * The dial, wherever it appears.
+     *
+     * [onChange] is told the value and whether the finger has left it: everything
+     * in between goes straight to the canvas so the page answers while you move,
+     * and only the release becomes a step on the timeline — a drag is one
+     * decision, not a hundred.
+     */
+    private fun opacitySlider(
+        start: Float,
+        percent: TextView,
+        onChange: (value: Float, done: Boolean) -> Unit,
+    ): Slider = Slider(this).apply {
+        valueFrom = 0f
+        valueTo = 100f
+        value = (start * 100f).coerceIn(0f, 100f)
+        addOnChangeListener { _, v, fromUser ->
+            if (!fromUser) return@addOnChangeListener
+            onChange(v / 100f, false)
+            percent.text = percentOf(v / 100f)
+        }
+        addOnSliderTouchListener(object : com.google.android.material.slider.Slider.OnSliderTouchListener {
+            override fun onStartTrackingTouch(slider: com.google.android.material.slider.Slider) = Unit
+
+            override fun onStopTrackingTouch(slider: com.google.android.material.slider.Slider) {
+                onChange(slider.value / 100f, true)
+            }
+        })
+    }
+
     private fun percentOf(opacity: Float): String = "${(opacity * 100f).roundToInt()}%"
 
     private fun setLayerVisible(index: Int, visible: Boolean) {
@@ -813,10 +929,23 @@ class MainActivity : AppCompatActivity() {
         refreshLayers()
     }
 
-    private fun persistLayerOrder() {
+    /**
+     * Writes the arrangement — folders and all — back to the file.
+     *
+     * One call for the whole shape rather than one per edit, because the canvas
+     * is the authority on it and this makes the file agree whatever changed. It
+     * runs on every change to the stack, an undo's included.
+     */
+    private fun persistStack() {
         val open = session ?: return
-        val order = binding.canvas.layerIdsInOrder()
-        lifecycleScope.launch { open.recordLayerOrder(order) }
+        val canvas = binding.canvas
+        val entries = canvas.stackEntries()
+        val folders = entries.filter { it.isFolder }.mapNotNull { entry ->
+            canvas.folderAt(entry.id)?.let {
+                DocumentSession.FolderState(it.id, it.name, it.visible, it.opacity, it.collapsed)
+            }
+        }
+        lifecycleScope.launch { open.recordStack(entries, folders) }
     }
 
     private fun persistLayerState(index: Int) {
@@ -844,42 +973,130 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Drag to reorder.
+     * Drag to reorder, and to file.
      *
      * The handle owns the gesture rather than the row, so a drag can never be
      * mistaken for the tap that selects. Rows are a uniform height, so where the
      * finger is tells you which position it is over without measuring anything.
+     *
+     * What lands is not just a position now: the gap a row is dropped in belongs
+     * to a folder, or to nothing, and dragging into a folder is the same gesture
+     * as dragging past one. Both ends of the gap are handed to the canvas, which
+     * knows which of them catches it — this only counts rows.
+     *
+     * [row] is the position in the panel, which is the stack's own index. The
+     * list reads top-down and so does the stack, so a row dragged down moves
+     * further down the stack and the arithmetic is finally the plain kind.
      */
-    private fun attachDragHandle(handle: View, index: Int) {
+    private fun attachDragHandle(handle: View, id: String, row: Int) {
         val list = binding.layerList
         var startY = 0f
-        var from = index
+        var startX = 0f
+        // Whether the gesture being finished is one that started here.
+        //
+        // A move rebuilds the rows, and the finger is still down: the release
+        // then lands on a *replacement* handle that never saw the press, which
+        // read the missing start as an enormous drag and undid the move that had
+        // just been made. One flag, and a stray ending belongs to nobody.
+        var mine = false
         handle.setOnTouchListener { v, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     startY = event.rawY
-                    from = index
+                    startX = event.rawX
+                    mine = true
+                    // The list scrolls, and a scrolling parent takes any vertical
+                    // drag off its children the moment it passes touch slop — the
+                    // handle then gets a cancel where it expected a release, and
+                    // reads it as having gone nowhere. Holding the gesture here
+                    // for the length of the drag is the whole fix, and it is why
+                    // reordering by dragging only ever worked on a short list.
+                    v.parent?.requestDisallowInterceptTouchEvent(true)
                     v.parent?.parent?.let { (it as? View)?.alpha = 0.6f }
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     v.parent?.parent?.let { (it as? View)?.alpha = 1f }
+                    if (!mine) return@setOnTouchListener true
+                    mine = false
                     val rowHeight = (list.getChildAt(0)?.height ?: 1).coerceAtLeast(1)
                     val moved = ((event.rawY - startY) / rowHeight).roundToInt()
-                    if (moved != 0) {
-                        // The list reads top-down but the stack is bottom-first,
-                        // so a row dragged down moves *down* the stack.
-                        val count = binding.canvas.layerCount
-                        val target = (from - moved).coerceIn(0, count - 1)
-                        // The move puts a step on the timeline and the rows follow
-                        // through onLayersChanged; nothing more to do here.
-                        binding.canvas.moveLayer(from, target)
+                    val sideways = when {
+                        event.rawX - startX > dp(NEST_REACH) -> 1
+                        event.rawX - startX < -dp(NEST_REACH) -> -1
+                        else -> 0
                     }
+                    if (moved != 0 || sideways != 0) dropAfterDrag(id, row, moved, sideways)
                     true
                 }
                 else -> true
             }
         }
+    }
+
+    /**
+     * How far sideways a drag has to reach before it means a change of depth.
+     *
+     * Filing needs its own axis. A folder that holds nothing is a landing place
+     * with no height: the gap under its title and the gap below it are the same
+     * few pixels, so no vertical drag can tell them apart, and a stack read
+     * top-down has no other way to say "inside this" rather than "under it".
+     * Sideways is the natural spare direction — a list of rows is not using it —
+     * and it says the one thing vertical cannot: how deep, independently of where.
+     */
+    private val NEST_REACH = 36
+
+    /**
+     * Where a dragged row ends up.
+     *
+     * Counted in *shown* rows, because those are the ones under the finger: a
+     * shut folder is one row however much is inside it, and dragging past it
+     * passes the whole thing rather than landing in the middle of something that
+     * is not on screen.
+     *
+     * The block being dragged is taken out of the reckoning first, and that is
+     * the part worth spelling out. A folder travels with its contents, so the
+     * rows it holds are not places it can be dropped — leave them in and a folder
+     * nudged down one row is asked to go inside itself, which is refused, and the
+     * drag does nothing at all for no visible reason. Take them out and the count
+     * is over the rows that are actually staying put, which is what the finger
+     * was measuring against anyway.
+     */
+    private fun dropAfterDrag(id: String, row: Int, moved: Int, sideways: Int) {
+        val canvas = binding.canvas
+        val entries = canvas.stackEntries()
+        val span = canvas.stackSpan(row)
+        val shown = canvas.stackRows()
+
+        // Dropped *onto* a folder's own row: that is what filing looks like.
+        //
+        // The gesture needs this because a folder holding nothing is a landing
+        // place with no height — the gap under its title and the gap below it are
+        // the same few pixels — so the gaps alone cannot say "inside this". The
+        // row can. Land on the title to go in; carry on past it to go above it.
+        val target = (shown.indexOf(row) + moved).coerceIn(0, shown.lastIndex)
+        val onto = shown.getOrNull(target)?.takeIf { it !in span }
+        if (moved != 0 && onto != null && entries[onto].isFolder && sideways >= 0) {
+            // Just under the folder's title, which is the top of what it holds.
+            canvas.moveInStack(id, onto + 1, entries[onto].id)
+            return
+        }
+
+        val staying = shown.filterNot { it in span }
+        val from = staying.count { it < span.first }
+        val gap = (from + moved).coerceIn(0, staying.size)
+        val above = staying.getOrNull(gap - 1)
+        val below = staying.getOrNull(gap)
+        // Where the gap puts it, then what a leftward reach does to the depth:
+        // out of whatever caught it, one shelf per drag, so a layer filed three
+        // deep comes back out the way it went in. Leftward and not rightward
+        // because a panel pinned to the right edge has room for one of them.
+        val landed = canvas.dropInto(above, below)
+        val into = if (sideways < 0) canvas.holderOf(landed) else landed
+
+        // The move puts a step on the timeline and the rows follow through
+        // onLayersChanged; nothing more to do here.
+        canvas.moveInStack(id, below ?: entries.size, into)
     }
 
     private fun addLayer() {
@@ -891,11 +1108,71 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val name = getString(R.string.layers_default_name, binding.canvas.layerCount + 1)
             // Written first: a layer the canvas knows about but the file does not
-            // is paint with nowhere to be filed.
+            // is paint with nowhere to be filed. Which folder it lands in is
+            // settled a moment later, when the arrangement is written back.
             val id = open.addLayer(name) ?: run { toast(getString(R.string.layers_full)); return@launch }
             binding.canvas.addLayer(id, name)
             refreshLayers()
         }
+    }
+
+    // --- Folders ---------------------------------------------------------------
+
+    private fun addFolder() {
+        val open = session ?: return
+        if (!binding.canvas.canAddFolder()) {
+            toast(getString(R.string.folders_deep))
+            return
+        }
+        lifecycleScope.launch {
+            val name = getString(R.string.folders_default_name, binding.canvas.folderCount + 1)
+            val id = open.addFolder(name)
+            binding.canvas.addFolder(id, name)
+            refreshLayers()
+        }
+    }
+
+    /** A folder is worth naming, which is most of what it is for. */
+    private fun folderMenu(id: String) {
+        val folder = binding.canvas.folderAt(id) ?: return
+        MaterialAlertDialogBuilder(this)
+            .setTitle(folder.name)
+            .setItems(
+                arrayOf(getString(R.string.folders_rename), getString(R.string.folders_delete)),
+            ) { _, which -> if (which == 0) renameFolder(id) else deleteFolder(id) }
+            .show()
+    }
+
+    private fun renameFolder(id: String) {
+        val folder = binding.canvas.folderAt(id) ?: return
+        val field = android.widget.EditText(this).apply {
+            setText(folder.name)
+            setSingleLine()
+            setSelectAllOnFocus(true)
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.folders_rename)
+            .setView(vbox(fieldRow(getString(R.string.folders_name), field)))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.library_size_use) { _, _ ->
+                val name = field.text.toString().trim().ifEmpty { folder.name }
+                binding.canvas.renameStackEntry(id, name)
+                persistStack()
+                refreshLayers()
+            }
+            .show()
+    }
+
+    /**
+     * Deleting a folder is not deleting the work in it.
+     *
+     * So there is no warning to give and nothing to ask twice about: what was
+     * inside comes out where the folder stood, and the step is on the timeline
+     * like any other.
+     */
+    private fun deleteFolder(id: String) {
+        binding.canvas.removeFolder(id)
+        refreshLayers()
     }
 
     private fun deleteLayer(index: Int) {
@@ -906,8 +1183,8 @@ class MainActivity : AppCompatActivity() {
         }
         val id = binding.canvas.layerIdAt(index)
         val name = binding.canvas.layerNameAt(index)
-        // Undo does not reach this yet, and everything on the layer goes with it.
-        // A step that cannot be taken back should at least be asked twice.
+        // Still asked twice, though undo reaches it now: everything drawn on the
+        // layer goes with it, and a long press is easy to mean by accident.
         MaterialAlertDialogBuilder(this)
             .setTitle(getString(R.string.layers_delete_title, name))
             .setMessage(R.string.layers_delete_warning)
