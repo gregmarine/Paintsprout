@@ -768,9 +768,11 @@ class MainActivity : AppCompatActivity() {
             addOnSliderTouchListener(object : com.google.android.material.slider.Slider.OnSliderTouchListener {
                 override fun onStartTrackingTouch(slider: com.google.android.material.slider.Slider) = Unit
 
-                // Written once, on release — a drag is one decision, not a hundred.
-                override fun onStopTrackingTouch(slider: com.google.android.material.slider.Slider) =
+                // One step on release — a drag is one decision, not a hundred.
+                override fun onStopTrackingTouch(slider: com.google.android.material.slider.Slider) {
+                    canvas.commitLayerOpacity(index)
                     persistLayerState(index)
+                }
             })
         }
 
@@ -821,6 +823,7 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton(R.string.library_size_use) { _, _ ->
                 val pct = field.inches(binding.canvas.layerOpacityAt(index) * 100f).coerceIn(0f, 100f)
                 binding.canvas.setLayerOpacity(index, pct / 100f)
+                binding.canvas.commitLayerOpacity(index)
                 persistLayerState(index)
                 refreshLayers()
             }
@@ -893,11 +896,21 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val id = binding.canvas.layerIdAt(index)
-        lifecycleScope.launch {
-            binding.canvas.removeLayer(index).forEach { it.recycle() }
-            open.deleteLayer(id)
-            refreshLayers()
-        }
+        val name = binding.canvas.layerNameAt(index)
+        // Undo does not reach this yet, and everything on the layer goes with it.
+        // A step that cannot be taken back should at least be asked twice.
+        MaterialAlertDialogBuilder(this)
+            .setTitle(getString(R.string.layers_delete_title, name))
+            .setMessage(R.string.layers_delete_warning)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.layers_delete_confirm) { _, _ ->
+                lifecycleScope.launch {
+                    binding.canvas.removeLayer(index).forEach { it.recycle() }
+                    open.deleteLayer(id)
+                    refreshLayers()
+                }
+            }
+            .show()
     }
 
     // --- Which way up ---------------------------------------------------------

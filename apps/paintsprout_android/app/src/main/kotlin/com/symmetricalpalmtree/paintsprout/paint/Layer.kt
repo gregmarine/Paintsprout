@@ -26,6 +26,22 @@ class Layer(
     /** The folded paint, at buffer resolution. Null until the view is laid out. */
     var bmp: Bitmap? = null
 
+    /**
+     * What a layer is before anything is done to it: wholly there.
+     *
+     * This is the floor an undo unwinds towards, and it is a constant rather than
+     * something read off the file. The row on disk holds the state as it stood
+     * when the page last closed, which is the *end* of the timeline, not its
+     * beginning — rewinding towards it would leave undo with nothing to undo. An
+     * op records only the value it set, never the one it replaced, so the start
+     * cannot be recovered from the ops either. It does not need to be: from here
+     * on every change is an op, so base-plus-ops reproduces the stored state
+     * exactly, and a page written before any of this had no way to be anything
+     * other than visible and opaque.
+     */
+    var baseVisible: Boolean = true
+    var baseOpacity: Float = 1f
+
     /** Alpha to composite with, 0–255. A hidden layer never gets this far. */
     val alpha: Int get() = (opacity.coerceIn(0f, 1f) * 255f).toInt()
 

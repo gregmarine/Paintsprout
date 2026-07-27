@@ -31,6 +31,8 @@ import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.Layer
+import com.symmetricalpalmtree.paintsprout.paint.LayerOpacityOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerVisibilityOp
 import com.symmetricalpalmtree.paintsprout.paint.GalleryExport
 import com.symmetricalpalmtree.paintsprout.paint.GpuRender
 import com.symmetricalpalmtree.paintsprout.paint.LassoLoop
@@ -3781,7 +3783,13 @@ class PaintCanvasView @JvmOverloads constructor(
 
                 // Surface changes don't touch the paint layer; the surface state is
                 // resolved separately (see syncSurfaceToHistory).
+                // These change nothing about the pixels: the surface is the ground
+                // under the stack, and the layer ops say how a layer composites
+                // rather than what is on it. Both are re-derived from history
+                // elsewhere — see syncSurfaceToHistory and syncLayerStateToHistory.
                 is SurfaceOp -> {}
+                is LayerOpacityOp -> {}
+                is LayerVisibilityOp -> {}
             }
         }
         return cur
@@ -3880,6 +3888,26 @@ class PaintCanvasView @JvmOverloads constructor(
         for (op in committed) if (op.layerId.isEmpty()) op.layerId = home
         for (op in redoStack) if (op.layerId.isEmpty()) op.layerId = home
 
+        // The rows arrived carrying the state as it stood when the page closed —
+        // the end of the timeline, not its start. For a layer the timeline speaks
+        // about, that state is reproduced by replaying from the base, so the base
+        // is where a layer begins.
+        //
+        // For a layer it says nothing about, there is nothing to replay, and the
+        // row is the only record there is. That covers every page set before these
+        // ops existed: their opacity was written to the row alone, and starting
+        // such a layer from the base would quietly reset it to fully opaque.
+        for (l in layers) {
+            val onTheTimeline = committed.any {
+                it.layerId == l.id && (it is LayerOpacityOp || it is LayerVisibilityOp)
+            }
+            if (!onTheTimeline) {
+                l.baseVisible = l.visible
+                l.baseOpacity = l.opacity
+            }
+        }
+        syncLayerStateToHistory()
+
         // The cache is one raster, and one raster cannot describe a stack: it says
         // nothing about which layer its pixels belong to or what is under them.
         // Taken at face value on a page with more than one layer, it would be laid
@@ -3914,6 +3942,7 @@ class PaintCanvasView @JvmOverloads constructor(
         redoStack.add(undone)
         onUndone?.invoke(undone.layerId)
         syncSurfaceToHistory()
+        syncLayerStateToHistory()
         rebuild()
     }
 
@@ -3924,6 +3953,7 @@ class PaintCanvasView @JvmOverloads constructor(
         committed.add(again)
         onRedone?.invoke(again.layerId)
         syncSurfaceToHistory()
+        syncLayerStateToHistory()
         rebuild()
     }
 
@@ -4818,14 +4848,65 @@ class PaintCanvasView @JvmOverloads constructor(
         if (!visible && index == activeIndex) {
             layers.indexOfFirst { it.visible }.takeIf { it >= 0 }?.let { activeIndex = it }
         }
+        commitLayerOp(LayerVisibilityOp(visible), layer)
         invalidate()
         onLayersChanged?.invoke()
     }
 
+    /**
+     * Live opacity, off the timeline.
+     *
+     * Called on every tick of a slider, so it must not record anything: a drag is
+     * one decision, and a hundred entries in the undo stack is not what "undo the
+     * thing I just did" means. [commitLayerOpacity] closes it when the finger lifts.
+     */
     fun setLayerOpacity(index: Int, opacity: Float) {
         val layer = layers.getOrNull(index) ?: return
         layer.opacity = opacity.coerceIn(0f, 1f)
         invalidate()
+    }
+
+    /** Puts the opacity a drag arrived at onto the timeline, as one step. */
+    fun commitLayerOpacity(index: Int) {
+        val layer = layers.getOrNull(index) ?: return
+        commitLayerOp(LayerOpacityOp(layer.opacity), layer)
+    }
+
+    private fun commitLayerOp(op: PaintOp, layer: Layer) {
+        op.layerId = layer.id
+        committed.add(op)
+        onOpCommitted?.invoke(op)
+        clearRedo()
+        onHistoryChanged?.invoke()
+    }
+
+    /**
+     * Re-derives every layer's opacity and visibility from the timeline.
+     *
+     * The same shape as [syncSurfaceToHistory], and for the same reason: an undo
+     * moves the boundary, and state that was written straight onto the layer
+     * would sit there contradicting the history it came from. Each layer starts
+     * at its anchored base and the surviving ops are applied over it in order.
+     */
+    private fun syncLayerStateToHistory() {
+        for (l in layers) {
+            l.visible = l.baseVisible
+            l.opacity = l.baseOpacity
+        }
+        val byId = layers.associateBy { it.id }
+        for (op in committed) {
+            val l = byId[op.layerId] ?: continue
+            when (op) {
+                is LayerOpacityOp -> l.opacity = op.opacity
+                is LayerVisibilityOp -> l.visible = op.visible
+                else -> Unit
+            }
+        }
+        // The pen cannot be left on a layer an undo has just hidden.
+        if (!layers[activeIndex.coerceIn(0, layers.lastIndex)].visible) {
+            layers.indexOfFirst { it.visible }.takeIf { it >= 0 }?.let { activeIndex = it }
+        }
+        onLayersChanged?.invoke()
     }
 
     /**

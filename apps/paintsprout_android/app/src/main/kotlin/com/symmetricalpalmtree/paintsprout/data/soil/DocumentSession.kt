@@ -13,6 +13,8 @@ import com.symmetricalpalmtree.paintsprout.paint.BrushLoad
 import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.Layer
+import com.symmetricalpalmtree.paintsprout.paint.LayerOpacityOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerVisibilityOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
@@ -219,6 +221,11 @@ class DocumentSession private constructor(
             // was wrong: undoing a surface change moved the history and left the
             // cached answer behind, so the page reloaded on the wrong paper.
             is SurfaceOp -> repo.appendOp(target(op), OpRows.surfaceRow(op))
+
+            // Filed under the layer they describe, which is also how they find
+            // their way back to it on load — an op's parent is its layer.
+            is LayerOpacityOp -> repo.appendOp(target(op), OpRows.layerOpacityRow(op))
+            is LayerVisibilityOp -> repo.appendOp(target(op), OpRows.layerVisibilityRow(op))
         }
     }
 
@@ -247,7 +254,9 @@ class DocumentSession private constructor(
                 repo.attach(parentId, OpRows.eraseRow(it, DOWNSAMPLE).copy(order = order))
             }
 
-            is MoveOp, is PasteOp, is SurfaceOp -> Unit
+            // Nothing a paste can contain. The clipboard holds marks, and how a
+            // layer composites is not a mark.
+            is MoveOp, is PasteOp, is SurfaceOp, is LayerOpacityOp, is LayerVisibilityOp -> Unit
         }
     }
 

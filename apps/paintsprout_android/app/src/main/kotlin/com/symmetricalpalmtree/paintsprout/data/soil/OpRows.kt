@@ -9,6 +9,8 @@ import android.graphics.Matrix
 import com.symmetricalpalmtree.paintsprout.paint.BrushLoad
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerOpacityOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerVisibilityOp
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
 import com.symmetricalpalmtree.paintsprout.paint.PasteOp
@@ -95,6 +97,31 @@ object OpRows {
             metal = op.metal,
             chalkboard = op.chalkboard,
         ).encode(),
+    )
+
+    // --- Layer composition ---------------------------------------------------
+
+    /**
+     * How a layer composites, as a step.
+     *
+     * Each rides in the column the layer row already uses for the same thing —
+     * `opacity`, and the visibility bit of `flags` — so nothing new is stored,
+     * only stored somewhere else: on the timeline rather than on the layer. Like
+     * a surface change these are paint-neutral, but they have to sit in the op
+     * sequence, because undoing back past one must put the old state back.
+     */
+    fun layerOpacityRow(op: LayerOpacityOp): SoilObject = SoilObject(
+        id = "",
+        parentId = "",
+        type = SoilType.LAYER_OPACITY,
+        opacity = op.opacity,
+    )
+
+    fun layerVisibilityRow(op: LayerVisibilityOp): SoilObject = SoilObject(
+        id = "",
+        parentId = "",
+        type = SoilType.LAYER_VISIBILITY,
+        flags = if (op.visible) SoilFlags.LAYER_VISIBLE else 0,
     )
 
     // --- Selection ops ------------------------------------------------------
@@ -269,6 +296,14 @@ object OpRows {
         }
 
         SoilType.SURFACE_OP -> readSurfaceOp(row)
+
+        // A missing value would be a step that changed nothing, which is worse
+        // than a step that is not there: it would sit in the timeline swallowing
+        // an undo. Dropped instead, by the same rule as any unreadable op.
+        SoilType.LAYER_OPACITY -> row.opacity?.let { LayerOpacityOp(it.coerceIn(0f, 1f)) }
+
+        SoilType.LAYER_VISIBILITY ->
+            row.flags?.let { LayerVisibilityOp(it and SoilFlags.LAYER_VISIBLE != 0) }
 
         // The one op with ops beneath it. Each child is read on its own terms and
         // a damaged one is dropped, so a paste of thirty marks survives losing

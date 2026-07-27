@@ -90,6 +90,18 @@ class MoveOp(val sourceMask: Bitmap, val transform: Matrix) : PaintOp() {
  * not touch the paint layer, so a rebuild skips it; the effective surface state
  * is resolved separately by scanning the committed history.
  */
+/**
+ * A change to how a layer composites, rather than to what is on it.
+ *
+ * On the timeline because undo should retrace what you did, and turning a layer
+ * down is something you did. It lays no pixels, so the fold skips it; the state
+ * it describes is re-derived from history the way the surface already is.
+ */
+class LayerOpacityOp(val opacity: Float) : PaintOp()
+
+/** Companion to [LayerOpacityOp] for the eye. */
+class LayerVisibilityOp(val visible: Boolean) : PaintOp()
+
 class SurfaceOp(
     val kind: SurfaceKind,
     @param:ColorInt val plainColor: Int,

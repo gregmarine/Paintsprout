@@ -61,6 +61,9 @@
     <string name="layers_reorder">Reorder layer</string>
     <string name="layers_opacity">Opacity</string>
     <string name="layers_hidden">Show a layer before drawing on it.</string>
+    <string name="layers_delete_title">Delete “%1$s”?</string>
+    <string name="layers_delete_warning">Everything drawn on this layer goes with it, and undo cannot bring it back.</string>
+    <string name="layers_delete_confirm">Delete</string>
     <string name="library_size_use">Use</string>
     <string name="library_size_width">Width</string>
     <string name="library_size_height">Height</string>

@@ -111,6 +111,16 @@ object SoilType {
     const val SURFACE_OP = "surface_op"
 
     /**
+     * How a layer composites, as steps in the timeline.
+     *
+     * On the timeline because undo retraces what was done and turning a layer
+     * down is something done. They lay no pixels: the fold skips them, and the
+     * state they describe is re-derived from history on the way back.
+     */
+    const val LAYER_OPACITY = "layer_opacity"
+    const val LAYER_VISIBILITY = "layer_visibility"
+
+    /**
      * A clipboard paste: one step in the timeline, holding the pasted ops as
      * child rows. The only op type with ops beneath it.
      */
@@ -134,7 +144,9 @@ object SoilType {
     const val SHAPE = "shape"
 
     /** Every op type, in the sense of "appears in a layer's undo timeline". */
-    val OPS = setOf(STROKE, FILL, ERASE, MOVE, SURFACE_OP, PASTE)
+    val OPS = setOf(
+        STROKE, FILL, ERASE, MOVE, SURFACE_OP, PASTE, LAYER_OPACITY, LAYER_VISIBILITY,
+    )
 }
 
 /** Per-type bitfields. */
