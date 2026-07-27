@@ -177,6 +177,7 @@ class MainActivity : AppCompatActivity() {
         buildRail()
         setupTray()
         binding.btnShowRail.setOnClickListener { setRailVisible(true) }
+        applyOrientation()
 
         binding.canvas.tool = tool
         binding.canvas.strokeColor = color
@@ -216,6 +217,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        val displays = getSystemService(android.hardware.display.DisplayManager::class.java)
+        displays?.registerDisplayListener(displayListener, android.os.Handler(android.os.Looper.getMainLooper()))
+        applyOrientation()
         // Opened here rather than in onCreate: the document is sealed whenever the
         // editor is not in front of the user, so coming back has to reopen it.
         if (session == null) attachDocument()
@@ -232,6 +236,8 @@ class MainActivity : AppCompatActivity() {
      */
     override fun onStop() {
         super.onStop()
+        getSystemService(android.hardware.display.DisplayManager::class.java)
+            ?.unregisterDisplayListener(displayListener)
         val open = session ?: return
         session = null
         detachCanvasHooks()
@@ -678,6 +684,85 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         val open = session ?: return
         applicationScope.launch { open.flush() }
+    }
+
+    // --- Which way up ---------------------------------------------------------
+
+    /**
+     * The display rotation at which the sheet lies square on the glass.
+     *
+     * The panel's natural orientation is portrait, and its landscape is
+     * `ROTATION_90` (`mLandscapeRotation`, confirmed on the Movink 14 Pro). That
+     * is the drawing's home: every other rotation is measured from here and undone
+     * on [ActivityMainBinding.deviceFrame], so the sheet never moves.
+     */
+    private val homeRotation = android.view.Surface.ROTATION_90
+
+    /** Quarter turns the tablet is from [homeRotation]; the glyphs turn back by this. */
+    private var chromeQuarter = -1
+
+    private val displayListener = object : android.hardware.display.DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+        override fun onDisplayRemoved(displayId: Int) = Unit
+
+        // A 180° flip changes no dimension and so raises no configuration change;
+        // the display rotation is the only thing that reports it.
+        override fun onDisplayChanged(displayId: Int) = applyOrientation()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applyOrientation()
+    }
+
+    /**
+     * Pins the desk to the glass and turns the glyphs back to face the artist.
+     *
+     * The frame is always the panel's landscape geometry — long side first —
+     * whatever shape the window currently is. Rotated by the opposite of however
+     * far the tablet has been turned, it lands back exactly over the panel.
+     */
+    private fun applyOrientation() {
+        val rot = display?.rotation ?: return
+        val quarter = ((rot - homeRotation) + 4) % 4
+
+        val bounds = windowManager.currentWindowMetrics.bounds
+        val long = maxOf(bounds.width(), bounds.height())
+        val short = minOf(bounds.width(), bounds.height())
+        val frame = binding.deviceFrame
+        val lp = frame.layoutParams
+        if (lp.width != long || lp.height != short) {
+            lp.width = long
+            lp.height = short
+            frame.layoutParams = lp
+        }
+        frame.rotation = -quarter * 90f
+
+        if (quarter != chromeQuarter) {
+            val first = chromeQuarter < 0
+            chromeQuarter = quarter
+            faceTheArtist(quarter, animate = !first)
+        }
+    }
+
+    /**
+     * Turns the buttons to face the artist, leaving the rail where it lies.
+     *
+     * Every rail button is a 44×44 square, so a quarter turn about its own centre
+     * stays inside its own bounds — nothing re-measures, nothing clips. The
+     * dividers are skipped: they are plain rules, and turning one would stand it
+     * on end.
+     */
+    private fun faceTheArtist(quarter: Int, animate: Boolean) {
+        val angle = quarter * 90f
+        val turn = { v: View ->
+            if (animate) v.animate().rotation(angle).setDuration(180).start() else v.rotation = angle
+        }
+        for (i in 0 until binding.rail.childCount) {
+            val v = binding.rail.getChildAt(i)
+            if (v is ImageButton || v is TextView) turn(v)
+        }
+        turn(binding.btnShowRail)
     }
 
     private fun hideSystemBars() {

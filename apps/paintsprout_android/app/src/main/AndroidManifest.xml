@@ -19,7 +19,7 @@
             android:exported="true"
             android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density"
-            android:screenOrientation="sensorLandscape"
+            android:screenOrientation="fullUser"
             android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -31,21 +31,21 @@
             android:name=".LibraryActivity"
             android:exported="false"
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density"
-            android:screenOrientation="sensorLandscape"
+            android:screenOrientation="fullUser"
             android:launchMode="singleTop" />
 
         <activity
             android:name=".MainActivity"
             android:exported="false"
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density"
-            android:screenOrientation="sensorLandscape"
+            android:screenOrientation="fullUser"
             android:launchMode="singleTop" />
 
         <activity
             android:name=".CalibrationActivity"
             android:exported="false"
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density"
-            android:screenOrientation="sensorLandscape" />
+            android:screenOrientation="fullUser" />
 
         <!--
             Staged export copies are shared by content URI rather than by path:

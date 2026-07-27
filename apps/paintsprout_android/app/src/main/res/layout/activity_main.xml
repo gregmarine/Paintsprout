@@ -4,7 +4,33 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/root"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:clipChildren="false"
+    android:clipToPadding="false">
+
+    <!--
+        The desk.
+
+        Everything physical lives in here: the sheet and the tools laid out
+        beside it. The activity turns with the tablet, and this frame turns the
+        opposite way by the same amount, so what it holds stays exactly where it
+        was put on the glass — the drawing does not swing round to face you any
+        more than paper does when you spin it.
+
+        Its size is fixed at the panel's landscape geometry in code and never
+        changes, which is the point: a canvas view that changed size would
+        rebuild its buffers, and rebuilding them loses the paint layer.
+
+        Only the glyphs on the buttons turn back to face the artist; see
+        MainActivity.faceTheArtist.
+    -->
+    <FrameLayout
+        android:id="@+id/deviceFrame"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_gravity="center"
+        android:clipChildren="false"
+        android:clipToPadding="false">
 
     <com.symmetricalpalmtree.paintsprout.PaintCanvasView
         android:id="@+id/canvas"
@@ -102,5 +128,7 @@
         app:icon="@drawable/ic_show"
         app:iconGravity="textStart"
         app:iconPadding="0dp" />
+
+    </FrameLayout>
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>
