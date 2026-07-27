@@ -102,6 +102,21 @@ class LayerOpacityOp(val opacity: Float) : PaintOp()
 /** Companion to [LayerOpacityOp] for the eye. */
 class LayerVisibilityOp(val visible: Boolean) : PaintOp()
 
+/**
+ * A layer arriving, and a layer going away.
+ *
+ * The pair that makes deletion survivable. A deleted layer is not erased from
+ * the file — its row and every op on it stay exactly where they were, and this
+ * step is the only thing that says it is gone. Take the step back and the layer
+ * comes back with everything that was on it, because none of it ever left.
+ *
+ * [at] is where in the stack it sat, counting from the bottom, so undoing puts
+ * it back where it was rather than on top.
+ */
+class LayerAddOp(val name: String, val at: Int) : PaintOp()
+
+class LayerDeleteOp(val at: Int) : PaintOp()
+
 class SurfaceOp(
     val kind: SurfaceKind,
     @param:ColorInt val plainColor: Int,

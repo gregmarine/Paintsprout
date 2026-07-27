@@ -904,11 +904,11 @@ class MainActivity : AppCompatActivity() {
             .setMessage(R.string.layers_delete_warning)
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.layers_delete_confirm) { _, _ ->
-                lifecycleScope.launch {
-                    binding.canvas.removeLayer(index).forEach { it.recycle() }
-                    open.deleteLayer(id)
-                    refreshLayers()
-                }
+                // The row is left where it is. The step that removed the layer
+                // goes on the timeline, and that is what says it is gone — so an
+                // undo brings it back with everything that was on it.
+                binding.canvas.removeLayer(index)
+                refreshLayers()
             }
             .show()
     }

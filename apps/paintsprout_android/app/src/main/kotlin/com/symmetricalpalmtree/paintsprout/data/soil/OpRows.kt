@@ -9,6 +9,8 @@ import android.graphics.Matrix
 import com.symmetricalpalmtree.paintsprout.paint.BrushLoad
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerAddOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerDeleteOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerOpacityOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerVisibilityOp
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
@@ -122,6 +124,29 @@ object OpRows {
         parentId = "",
         type = SoilType.LAYER_VISIBILITY,
         flags = if (op.visible) SoilFlags.LAYER_VISIBLE else 0,
+    )
+
+    /**
+     * A layer arriving and a layer going away.
+     *
+     * `opCount` carries where it sat in the stack, counting from the bottom, so
+     * undoing a deletion puts the layer back where it was rather than on top. The
+     * column belongs to the raster cache elsewhere and means nothing to a step in
+     * a timeline, which is why it was free to mean this.
+     */
+    fun layerAddRow(op: LayerAddOp): SoilObject = SoilObject(
+        id = "",
+        parentId = "",
+        type = SoilType.LAYER_ADD,
+        text = op.name,
+        opCount = op.at,
+    )
+
+    fun layerDeleteRow(op: LayerDeleteOp): SoilObject = SoilObject(
+        id = "",
+        parentId = "",
+        type = SoilType.LAYER_DELETE,
+        opCount = op.at,
     )
 
     // --- Selection ops ------------------------------------------------------
@@ -304,6 +329,9 @@ object OpRows {
 
         SoilType.LAYER_VISIBILITY ->
             row.flags?.let { LayerVisibilityOp(it and SoilFlags.LAYER_VISIBLE != 0) }
+
+        SoilType.LAYER_ADD -> LayerAddOp(row.text.orEmpty(), (row.opCount ?: 0).coerceAtLeast(0))
+        SoilType.LAYER_DELETE -> LayerDeleteOp((row.opCount ?: 0).coerceAtLeast(0))
 
         // The one op with ops beneath it. Each child is read on its own terms and
         // a damaged one is dropped, so a paste of thirty marks survives losing

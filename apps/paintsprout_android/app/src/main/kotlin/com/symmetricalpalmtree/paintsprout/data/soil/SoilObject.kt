@@ -121,6 +121,17 @@ object SoilType {
     const val LAYER_VISIBILITY = "layer_visibility"
 
     /**
+     * A layer arriving and a layer going away.
+     *
+     * A deleted layer keeps its row and every op beneath it; this step is the
+     * only record that it is gone, which is what lets an undo bring it back
+     * whole. Both carry the stack position in `opCount` — an integer column that
+     * has meant nothing to a step in a timeline until now.
+     */
+    const val LAYER_ADD = "layer_add"
+    const val LAYER_DELETE = "layer_delete"
+
+    /**
      * A clipboard paste: one step in the timeline, holding the pasted ops as
      * child rows. The only op type with ops beneath it.
      */
@@ -145,7 +156,8 @@ object SoilType {
 
     /** Every op type, in the sense of "appears in a layer's undo timeline". */
     val OPS = setOf(
-        STROKE, FILL, ERASE, MOVE, SURFACE_OP, PASTE, LAYER_OPACITY, LAYER_VISIBILITY,
+        STROKE, FILL, ERASE, MOVE, SURFACE_OP, PASTE,
+        LAYER_OPACITY, LAYER_VISIBILITY, LAYER_ADD, LAYER_DELETE,
     )
 }
 

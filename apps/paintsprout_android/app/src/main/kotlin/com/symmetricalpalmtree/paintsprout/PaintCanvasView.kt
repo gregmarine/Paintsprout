@@ -31,6 +31,8 @@ import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.Layer
+import com.symmetricalpalmtree.paintsprout.paint.LayerAddOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerDeleteOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerOpacityOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerVisibilityOp
 import com.symmetricalpalmtree.paintsprout.paint.GalleryExport
@@ -3790,6 +3792,8 @@ class PaintCanvasView @JvmOverloads constructor(
                 is SurfaceOp -> {}
                 is LayerOpacityOp -> {}
                 is LayerVisibilityOp -> {}
+                is LayerAddOp -> {}
+                is LayerDeleteOp -> {}
             }
         }
         return cur
@@ -3906,6 +3910,13 @@ class PaintCanvasView @JvmOverloads constructor(
                 l.baseOpacity = l.opacity
             }
         }
+
+        // A deleted layer is still a row in the file, because the step that
+        // deleted it is undoable and putting it back has to put back everything
+        // that was on it. The timeline is what says it is gone, so the timeline
+        // is replayed to find out which.
+        for (op in committed) applyStructure(op, forward = true)
+
         syncLayerStateToHistory()
 
         // The cache is one raster, and one raster cannot describe a stack: it says
@@ -3941,6 +3952,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val undone = committed.removeAt(committed.lastIndex)
         redoStack.add(undone)
         onUndone?.invoke(undone.layerId)
+        applyStructure(undone, forward = false)
         syncSurfaceToHistory()
         syncLayerStateToHistory()
         rebuild()
@@ -3952,6 +3964,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val again = redoStack.removeAt(redoStack.lastIndex)
         committed.add(again)
         onRedone?.invoke(again.layerId)
+        applyStructure(again, forward = true)
         syncSurfaceToHistory()
         syncLayerStateToHistory()
         rebuild()
@@ -4791,12 +4804,23 @@ class PaintCanvasView @JvmOverloads constructor(
         if (layers.size >= Layer.MAX_PER_PAGE) return false
         val layer = Layer(id, name)
         if (bufW > 0 && bufH > 0) layer.bmp = createBitmap(bufW, bufH)
-        layers.add(activeIndex + 1, layer)
-        activeIndex += 1
+        val at = activeIndex + 1
+        layers.add(at, layer)
+        activeIndex = at
+        commitLayerOp(LayerAddOp(name, at), layer)
         invalidate()
         onLayersChanged?.invoke()
         return true
     }
+
+    /**
+     * Layers taken out of the stack but not thrown away.
+     *
+     * A deleted layer keeps its pixels and its ops here, because the step that
+     * removed it is on the timeline and an undo has to be able to put it back
+     * whole. Nothing is recycled until the view is.
+     */
+    private val retired = mutableMapOf<String, Layer>()
 
     /**
      * Removes a layer and everything drawn on it.
@@ -4809,16 +4833,50 @@ class PaintCanvasView @JvmOverloads constructor(
     fun removeLayer(index: Int): List<PaintOp> {
         if (layers.size <= 1 || index !in layers.indices) return emptyList()
         val gone = layers.removeAt(index)
-        val orphaned = committed.filter { it.layerId == gone.id }
-        committed.removeAll { it.layerId == gone.id }
-        redoStack.removeAll { it.layerId == gone.id }
-        gone.recycle()
+        // The layer goes on the shelf rather than in the bin, and its ops stay on
+        // the timeline: the step that removed it is itself undoable, and putting
+        // it back has to put back everything that was on it.
+        retired[gone.id] = gone
         activeIndex = activeIndex.coerceAtMost(layers.lastIndex)
         recycleCheckpoints()
+        commitLayerOp(LayerDeleteOp(index), gone)
         invalidate()
         onLayersChanged?.invoke()
         onHistoryChanged?.invoke()
-        return orphaned
+        return emptyList()
+    }
+
+    /**
+     * Puts the stack back the way the timeline says it should be.
+     *
+     * Applied as an inverse rather than re-derived: a stack is a sequence, and
+     * replaying one from a base needs a base the file does not record. Undoing
+     * the step that removed a layer takes it off the shelf and back to where it
+     * sat; undoing the step that made one shelves it again.
+     */
+    private fun applyStructure(op: PaintOp, forward: Boolean) {
+        when (op) {
+            is LayerDeleteOp -> if (forward) shelve(op.layerId) else unshelve(op.layerId, op.at)
+            is LayerAddOp -> if (forward) unshelve(op.layerId, op.at) else shelve(op.layerId)
+            else -> return
+        }
+        activeIndex = activeIndex.coerceIn(0, layers.lastIndex.coerceAtLeast(0))
+        recycleCheckpoints()
+        onLayersChanged?.invoke()
+    }
+
+    private fun shelve(id: String) {
+        val i = layers.indexOfFirst { it.id == id }
+        // The last layer standing stays: a page with nowhere to paint is not a
+        // state the rest of this class is written to survive.
+        if (i < 0 || layers.size <= 1) return
+        retired[id] = layers.removeAt(i)
+    }
+
+    private fun unshelve(id: String, at: Int) {
+        val layer = retired.remove(id) ?: return
+        if (layer.bmp == null && bufW > 0 && bufH > 0) layer.bmp = createBitmap(bufW, bufH)
+        layers.add(at.coerceIn(0, layers.size), layer)
     }
 
     /**
@@ -5006,6 +5064,8 @@ class PaintCanvasView @JvmOverloads constructor(
         surfaceBmp?.recycle()
         surfaceBmp = null
         for (l in layers) l.recycle()
+        for (l in retired.values) l.recycle()
+        retired.clear()
         GpuRender.release()
     }
 
