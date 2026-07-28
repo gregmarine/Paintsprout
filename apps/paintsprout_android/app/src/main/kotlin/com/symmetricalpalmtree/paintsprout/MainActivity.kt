@@ -303,14 +303,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             session = opened
-            LastOpen.save(
-                this@MainActivity,
-                if (wantsScratch) {
-                    LastOpen.Pointer(LastOpen.Kind.SCRATCHPAD, null, opened.pageId)
-                } else {
-                    LastOpen.Pointer(LastOpen.Kind.SKETCHBOOK, opened.documentId, opened.pageId)
-                },
-            )
+            rememberWhereWeAre()
 
             // Load before wiring the hooks, so restoring a page does not read back
             // as a fresh burst of edits to write straight out again.
@@ -674,12 +667,31 @@ class MainActivity : AppCompatActivity() {
 
         // The stack before the paint: restore() folds ops into layers, so the
         // layers have to be there to be folded into.
+        // The pointer follows the page, not only the document. Turning a page and
+        // then losing the process used to bring you back to whichever page you had
+        // opened the book on, because the only time anyone wrote down where you
+        // were was the moment the book opened.
+        rememberWhereWeAre()
+
         if (page.layers.isNotEmpty()) {
             binding.canvas.restoreLayers(page.layers, page.activeLayer, page.folders, page.shape)
         }
         binding.canvas.restore(page.committed, page.undone, page.cachedPaint)
         refreshLayers()
         updateRail()
+    }
+
+    /** Writes down where the user is, so a process that dies puts them back. */
+    private fun rememberWhereWeAre() {
+        val open = session ?: return
+        LastOpen.save(
+            this,
+            if (isScratchpad) {
+                LastOpen.Pointer(LastOpen.Kind.SCRATCHPAD, null, open.pageId)
+            } else {
+                LastOpen.Pointer(LastOpen.Kind.SKETCHBOOK, open.documentId, open.pageId)
+            },
+        )
     }
 
     /**
@@ -824,7 +836,7 @@ class MainActivity : AppCompatActivity() {
             canvas.setLayerOpacity(index, value)
             if (done) {
                 canvas.commitLayerOpacity(index)
-                persistLayerState(index)
+                persistStack()
             }
         }
 
@@ -987,7 +999,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setLayerVisible(index: Int, visible: Boolean) {
         binding.canvas.setLayerVisible(index, visible)
-        persistLayerState(index)
+        persistStack()
         refreshLayers()
     }
 
@@ -1002,20 +1014,20 @@ class MainActivity : AppCompatActivity() {
         val open = session ?: return
         val canvas = binding.canvas
         val entries = canvas.stackEntries()
-        val folders = entries.filter { it.isFolder }.mapNotNull { entry ->
-            canvas.folderAt(entry.id)?.let {
-                DocumentSession.FolderState(it.id, it.name, it.visible, it.opacity, it.collapsed)
+        val states = entries.mapNotNull { entry ->
+            val folder = canvas.folderAt(entry.id)
+            val layer = canvas.layerAt(entry.id)
+            when {
+                folder != null -> DocumentSession.EntryState(
+                    folder.id, true, folder.name, folder.visible, folder.opacity, folder.collapsed,
+                )
+                layer != null -> DocumentSession.EntryState(
+                    layer.id, false, layer.name, layer.visible, layer.opacity, collapsed = false,
+                )
+                else -> null
             }
         }
-        lifecycleScope.launch { open.recordStack(entries, folders) }
-    }
-
-    private fun persistLayerState(index: Int) {
-        val open = session ?: return
-        val id = binding.canvas.layerIdAt(index)
-        val visible = binding.canvas.layerVisibleAt(index)
-        val opacity = binding.canvas.layerOpacityAt(index)
-        lifecycleScope.launch { open.recordLayerState(id, visible, opacity) }
+        lifecycleScope.launch { open.recordStack(entries, states) }
     }
 
     private fun typeOpacity(index: Int) {
@@ -1028,7 +1040,7 @@ class MainActivity : AppCompatActivity() {
                 val pct = field.inches(binding.canvas.layerOpacityAt(index) * 100f).coerceIn(0f, 100f)
                 binding.canvas.setLayerOpacity(index, pct / 100f)
                 binding.canvas.commitLayerOpacity(index)
-                persistLayerState(index)
+                persistStack()
                 refreshLayers()
             }
             .show()
@@ -1338,15 +1350,9 @@ class MainActivity : AppCompatActivity() {
                 // neighbours, so an empty box keeps what was there.
                 val name = field.text.toString().trim().ifEmpty { was }
                 canvas.renameStackEntry(id, name)
-                persistName(id, name)
                 refreshLayers()
             }
             .show()
-    }
-
-    private fun persistName(id: String, name: String) {
-        val open = session ?: return
-        lifecycleScope.launch { open.recordName(id, name) }
     }
 
     /**

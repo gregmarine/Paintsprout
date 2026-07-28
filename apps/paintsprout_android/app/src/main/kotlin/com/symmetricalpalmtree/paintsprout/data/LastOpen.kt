@@ -32,10 +32,17 @@ object LastOpen {
      * the way back would be through the library — hunting for a book you never
      * left on purpose.
      */
-    fun save(context: Context, pointer: Pointer) = prefs(context).edit().apply {
-        putString(KEY, encode(pointer))
-        if (pointer.kind == Kind.SKETCHBOOK) putString(KEY_BOOK, encode(pointer))
-    }.apply()
+    fun save(context: Context, pointer: Pointer) {
+        val edit = prefs(context).edit()
+        edit.putString(KEY, encode(pointer))
+        if (pointer.kind == Kind.SKETCHBOOK) edit.putString(KEY_BOOK, encode(pointer))
+        // Written through, not scheduled. `apply()` returns before the file is
+        // on disk and relies on the process living long enough to finish; this
+        // pointer's whole job is to survive the process *not* doing that. It is
+        // two short strings written when a document is opened or the page turns,
+        // so the cost of being sure is nothing worth measuring.
+        edit.commit()
+    }
 
     fun load(context: Context): Pointer? = decode(prefs(context).getString(KEY, null))
 

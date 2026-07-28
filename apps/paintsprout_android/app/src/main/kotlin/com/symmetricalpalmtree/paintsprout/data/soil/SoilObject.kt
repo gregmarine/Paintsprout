@@ -176,6 +176,17 @@ object SoilType {
     const val FOLDER_VISIBILITY = "folder_visibility"
 
     /**
+     * What a layer or a folder is called, and whether a folder is folded shut.
+     *
+     * On the timeline by the rule that decides all of these: if the sketchbook
+     * remembers it, undo can take it back. A name is saved in the document and
+     * carried with it, so it is part of the document and not a preference about
+     * it — and the same is true, at the edge of the rule, of a folded folder.
+     */
+    const val STACK_NAME = "stack_name"
+    const val FOLDER_COLLAPSE = "folder_collapse"
+
+    /**
      * A clipboard paste: one step in the timeline, holding the pasted ops as
      * child rows. The only op type with ops beneath it.
      */
@@ -202,6 +213,7 @@ object SoilType {
         STROKE, FILL, ERASE, MOVE, SURFACE_OP, PASTE,
         LAYER_OPACITY, LAYER_VISIBILITY, LAYER_ADD, LAYER_DELETE, LAYER_ORDER,
         FOLDER_ADD, FOLDER_DELETE, FOLDER_OPACITY, FOLDER_VISIBILITY,
+        STACK_NAME, FOLDER_COLLAPSE,
     )
 }
 

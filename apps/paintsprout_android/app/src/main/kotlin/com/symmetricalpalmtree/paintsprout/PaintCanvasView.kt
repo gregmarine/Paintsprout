@@ -35,6 +35,8 @@ import com.symmetricalpalmtree.paintsprout.paint.FolderAddOp
 import com.symmetricalpalmtree.paintsprout.paint.FolderDeleteOp
 import com.symmetricalpalmtree.paintsprout.paint.FolderOpacityOp
 import com.symmetricalpalmtree.paintsprout.paint.FolderVisibilityOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderCollapseOp
+import com.symmetricalpalmtree.paintsprout.paint.NameOp
 import com.symmetricalpalmtree.paintsprout.paint.Layer
 import com.symmetricalpalmtree.paintsprout.paint.LayerAddOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerDeleteOp
@@ -3874,6 +3876,8 @@ class PaintCanvasView @JvmOverloads constructor(
                 is FolderDeleteOp -> {}
                 is FolderOpacityOp -> {}
                 is FolderVisibilityOp -> {}
+                is FolderCollapseOp -> {}
+                is NameOp -> {}
             }
         }
         return cur
@@ -3989,6 +3993,7 @@ class PaintCanvasView @JvmOverloads constructor(
                 l.baseVisible = l.visible
                 l.baseOpacity = l.opacity
             }
+            if (committed.none { it is NameOp && it.named == l.id }) l.baseName = l.name
         }
         // Folders, by the same rule and for the same reason. They are named by the
         // step rather than filed under it, so this asks what the step is about.
@@ -4000,6 +4005,10 @@ class PaintCanvasView @JvmOverloads constructor(
             if (!onTheTimeline) {
                 f.baseVisible = f.visible
                 f.baseOpacity = f.opacity
+            }
+            if (committed.none { it is NameOp && it.named == f.id }) f.baseName = f.name
+            if (committed.none { it is FolderCollapseOp && it.folderId == f.id }) {
+                f.baseCollapsed = f.collapsed
             }
         }
 
@@ -5224,10 +5233,13 @@ class PaintCanvasView @JvmOverloads constructor(
         for (l in layersById.values) {
             l.visible = l.baseVisible
             l.opacity = l.baseOpacity
+            l.name = l.baseName
         }
         for (f in foldersById.values) {
             f.visible = f.baseVisible
             f.opacity = f.baseOpacity
+            f.name = f.baseName
+            f.collapsed = f.baseCollapsed
         }
         for (op in committed) {
             when (op) {
@@ -5235,6 +5247,12 @@ class PaintCanvasView @JvmOverloads constructor(
                 is LayerVisibilityOp -> layersById[op.layerId]?.visible = op.visible
                 is FolderOpacityOp -> foldersById[op.folderId]?.opacity = op.opacity
                 is FolderVisibilityOp -> foldersById[op.folderId]?.visible = op.visible
+                is FolderCollapseOp -> foldersById[op.folderId]?.collapsed = op.collapsed
+                // One step for both kinds, so it asks both which of them it named.
+                is NameOp -> {
+                    layersById[op.named]?.name = op.name
+                    foldersById[op.named]?.name = op.name
+                }
                 else -> Unit
             }
         }
@@ -5335,15 +5353,37 @@ class PaintCanvasView @JvmOverloads constructor(
         commitFolderOp(FolderOpacityOp(id, folder.opacity))
     }
 
-    /** Off the timeline: folding a list is not something you did to the drawing. */
+    /**
+     * Folds a folder shut, or opens it — as a step, like everything else the file
+     * remembers about a sketchbook.
+     *
+     * The furthest that rule reaches: this changes how much of the panel you are
+     * looking at rather than anything on the page. It is in the file, so it is
+     * part of the sketchbook, so it is undoable — and so it discards a redo you
+     * were keeping, the way any other step does.
+     */
     fun setFolderCollapsed(id: String, collapsed: Boolean) {
-        foldersById[id]?.collapsed = collapsed
+        val folder = foldersById[id] ?: return
+        folder.collapsed = collapsed
+        commitFolderOp(FolderCollapseOp(id, collapsed))
         onLayersChanged?.invoke()
     }
 
+    /**
+     * Renames a layer or a folder, as a step.
+     *
+     * On the timeline by the rule the rest of these follow: if the sketchbook
+     * remembers it, undo can take it back. A layer's step is filed under itself
+     * and needs no second name; a folder has no timeline of its own, so its step
+     * rides under the layer being worked on and says which folder it meant.
+     */
     fun renameStackEntry(id: String, name: String) {
-        layersById[id]?.name = name
-        foldersById[id]?.name = name
+        val layer = layersById[id]
+        val folder = foldersById[id]
+        if (layer == null && folder == null) return
+        layer?.name = name
+        folder?.name = name
+        if (layer != null) commitLayerOp(NameOp(name), layer) else commitFolderOp(NameOp(name, id))
         onLayersChanged?.invoke()
     }
 

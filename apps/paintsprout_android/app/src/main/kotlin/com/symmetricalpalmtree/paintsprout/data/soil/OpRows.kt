@@ -13,6 +13,8 @@ import com.symmetricalpalmtree.paintsprout.paint.FolderAddOp
 import com.symmetricalpalmtree.paintsprout.paint.FolderDeleteOp
 import com.symmetricalpalmtree.paintsprout.paint.FolderOpacityOp
 import com.symmetricalpalmtree.paintsprout.paint.FolderVisibilityOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderCollapseOp
+import com.symmetricalpalmtree.paintsprout.paint.NameOp
 import com.symmetricalpalmtree.paintsprout.paint.StackSpot
 import com.symmetricalpalmtree.paintsprout.paint.LayerAddOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerDeleteOp
@@ -236,6 +238,28 @@ object OpRows {
         flags = if (op.visible) SoilFlags.LAYER_VISIBLE else 0,
     )
 
+    /**
+     * A name, in the column a name already lives in, and who it belongs to.
+     *
+     * `refId` is empty for a layer, which is filed under itself and needs no
+     * second name — the same arrangement the move step uses.
+     */
+    fun nameRow(op: NameOp): SoilObject = SoilObject(
+        id = "",
+        parentId = "",
+        type = SoilType.STACK_NAME,
+        text = op.name,
+        refId = op.subject,
+    )
+
+    fun folderCollapseRow(op: FolderCollapseOp): SoilObject = SoilObject(
+        id = "",
+        parentId = "",
+        type = SoilType.FOLDER_COLLAPSE,
+        refId = op.folderId,
+        flags = if (op.collapsed) SoilFlags.FOLDER_COLLAPSED else 0,
+    )
+
     // --- Selection ops ------------------------------------------------------
 
     /**
@@ -447,6 +471,15 @@ object OpRows {
 
         SoilType.FOLDER_VISIBILITY -> row.refId?.takeIf { it.isNotEmpty() }?.let { folder ->
             row.flags?.let { FolderVisibilityOp(folder, it and SoilFlags.LAYER_VISIBLE != 0) }
+        }
+
+        // An empty name is a step that says nothing, and a step that says nothing
+        // sits in the timeline swallowing an undo.
+        SoilType.STACK_NAME -> row.text?.takeIf { it.isNotEmpty() }
+            ?.let { NameOp(it, row.refId.orEmpty()) }
+
+        SoilType.FOLDER_COLLAPSE -> row.refId?.takeIf { it.isNotEmpty() }?.let { folder ->
+            row.flags?.let { FolderCollapseOp(folder, it and SoilFlags.FOLDER_COLLAPSED != 0) }
         }
 
         // The one op with ops beneath it. Each child is read on its own terms and

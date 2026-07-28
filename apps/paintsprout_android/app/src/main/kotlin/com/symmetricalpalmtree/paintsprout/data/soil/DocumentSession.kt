@@ -17,6 +17,8 @@ import com.symmetricalpalmtree.paintsprout.paint.FolderAddOp
 import com.symmetricalpalmtree.paintsprout.paint.FolderDeleteOp
 import com.symmetricalpalmtree.paintsprout.paint.FolderOpacityOp
 import com.symmetricalpalmtree.paintsprout.paint.FolderVisibilityOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderCollapseOp
+import com.symmetricalpalmtree.paintsprout.paint.NameOp
 import com.symmetricalpalmtree.paintsprout.paint.Layer
 import com.symmetricalpalmtree.paintsprout.paint.LayerAddOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerDeleteOp
@@ -247,6 +249,8 @@ class DocumentSession private constructor(
             is FolderDeleteOp -> repo.appendOp(target(op), OpRows.folderDeleteRow(op))
             is FolderOpacityOp -> repo.appendOp(target(op), OpRows.folderOpacityRow(op))
             is FolderVisibilityOp -> repo.appendOp(target(op), OpRows.folderVisibilityRow(op))
+            is FolderCollapseOp -> repo.appendOp(target(op), OpRows.folderCollapseRow(op))
+            is NameOp -> repo.appendOp(target(op), OpRows.nameRow(op))
         }
     }
 
@@ -281,7 +285,8 @@ class DocumentSession private constructor(
             is LayerOpacityOp, is LayerVisibilityOp,
             is LayerAddOp, is LayerDeleteOp, is LayerOrderOp,
             is FolderAddOp, is FolderDeleteOp,
-            is FolderOpacityOp, is FolderVisibilityOp -> Unit
+            is FolderOpacityOp, is FolderVisibilityOp,
+            is FolderCollapseOp, is NameOp -> Unit
         }
     }
 
@@ -341,9 +346,10 @@ class DocumentSession private constructor(
         }
     }
 
-    /** A folder as the canvas holds it, on its way to the row that records it. */
-    class FolderState(
+    /** A layer or a folder as the canvas holds it, on its way to its row. */
+    class EntryState(
         val id: String,
+        val isFolder: Boolean,
         val name: String,
         val visible: Boolean,
         val opacity: Float,
@@ -365,16 +371,23 @@ class DocumentSession private constructor(
      * timeline names it by that id and a new one would leave them pointing at
      * nothing.
      */
-    suspend fun recordStack(entries: List<StackEntry>, folders: List<FolderState>) =
+    suspend fun recordStack(entries: List<StackEntry>, states: List<EntryState>) =
         withContext(Dispatchers.IO) {
             lock.withLock {
                 isDirty = true
                 repo.transaction {
-                    val held = folders.associateBy { it.id }
+                    val held = states.associateBy { it.id }
                     val present = hashSetOf<String>()
                     for (entry in entries) {
-                        if (!entry.isFolder) continue
                         val state = held[entry.id] ?: continue
+                        if (!entry.isFolder) {
+                            // A layer's row is never made or unmade here — only
+                            // brought back into agreement, which is what makes an
+                            // undo of a rename reach the file at all.
+                            repo.renameStackEntry(state.id, state.name)
+                            repo.setLayerState(state.id, state.visible, state.opacity)
+                            continue
+                        }
                         present += entry.id
                         val home = entry.parentId.ifEmpty { pageId }
                         repo.ensureFolder(state.id, home, state.name)
@@ -389,29 +402,6 @@ class DocumentSession private constructor(
                     }
                     repo.setStackOrder(pageId, LayerStack(entries))
                 }
-            }
-        }
-
-    /**
-     * A new name for a layer or a folder.
-     *
-     * Written straight to the row and not onto the timeline, by the same rule
-     * that keeps a folded folder off it: undo retraces what was done to the
-     * picture, and what a thing is called is not the picture.
-     */
-    suspend fun recordName(id: String, name: String) = withContext(Dispatchers.IO) {
-        lock.withLock {
-            isDirty = true
-            repo.renameStackEntry(id, name)
-        }
-    }
-
-    /** Persists a layer's opacity and visibility — how it composites, not what it holds. */
-    suspend fun recordLayerState(id: String, visible: Boolean, opacity: Float) =
-        withContext(Dispatchers.IO) {
-            lock.withLock {
-                isDirty = true
-                repo.setLayerState(id, visible, opacity)
             }
         }
 

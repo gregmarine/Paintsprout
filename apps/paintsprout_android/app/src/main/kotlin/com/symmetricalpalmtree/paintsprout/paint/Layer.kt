@@ -42,6 +42,9 @@ class Layer(
     var baseVisible: Boolean = true
     var baseOpacity: Float = 1f
 
+    /** What it was called before the timeline renamed it. See [baseVisible]. */
+    var baseName: String = name
+
     /** Alpha to composite with, 0–255. A hidden layer never gets this far. */
     val alpha: Int get() = (opacity.coerceIn(0f, 1f) * 255f).toInt()
 

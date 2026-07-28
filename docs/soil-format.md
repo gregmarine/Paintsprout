@@ -157,8 +157,9 @@ sketchbook            root meta row, parentId = ""
 │       ├── paste         a clipboard paste — the one op with ops beneath it
 │       │   └── stroke/fill/erase …
 │       ├── surface_op    a surface change, on the undo timeline
-│       ├── layer_*   }  how a layer or folder composites, and where it sits —
-│       ├── folder_*  }  all on the undo timeline, none of them paint
+│       ├── layer_*   }  how a layer or folder composites, where it sits, what
+│       ├── folder_*  }  it is called — all on the undo timeline, none of them
+│       ├── stack_name}  paint (see "What goes on the timeline")
 │       └── raster_cache  composited pixels — NOT an op (see below)
 └── palette
     └── pot
@@ -205,6 +206,33 @@ stack was already a tree the format knew how to hold.
 - **Folded shut is not hidden.** `FOLDER_COLLAPSED` sits on the row and off the
   timeline: shutting a folder changes how much of a list you are looking at, not
   the picture, and undo is for the picture.
+
+### What goes on the timeline
+
+**If the sketchbook remembers it, undo can take it back.** That is the whole
+rule, and it is a property of the *file* rather than a judgement about what feels
+like an edit: anything saved in the document is part of the document, so it is a
+step. Strokes and fills, obviously — but also which layer is showing, how far it
+is turned down, where it sits, what holds it, what it is called, and whether a
+folder is folded shut.
+
+The alternative rule — "only things that change the picture" — was tried and
+discarded. It made a rename a preference rather than an edit, which is wrong the
+first time you rename the wrong layer.
+
+Two consequences worth knowing:
+
+- **Paint-neutral steps still occupy the sequence.** The fold skips them; the
+  state they describe is re-derived by replaying from an anchored base (see
+  `syncLayerStateToHistory`). A layer or folder starts at its `base…` value and
+  the surviving steps are applied over it in order.
+- **Every step clears the redo tail**, including the mild ones. Folding a folder
+  shut discards a redo you were keeping, because it is a step like any other.
+  That is the price of the rule being simple enough to predict.
+
+Still off the timeline, and named here so the gap is deliberate rather than
+forgotten: pages (add, delete, duplicate, reorder), the tray, and the canvas
+size. Those are the sketchbook too, and by this rule they belong on it.
 
 ### The undo model
 

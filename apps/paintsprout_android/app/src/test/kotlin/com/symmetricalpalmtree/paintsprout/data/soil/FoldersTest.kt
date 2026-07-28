@@ -4,6 +4,8 @@ import com.symmetricalpalmtree.paintsprout.paint.FolderAddOp
 import com.symmetricalpalmtree.paintsprout.paint.FolderDeleteOp
 import com.symmetricalpalmtree.paintsprout.paint.FolderOpacityOp
 import com.symmetricalpalmtree.paintsprout.paint.FolderVisibilityOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderCollapseOp
+import com.symmetricalpalmtree.paintsprout.paint.NameOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerAddOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerOrderOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerStack
@@ -365,6 +367,63 @@ class FoldersTest {
         ) { emptyList() } as FolderVisibilityOp
         assertEquals("f1", hidden.folderId)
         assertFalse(hidden.visible)
+    }
+
+    /**
+     * A name is part of the document, so it is a step. The rule the whole
+     * timeline now follows: if the sketchbook remembers it, undo can take it back.
+     */
+    @Test
+    fun `a layer's name is a step filed under the layer itself`() {
+        val op = NameOp("Underpainting").also { it.layerId = "the-layer" }
+        val back = OpRows.readOp(OpRows.nameRow(op)) { emptyList() } as NameOp
+        back.layerId = "the-layer"
+        assertEquals("Underpainting", back.name)
+        assertEquals("the-layer", back.named)
+    }
+
+    /** A folder has no timeline of its own, so its rename says which folder. */
+    @Test
+    fun `a folder's name names the folder, not the layer it rides under`() {
+        val op = NameOp("Figure", subject = "the-folder").also { it.layerId = "the-working-layer" }
+        val back = OpRows.readOp(OpRows.nameRow(op)) { emptyList() } as NameOp
+        back.layerId = "the-working-layer"
+        assertEquals("the-folder", back.named)
+        assertEquals("Figure", back.name)
+    }
+
+    @Test
+    fun `a folder folded shut is a step too`() {
+        val shut = OpRows.readOp(
+            OpRows.folderCollapseRow(FolderCollapseOp("f1", collapsed = true)),
+        ) { emptyList() } as FolderCollapseOp
+        assertEquals("f1", shut.folderId)
+        assertTrue(shut.collapsed)
+
+        val open = OpRows.readOp(
+            OpRows.folderCollapseRow(FolderCollapseOp("f1", collapsed = false)),
+        ) { emptyList() } as FolderCollapseOp
+        assertFalse(open.collapsed)
+    }
+
+    /** A name that says nothing would sit in the timeline swallowing an undo. */
+    @Test
+    fun `an empty name is dropped rather than kept as a step`() {
+        val row = SoilObject(id = "", parentId = "", type = SoilType.STACK_NAME, text = "")
+        assertNull(OpRows.readOp(row) { emptyList() })
+    }
+
+    /** Renaming reaches the row, so a reopened page shows the name it was given. */
+    @Test
+    fun `a rename reaches the row it is about`() {
+        val layer = repo.addLayer(pageId, "Layer 2")
+        val folder = repo.addFolder(pageId, "Folder 1")
+
+        repo.renameStackEntry(layer.id, "Underpainting")
+        repo.renameStackEntry(folder.id, "Figure")
+
+        assertEquals("Underpainting", store.byId(layer.id)!!.text)
+        assertEquals("Figure", store.byId(folder.id)!!.text)
     }
 
     /** A step about no folder would sit in the timeline swallowing an undo. */

@@ -35,6 +35,8 @@ class Folder(
      */
     var baseVisible: Boolean = true
     var baseOpacity: Float = 1f
+    var baseName: String = name
+    var baseCollapsed: Boolean = collapsed
 
     companion object {
         /** What a folder is called when nothing named it. */

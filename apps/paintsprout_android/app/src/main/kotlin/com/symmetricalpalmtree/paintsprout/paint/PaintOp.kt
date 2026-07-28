@@ -211,6 +211,34 @@ class FolderOpacityOp(val folderId: String, val opacity: Float) : PaintOp()
 
 class FolderVisibilityOp(val folderId: String, val visible: Boolean) : PaintOp()
 
+/**
+ * What a layer or a folder is called.
+ *
+ * On the timeline with everything else, and the rule behind that is worth stating
+ * plainly: **if the sketchbook remembers it, undo can take it back.** A name is
+ * not paint, but it is not a preference either — it is part of the document,
+ * saved in it, carried with it, and the only account of what a layer holds. A
+ * rename you did not mean should cost one press to undo, like anything else you
+ * did not mean.
+ *
+ * [subject] names a folder, which has no timeline of its own to be filed on. A
+ * layer is filed under itself and leaves it empty, the same arrangement
+ * [LayerOrderOp] uses.
+ */
+class NameOp(val name: String, val subject: String = "") : PaintOp() {
+    val named: String get() = subject.ifEmpty { layerId }
+}
+
+/**
+ * A folder folded shut, or opened again.
+ *
+ * Here by the same rule, and it is the furthest that rule reaches: shutting a
+ * folder changes what you can see of the list rather than what is on the page.
+ * It is in the file, though, so it is part of the sketchbook, so it is a step —
+ * which does mean folding a folder discards a redo you had been keeping.
+ */
+class FolderCollapseOp(val folderId: String, val collapsed: Boolean) : PaintOp()
+
 class SurfaceOp(
     val kind: SurfaceKind,
     @param:ColorInt val plainColor: Int,
