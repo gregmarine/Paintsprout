@@ -275,20 +275,56 @@ class LayerStack(entries: List<StackEntry> = emptyList()) {
     }
 
     /**
-     * Which folder catches a drop made in the gap between two panel rows.
+     * Every folder a drop in this gap could honestly mean, deepest first.
      *
      * [above] and [below] are the entries the gap sits between, either absent at
-     * the ends of the list. A gap just under a folder's title belongs to that
-     * folder — there is no other reading of that gesture. Otherwise it belongs to
-     * whatever is below it, and at the very bottom, where nothing is, to whatever
-     * holds the thing above.
+     * the ends of the list.
+     *
+     * A seam at the edge of a folder means **more than one thing**. The gap under
+     * a folder's last layer is the bottom of that folder *and* the place after
+     * it; where two folders meet it is the bottom of one, the top of the next,
+     * and the ground between them. A single answer would have to throw the others
+     * away, and whichever it kept, the rest would be somewhere a layer simply
+     * could not be put.
+     *
+     * So the gap answers with all of them, from deepest to shallowest, and the
+     * caller says how far out to come. That is what the sideways reach in the
+     * panel is choosing: down picks the seam, across picks which of these.
+     *
+     * The chain always starts at the deepest reading, so staying in is the
+     * default and coming out is the deliberate act — a folder is usually what you
+     * were aiming at.
      */
-    fun dropInto(above: Int?, below: Int?): String {
+    fun dropChain(above: Int?, below: Int?): List<String> {
         val over = above?.let { list.getOrNull(it) }
-        if (over != null && over.isFolder) return over.id
-        val under = below?.let { list.getOrNull(it) }
-        if (under != null) return under.parentId
-        return over?.parentId ?: StackEntry.LOOSE
+        val deepest = when {
+            over == null -> StackEntry.LOOSE
+            // Directly under a folder's own title is inside it, at the top.
+            over.isFolder -> over.id
+            else -> over.parentId
+        }
+        val shallowest = below?.let { list.getOrNull(it) }?.parentId ?: StackEntry.LOOSE
+
+        val chain = mutableListOf(deepest)
+        var current = deepest
+        var hops = 0
+        while (current != shallowest && current != StackEntry.LOOSE && hops <= list.size) {
+            current = list.firstOrNull { it.id == current }?.parentId ?: StackEntry.LOOSE
+            chain += current
+            hops++
+        }
+        return chain
+    }
+
+    /** The chain's [stepsOut]-th reading, clamped to the shallowest there is. */
+    fun dropInto(above: Int?, below: Int?, stepsOut: Int = 0): String =
+        dropChain(above, below).let { it[stepsOut.coerceIn(0, it.lastIndex)] }
+
+    /** How deep a thing filed directly inside [folder] would sit. */
+    fun depthInside(folder: String): Int {
+        if (folder == StackEntry.LOOSE) return 0
+        val index = indexOf(folder)
+        return if (index < 0) 0 else depth(index) + 1
     }
 
     companion object {

@@ -5286,11 +5286,18 @@ class PaintCanvasView @JvmOverloads constructor(
 
     fun layerAt(id: String): Layer? = layersById[id]
 
-    /** Which folder catches a drop made in the gap between two panel rows. */
-    fun dropInto(above: Int?, below: Int?): String = stack.dropInto(above, below)
+    /** Which folder catches a drop in the gap between two rows, [stepsOut] out. */
+    fun dropInto(above: Int?, below: Int?, stepsOut: Int): String =
+        stack.dropInto(above, below, stepsOut)
+
+    /** How many readings that gap has — how far out a drag there could reach. */
+    fun dropChoices(above: Int?, below: Int?): Int = stack.dropChain(above, below).size
 
     /** The folder holding [id], or nothing when nothing holds it. */
     fun holderOf(id: String): String = stack.entry(id)?.parentId ?: StackSpot.LOOSE
+
+    /** How deep a thing filed directly inside [folder] would sit. */
+    fun depthInside(folder: String): Int = stack.depthInside(folder)
 
     /** The stack bottom-first, for writing the order back to the file. */
     fun layerIdsInOrder(): List<String> = layers.map { it.id }

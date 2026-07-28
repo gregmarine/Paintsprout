@@ -1084,7 +1084,9 @@ class MainActivity : AppCompatActivity() {
                 MotionEvent.ACTION_MOVE -> {
                     if (mine) {
                         container.translationY = event.rawY - startY
-                        showLanding(landingFor(id, row, movedBy(list, event, startY), sidewaysBy(event, startX)))
+                        showLanding(
+                            landingFor(id, row, movedBy(list, event, startY), stepsOutBy(event, startX)),
+                        )
                     }
                     true
                 }
@@ -1095,8 +1097,8 @@ class MainActivity : AppCompatActivity() {
                     if (!mine) return@setOnTouchListener true
                     mine = false
                     val moved = movedBy(list, event, startY)
-                    val sideways = sidewaysBy(event, startX)
-                    if (moved != 0 || sideways != 0) dropAfterDrag(id, row, moved, sideways)
+                    val stepsOut = stepsOutBy(event, startX)
+                    if (moved != 0 || stepsOut != 0) dropAfterDrag(id, row, moved, stepsOut)
                     true
                 }
                 else -> true
@@ -1110,11 +1112,16 @@ class MainActivity : AppCompatActivity() {
         return ((event.rawY - startY) / rowHeight).roundToInt()
     }
 
-    private fun sidewaysBy(event: MotionEvent, startX: Float): Int = when {
-        event.rawX - startX > dp(NEST_REACH) -> 1
-        event.rawX - startX < -dp(NEST_REACH) -> -1
-        else -> 0
-    }
+    /**
+     * How many folders leftward the drag has reached out of.
+     *
+     * Rightward is nothing, because there is no room for it: the panel is pinned
+     * to the right edge and the handle sits at its rim. It needs none — the
+     * deepest reading of a seam is already the default, so going in is where you
+     * start and coming out is the thing you have to ask for.
+     */
+    private fun stepsOutBy(event: MotionEvent, startX: Float): Int =
+        ((startX - event.rawX) / dp(NEST_REACH)).toInt().coerceAtLeast(0)
 
     /** Picked up: off the page, and see-through enough to read what is under it. */
     private fun lift(container: View) {
@@ -1133,14 +1140,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * How far sideways a drag has to reach before it means a change of depth.
+     * How far sideways a drag reaches per folder it comes out of.
      *
-     * Filing needs its own axis. A folder that holds nothing is a landing place
-     * with no height: the gap under its title and the gap below it are the same
-     * few pixels, so no vertical drag can tell them apart, and a stack read
-     * top-down has no other way to say "inside this" rather than "under it".
-     * Sideways is the natural spare direction — a list of rows is not using it —
-     * and it says the one thing vertical cannot: how deep, independently of where.
+     * Depth needs its own axis. A seam in a list of rows is one place on screen
+     * and often several places in the stack — the gap under a folder's last layer
+     * is the bottom of that folder and equally the ground beside it — and a
+     * gesture with only one direction can name only one of them. Sideways is the
+     * spare direction a list of rows is not using, and it says the thing vertical
+     * cannot: how deep, independently of where.
      */
     private val NEST_REACH = 36
 
@@ -1167,65 +1174,62 @@ class MainActivity : AppCompatActivity() {
      * disagree: the mark drawn under the finger comes from this, and so does the
      * move made when the finger lifts.
      *
-     * [seam] is the row whose top edge the drop falls on, and [inside] the folder
-     * whose row it falls *on* rather than between — exactly one of them is set.
+     * Down the list chooses the seam; across it chooses which of that seam's
+     * meanings. A seam at the edge of a folder has more than one — the gap under
+     * a folder's last layer is the bottom of that folder and also the place after
+     * it — so the vertical alone cannot say, and every reading it cannot say is
+     * somewhere a layer cannot be put.
      */
-    private class Landing(val to: Int, val into: String, val seam: Int?, val inside: Int?)
+    private class Landing(val to: Int, val into: String, val seam: Int?)
 
-    private fun landingFor(id: String, row: Int, moved: Int, sideways: Int): Landing? {
+    private fun landingFor(id: String, row: Int, moved: Int, stepsOut: Int): Landing? {
         val canvas = binding.canvas
         val entries = canvas.stackEntries()
         val span = canvas.stackSpan(row)
-        val shown = canvas.stackRows()
 
-        // Dropped *onto* a folder's own row: that is what filing looks like.
-        //
-        // The gesture needs this because a folder holding nothing is a landing
-        // place with no height — the gap under its title and the gap below it are
-        // the same few pixels — so the gaps alone cannot say "inside this". The
-        // row can. Land on the title to go in; carry on past it to go above it.
-        val target = (shown.indexOf(row) + moved).coerceIn(0, shown.lastIndex)
-        val onto = shown.getOrNull(target)?.takeIf { it !in span }
-        if (moved != 0 && onto != null && entries.getOrNull(onto)?.isFolder == true && sideways >= 0) {
-            // Just under the folder's title, which is the top of what it holds.
-            return Landing(to = onto + 1, into = entries[onto].id, seam = null, inside = onto)
-        }
-
-        val staying = shown.filterNot { it in span }
+        val staying = canvas.stackRows().filterNot { it in span }
         val from = staying.count { it < span.first }
         val gap = (from + moved).coerceIn(0, staying.size)
         val above = staying.getOrNull(gap - 1)
         val below = staying.getOrNull(gap)
-        // Where the gap puts it, then what a leftward reach does to the depth:
-        // out of whatever caught it, one shelf per drag, so a layer filed three
-        // deep comes back out the way it went in. Leftward and not rightward
-        // because a panel pinned to the right edge has room for one of them.
-        val landed = canvas.dropInto(above, below)
-        val into = if (sideways < 0) canvas.holderOf(landed) else landed
+
+        val into = canvas.dropInto(above, below, stepsOut)
         // Landing back where it started is not a move, and saying so with no mark
         // at all is how the panel admits nothing would happen.
         if (gap == from && into == canvas.holderOf(id)) return null
-        return Landing(to = below ?: entries.size, into = into, seam = below, inside = null)
+        return Landing(to = below ?: entries.size, into = into, seam = below)
     }
 
-    private fun dropAfterDrag(id: String, row: Int, moved: Int, sideways: Int) {
-        val landing = landingFor(id, row, moved, sideways) ?: return
+    private fun dropAfterDrag(id: String, row: Int, moved: Int, stepsOut: Int) {
+        val landing = landingFor(id, row, moved, stepsOut) ?: return
         // The move puts a step on the timeline and the rows follow through
         // onLayersChanged; nothing more to do here.
         binding.canvas.moveInStack(id, landing.to, landing.into)
     }
 
-    /** The seam that would catch a drop, drawn solid; or the folder that would. */
+    /**
+     * The seam that would catch a drop, drawn solid, starting where the thing
+     * dropped there would start — and the folder that would hold it, ringed.
+     *
+     * The inset is not decoration. One seam can mean several places, so a mark
+     * that looked the same for all of them would be showing the question rather
+     * than the answer. Where the line begins is which reading you are about to
+     * get; the ring says which folder is about to take it.
+     */
     private fun showLanding(landing: Landing?) {
         clearLanding()
         if (landing == null) return
-        if (landing.inside != null) {
-            rowViews[landing.inside]?.background = catchingBg()
-        } else {
-            // No seam means the very bottom of the stack, which is the tail edge.
-            (landing.seam?.let { edges[it] } ?: tailEdge)?.setBackgroundColor(DROP_MARK)
+        val canvas = binding.canvas
+        val mark = landing.seam?.let { edges[it] } ?: tailEdge
+        mark?.background = dropMark(canvas.depthInside(landing.into))
+        if (landing.into.isNotEmpty()) {
+            val holder = canvas.stackEntries().indexOfFirst { it.id == landing.into }
+            rowViews[holder]?.background = catchingBg()
         }
     }
+
+    private fun dropMark(depth: Int): Drawable =
+        InsetDrawable(ColorDrawable(DROP_MARK), indentFor(depth) + dp(4), 0, dp(4), 0)
 
     private fun clearLanding() {
         for (edge in edges.values) edge.background = hairline(edge.tag as? Int ?: 0)

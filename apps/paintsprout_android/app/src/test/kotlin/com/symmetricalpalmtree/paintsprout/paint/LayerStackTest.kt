@@ -239,10 +239,75 @@ class LayerStackTest {
         assertEquals("", figureOverSky().dropInto(above = null, below = 0))
     }
 
-    /** A drop between a folder's last child and the next loose layer. */
+    /**
+     * The seam at a folder's bottom edge means two things, and it offers both.
+     * Answering with only one made whichever it dropped somewhere a layer could
+     * not be put at all — which is exactly what happened to the bottom of a
+     * folder.
+     */
     @Test
-    fun `a gap takes the parent of the row below it`() {
+    fun `the gap under a folder's last layer offers the folder, then beside it`() {
         val stack = figureOverSky()
-        assertEquals("", stack.dropInto(above = 2, below = 3))
+        assertEquals(listOf("F", ""), stack.dropChain(above = 2, below = 3))
+        assertEquals("staying in is the default", "F", stack.dropInto(2, 3, stepsOut = 0))
+        assertEquals("one step out", "", stack.dropInto(2, 3, stepsOut = 1))
+    }
+
+    /** Reaching past the shallowest reading is still the shallowest reading. */
+    @Test
+    fun `stepping out further than there is stops at the outside`() {
+        val stack = figureOverSky()
+        assertEquals("", stack.dropInto(2, 3, stepsOut = 9))
+    }
+
+    /** The whole point, end to end: a layer can reach the bottom of a folder. */
+    @Test
+    fun `a layer can land at the bottom of a folder`() {
+        val stack = figureOverSky()
+        // Dragging "line" down one row: the seam above "sky", which is the gap
+        // under the folder's last layer.
+        assertTrue(stack.move("line", to = 3, into = stack.dropInto(2, 3, stepsOut = 0)))
+        assertEquals(listOf("F", "shadow", "line", "sky"), stack.entries.map { it.id })
+        assertEquals("F", stack.entry("line")!!.parentId)
+        assertEquals("still inside, and last", 0..2, stack.span(0))
+    }
+
+    @Test
+    fun `the same seam, one step out, lands beside the folder instead`() {
+        val stack = figureOverSky()
+        assertTrue(stack.move("line", to = 3, into = stack.dropInto(2, 3, stepsOut = 1)))
+        assertEquals(listOf("F", "shadow", "line", "sky"), stack.entries.map { it.id })
+        assertEquals("", stack.entry("line")!!.parentId)
+        assertEquals("the folder ends before it", 0..1, stack.span(0))
+    }
+
+    /** Where two folders meet, the seam means three things, deepest first. */
+    @Test
+    fun `a seam between two folders offers every depth it sits on`() {
+        val stack = LayerStack(
+            listOf(
+                folder("outer"), folder("inner", "outer"), layer("deep", "inner"),
+                folder("next"), layer("after", "next"),
+            ),
+        )
+        // The gap between "deep" (two folders in) and the "next" folder's title.
+        assertEquals(listOf("inner", "outer", ""), stack.dropChain(above = 2, below = 3))
+    }
+
+    /** Under a folder's own title is inside it, however little it holds. */
+    @Test
+    fun `the gap under an empty folder's title is inside that folder`() {
+        val stack = LayerStack(listOf(folder("F"), layer("sky")))
+        assertEquals(listOf("F", ""), stack.dropChain(above = 0, below = 1))
+    }
+
+    @Test
+    fun `depth inside says where a thing filed there would sit`() {
+        val stack = LayerStack(
+            listOf(folder("outer"), folder("inner", "outer"), layer("deep", "inner")),
+        )
+        assertEquals(0, stack.depthInside(StackEntry.LOOSE))
+        assertEquals(1, stack.depthInside("outer"))
+        assertEquals(2, stack.depthInside("inner"))
     }
 }
