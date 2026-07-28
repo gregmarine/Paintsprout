@@ -61,8 +61,27 @@ android {
     sourceSets["main"].assets.srcDir("$projectDir/schemas")
 
     buildTypes {
-        // No applicationIdSuffix on debug: the native app is meant to replace the
-        // previous Flutter install outright, so debug and release share one id.
+        // A development build is a different app from a shipped one, and says so
+        // in its id — same as Notesprout. The two then coexist on one tablet, so a
+        // build under test cannot replace the install holding real paintings, and
+        // cannot be swapped onto it either: the ids differ, so there is no
+        // uninstall-first step, and `getExternalFilesDir` is per-id, so each has
+        // its own library.
+        //
+        // This deliberately gives up the original arrangement, where the native
+        // app shared the Flutter build's id in order to replace it. That job is
+        // done — apps/paintsprout_flutter is a frozen reference now.
+        //
+        // Consequences worth knowing, both of them per-id rather than per-device:
+        // a `.dev` install starts with an empty library and no cached passphrase,
+        // so it asks for the recovery key of anything copied into it; and it
+        // starts UNCALIBRATED, silently falling back to the OEM-reported PPI —
+        // which on the Movink 14 Pro is a third too high. See docs/backup.md and
+        // the calibration notes before moving a library between the two.
+        debug {
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(

@@ -342,6 +342,13 @@ has to end as a message about a failed backup rather than a crash mid-run.
 device pointed at the same folder as a real one cannot overwrite real backups. Release builds
 write to the destination root.
 
+That is the second of two separations, and they are independent. A debug build also carries
+the `.dev` application id suffix, so it is a different app with its own
+`getExternalFilesDir` — a development install and a shipped one on the same tablet have
+**separate libraries** and mint **separate device folder names**, and neither can see the
+other's sketchbooks. The `dev/` subfolder is still worth having on top of that, because both
+builds can perfectly well be pointed at the same backup folder.
+
 ---
 
 ## Restore
@@ -406,6 +413,11 @@ verification and is indistinguishable from corruption by the time SQLite sees it
 - **Deleting a sketchbook does not remove its backup file.** The needs-backup sweep skips
   tombstoned rows; it never reaps. Harmless for restore — the restored index simply doesn't
   reference the orphan — but the bytes accumulate. Collecting them is future work.
+- **There is no release build yet.** No `signingConfig` is defined, so `assembleRelease`
+  produces an unsigned APK that will not install. The `.dev` suffix means a development and a
+  shipped build *could* coexist, but until a keystore exists there is nothing to coexist with
+  — and everything below about release behaviour is therefore untested. Notesprout is in the
+  same state.
 - **Debug builds cannot restore from Drive.** Debug backups land in `<deviceFolderName>/dev/`,
   and `DriveRestoreSource` only treats a direct child of "Paintsprout Backups" that itself holds
   a `paintsprout.db` as a device folder. LOCAL restore is unaffected — the picker scans the
