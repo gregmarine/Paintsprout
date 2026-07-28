@@ -392,6 +392,20 @@ class DocumentSession private constructor(
             }
         }
 
+    /**
+     * A new name for a layer or a folder.
+     *
+     * Written straight to the row and not onto the timeline, by the same rule
+     * that keeps a folded folder off it: undo retraces what was done to the
+     * picture, and what a thing is called is not the picture.
+     */
+    suspend fun recordName(id: String, name: String) = withContext(Dispatchers.IO) {
+        lock.withLock {
+            isDirty = true
+            repo.renameStackEntry(id, name)
+        }
+    }
+
     /** Persists a layer's opacity and visibility — how it composites, not what it holds. */
     suspend fun recordLayerState(id: String, visible: Boolean, opacity: Float) =
         withContext(Dispatchers.IO) {

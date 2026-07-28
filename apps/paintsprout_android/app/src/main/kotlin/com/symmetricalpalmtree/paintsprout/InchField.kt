@@ -53,14 +53,22 @@ fun EditText.onEdit(action: () -> Unit) {
     )
 }
 
-/** A labelled field with its unit after it: `Width [ 7.41 ] in`. */
-fun Context.fieldRow(name: String, field: EditText): View = LinearLayout(this).apply {
-    orientation = LinearLayout.HORIZONTAL
-    gravity = Gravity.CENTER_VERTICAL
-    addView(TextView(context).apply { text = name; width = dpOf(64) })
-    addView(field, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-    addView(TextView(context).apply { text = " in" })
-}
+/**
+ * A labelled field with its unit after it: `Width [ 7.41 ] in`.
+ *
+ * [unit] was an assumption before it was a parameter — the row was written for
+ * sizes and said "in" whatever it was measuring, so an opacity read "74 in" and
+ * a name read "Underpainting in". Empty means the thing has no unit, which is
+ * the honest answer for a name.
+ */
+fun Context.fieldRow(name: String, field: EditText, unit: String = "in"): View =
+    LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(TextView(context).apply { text = name; width = dpOf(64) })
+        addView(field, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        if (unit.isNotEmpty()) addView(TextView(context).apply { text = " $unit" })
+    }
 
 private fun Context.dpOf(v: Int): Int = (v * resources.displayMetrics.density).roundToInt()
 

@@ -846,7 +846,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener {
                 if (canvas.selectLayer(index)) refreshLayers() else toast(getString(R.string.layers_hidden))
             }
-            setOnLongClickListener { deleteLayer(index); true }
+            setOnLongClickListener { stackMenu(id); true }
         }
 
         return rowContainer(handle, id, row, depth, body)
@@ -947,7 +947,7 @@ class MainActivity : AppCompatActivity() {
                 persistStack()
                 refreshLayers()
             }
-            setOnLongClickListener { folderMenu(id); true }
+            setOnLongClickListener { stackMenu(id); true }
         }
 
         return rowContainer(handle, id, row, depth, body)
@@ -1022,7 +1022,7 @@ class MainActivity : AppCompatActivity() {
         val field = inchField(binding.canvas.layerOpacityAt(index) * 100f)
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.layers_opacity)
-            .setView(vbox(fieldRow(getString(R.string.layers_opacity), field)))
+            .setView(vbox(fieldRow(getString(R.string.layers_opacity), field, unit = "%")))
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.library_size_use) { _, _ ->
                 val pct = field.inches(binding.canvas.layerOpacityAt(index) * 100f).coerceIn(0f, 100f)
@@ -1287,35 +1287,66 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** A folder is worth naming, which is most of what it is for. */
-    private fun folderMenu(id: String) {
-        val folder = binding.canvas.folderAt(id) ?: return
+    /**
+     * Rename or remove, on a long press — the same two for a layer as for a
+     * folder.
+     *
+     * A folder was worth naming because a name is most of what a folder is. A
+     * layer turns out to be worth naming for the opposite reason: it is full of
+     * something, and "Layer 3" says nothing about which of the three it is. Both
+     * are the same question asked of the row under your finger, so both are one
+     * menu rather than two conventions to remember.
+     */
+    private fun stackMenu(id: String) {
+        val canvas = binding.canvas
+        val folder = canvas.folderAt(id)
+        val name = folder?.name ?: canvas.layerAt(id)?.name ?: return
+        val remove = getString(if (folder != null) R.string.folders_delete else R.string.layers_delete)
         MaterialAlertDialogBuilder(this)
-            .setTitle(folder.name)
-            .setItems(
-                arrayOf(getString(R.string.folders_rename), getString(R.string.folders_delete)),
-            ) { _, which -> if (which == 0) renameFolder(id) else deleteFolder(id) }
+            .setTitle(name)
+            .setItems(arrayOf(getString(R.string.stack_rename), remove)) { _, which ->
+                when {
+                    which == 0 -> renameEntry(id)
+                    folder != null -> deleteFolder(id)
+                    else -> deleteLayer(canvas.indexOfLayer(id))
+                }
+            }
             .show()
     }
 
-    private fun renameFolder(id: String) {
-        val folder = binding.canvas.folderAt(id) ?: return
+    /**
+     * A name, and nothing else about the row.
+     *
+     * Off the undo timeline, like a folder folded shut and unlike its eye: undo
+     * retraces what you did to the picture, and what a layer is called is not the
+     * picture. It is written straight to the row the moment it is given.
+     */
+    private fun renameEntry(id: String) {
+        val canvas = binding.canvas
+        val was = canvas.folderAt(id)?.name ?: canvas.layerAt(id)?.name ?: return
         val field = android.widget.EditText(this).apply {
-            setText(folder.name)
+            setText(was)
             setSingleLine()
             setSelectAllOnFocus(true)
         }
         MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.folders_rename)
-            .setView(vbox(fieldRow(getString(R.string.folders_name), field)))
+            .setTitle(R.string.stack_rename)
+            .setView(vbox(fieldRow(getString(R.string.stack_name), field, unit = "")))
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.library_size_use) { _, _ ->
-                val name = field.text.toString().trim().ifEmpty { folder.name }
-                binding.canvas.renameStackEntry(id, name)
-                persistStack()
+                // A row with no name at all is a row you cannot tell from its
+                // neighbours, so an empty box keeps what was there.
+                val name = field.text.toString().trim().ifEmpty { was }
+                canvas.renameStackEntry(id, name)
+                persistName(id, name)
                 refreshLayers()
             }
             .show()
+    }
+
+    private fun persistName(id: String, name: String) {
+        val open = session ?: return
+        lifecycleScope.launch { open.recordName(id, name) }
     }
 
     /**
