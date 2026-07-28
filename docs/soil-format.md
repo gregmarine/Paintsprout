@@ -307,6 +307,21 @@ private-scope book.
 | `sketchbook` | name, page count, canvas size, key scope, cover in `blob` — enough to draw a card **without opening the file** |
 | `list` / `list_item` | the pinned list; membership is child rows, hard-deleted on unpin |
 | `clipboard` | metadata singleton; the copied ops live in the `clipboard` table |
+| `backup_config` | where this device backs up to, as JSON in `params` — see [`backup.md`](backup.md) |
+
+### Schema versions
+
+The index is at **v2**. v2 added three columns to `objects`, by additive
+`ALTER TABLE` and no row rewrite: `params` (the `backup_config` singleton's JSON,
+and the only JSON in this table), and the per-destination `lastBackedUpLocal` /
+`lastBackedUpDrive` stamps. Exclusion from backup is **bit 1 of `flags`**, beside
+bit 0 (encrypted); the two are independent, since clearing the wrong one would
+make an encrypted book look plaintext to every reader of the index.
+
+A migration is only safe if what it produces is what a fresh install produces —
+that shape is what Room validates on open, and a mismatch is a library that will
+not open. `SchemaSqlTest` migrates a frozen v1 table and compares it against a
+fresh v2 one.
 
 ### Sentinels
 
@@ -320,10 +335,15 @@ halfway on somebody's device; this simply runs again.
 | `CLIPBOARD_ID` | `636c69706264` | `clipbd` |
 | `SCRATCHPAD_ROOT_ID` | `736372746368` | `scrtch` |
 | `CLIPBOARD_ROOT_ID` | `636c69706272` | `clipbr` |
+| `BACKUP_CONFIG_ID` | `6261636b7570` | `backup` |
+
+`BACKUP_CONFIG_ID` is the exception to the sentence above: it is written the
+first time the Backup screen is opened and not before. A device that never backs
+up should carry no row saying so.
 
 ### The `updatedAt` discipline
 
-`updatedAt` is the input to a backup predicate, so it moves only for a real
+`updatedAt` is the input to the backup predicate, so it moves only for a real
 modification.
 
 | Operation | Moves it? |
@@ -331,6 +351,7 @@ modification.
 | Rename, move, cover refresh, page-count refresh, encryption change | **yes** |
 | Pin / unpin, activity logging | **no** — a list toggle is not a modification |
 | **Compaction** | **no** — reclaiming space must not make a document look edited |
+| Backup stamp, backup exclusion | **no** — bookkeeping and policy; bumping would re-flag the file just sent |
 
 ---
 

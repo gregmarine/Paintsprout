@@ -59,7 +59,7 @@ data class IndexObject(
     /** Sketchbook: pages, for the card subtitle. Refreshed on close. */
     val pageCount: Int? = null,
 
-    /** Sketchbook bitfield: bit 0 = encrypted. */
+    /** Sketchbook bitfield: bit 0 = encrypted, bit 1 = excluded from backup. */
     val flags: Int? = null,
 
     /** Sketchbook: `GLOBAL` or `SKETCHBOOK`, non-null only when encrypted. */
@@ -80,6 +80,25 @@ data class IndexObject(
 
     /** Cover image bytes. Governed by key scope; never any other content. */
     val blob: ByteArray? = null,
+
+    /**
+     * The one JSON bag in the index, and it holds exactly one thing: the
+     * [BACKUP_CONFIG][IndexType.BACKUP_CONFIG] singleton's settings. A single
+     * low-traffic blob nothing ever queries into is cheaper as JSON than as a
+     * dozen columns every other row leaves NULL.
+     */
+    val params: String? = null,
+
+    /**
+     * When this sketchbook last landed at each backup destination. NULL = never.
+     *
+     * Per-destination on purpose: a failed copy to one must not make the other
+     * look done, and a newly enabled destination has to start from nothing.
+     * Neither of these ever moves [updatedAt] — stamping a backup is bookkeeping,
+     * and bumping it would re-flag the file that was just backed up.
+     */
+    val lastBackedUpLocal: Long? = null,
+    val lastBackedUpDrive: Long? = null,
 ) {
     /**
      * NULL [deletedAt] is alive. Worth a name because [IndexDao.byId] answers for
@@ -89,6 +108,9 @@ data class IndexObject(
     val isAlive: Boolean get() = deletedAt == null
 
     val isEncrypted: Boolean get() = (flags ?: 0) and FLAG_ENCRYPTED != 0
+
+    /** The user said "not this one". A backup run skips it at every destination. */
+    val isExcludedFromBackup: Boolean get() = (flags ?: 0) and FLAG_EXCLUDE_BACKUP != 0
 
     /** A private-passphrase document: no cover may be cached for it, at any time. */
     val isPrivateScope: Boolean get() = isEncrypted && keyScope == KEY_SCOPE_SKETCHBOOK
@@ -103,6 +125,7 @@ data class IndexObject(
 
     companion object {
         const val FLAG_ENCRYPTED = 1
+        const val FLAG_EXCLUDE_BACKUP = 2
 
         const val KEY_SCOPE_GLOBAL = "GLOBAL"
         const val KEY_SCOPE_SKETCHBOOK = "SKETCHBOOK"
@@ -116,6 +139,9 @@ object IndexType {
     const val LIST = "list"
     const val LIST_ITEM = "list_item"
     const val CLIPBOARD = "clipboard"
+
+    /** The backup settings singleton. One row, at a sentinel id, carrying JSON. */
+    const val BACKUP_CONFIG = "backup_config"
 }
 
 /**
@@ -141,4 +167,14 @@ enum class IndexEdit(val bumpsUpdatedAt: Boolean) {
 
     /** A storage-shape change is not an edit. */
     FORMAT_CONVERSION(false),
+
+    /**
+     * "This one has been backed up." Bookkeeping about a copy, not a change to
+     * what was copied — and bumping here would re-flag, on the spot, the very
+     * file the run had just finished sending.
+     */
+    BACKUP_STAMP(false),
+
+    /** A policy choice about a sketchbook, not an edit to it. */
+    BACKUP_EXCLUSION(false),
 }

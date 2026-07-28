@@ -2,6 +2,10 @@ package com.symmetricalpalmtree.paintsprout.data.index
 
 import androidx.room.withTransaction
 import com.symmetricalpalmtree.paintsprout.crypto.KeyScope
+import com.symmetricalpalmtree.paintsprout.data.backup.BackupConfig
+import com.symmetricalpalmtree.paintsprout.data.backup.BackupConfigStore
+import com.symmetricalpalmtree.paintsprout.data.backup.BackupKind
+import com.symmetricalpalmtree.paintsprout.data.backup.needsBackup
 import java.util.UUID
 
 /**
@@ -298,6 +302,60 @@ class IndexRepository(
 
     private suspend fun log(id: String, type: String) =
         activity.insert(ActivityRow(newId(), id, type, now()))
+
+    // --- Backup -------------------------------------------------------------
+
+    suspend fun backupConfig(): BackupConfig? = BackupConfigStore.read(objects)
+
+    /** Reads the settings, minting defaults on the first ask. */
+    suspend fun ensureBackupConfig(defaultDeviceFolderName: String): BackupConfig =
+        BackupConfigStore.ensure(objects, defaultDeviceFolderName)
+
+    suspend fun saveBackupConfig(config: BackupConfig) = BackupConfigStore.write(objects, config)
+
+    /** "Not this one." A policy choice about a sketchbook, so [IndexEdit] leaves `updatedAt` alone. */
+    suspend fun setExcludedFromBackup(id: String, excluded: Boolean) =
+        edit(id, IndexEdit.BACKUP_EXCLUSION) { row ->
+            val flags = row.flags ?: 0
+            row.copy(
+                flags = if (excluded) {
+                    flags or IndexObject.FLAG_EXCLUDE_BACKUP
+                } else {
+                    flags and IndexObject.FLAG_EXCLUDE_BACKUP.inv()
+                },
+            )
+        }
+
+    /**
+     * Records that [id] landed at [kind] at [at].
+     *
+     * Stamped **only on success**, and never bumping `updatedAt` — a failed copy
+     * leaves the row flagged so the next run retries it, and a successful one
+     * must not immediately re-flag itself.
+     */
+    suspend fun markBackedUp(id: String, kind: BackupKind, at: Long) =
+        edit(id, IndexEdit.BACKUP_STAMP) { row ->
+            when (kind) {
+                BackupKind.LOCAL -> row.copy(lastBackedUpLocal = at)
+                BackupKind.DRIVE -> row.copy(lastBackedUpDrive = at)
+            }
+        }
+
+    /**
+     * Every live sketchbook that has to move to [kind] on the next run.
+     *
+     * A tombstoned book is not here — the sweep never reaps, so its bytes stay at
+     * the destination until somebody tidies up, which is harmless: the restored
+     * index simply doesn't reference them.
+     */
+    suspend fun sketchbooksNeedingBackup(kind: BackupKind): List<IndexObject> =
+        objects.liveOfType(IndexType.SKETCHBOOK).filter { row ->
+            val last = when (kind) {
+                BackupKind.LOCAL -> row.lastBackedUpLocal
+                BackupKind.DRIVE -> row.lastBackedUpDrive
+            }
+            needsBackup(row.updatedAt, last, row.isExcludedFromBackup)
+        }
 
     /**
      * Most recently opened first. Resolved against `objects` at read time, so a

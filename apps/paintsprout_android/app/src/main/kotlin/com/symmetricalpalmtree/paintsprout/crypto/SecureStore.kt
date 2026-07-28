@@ -69,6 +69,9 @@ object CryptoStores {
     /** The 32-byte SQLCipher raw keys for global-scope files, keyed by file id. */
     private const val DERIVED_KEYS_FILE = "paintsprout_keys"
 
+    /** The Google Drive OAuth refresh token, and nothing else. */
+    private const val DRIVE_TOKENS_FILE = "paintsprout_drive"
+
     private val cache = mutableMapOf<String, SecureStore>()
 
     /** Secrets: the global passphrase and the attempt counters. */
@@ -76,6 +79,12 @@ object CryptoStores {
 
     /** Derived raw keys. Cleared wholesale on rotation; never holds a passphrase. */
     fun derivedKeys(context: Context): SecureStore = store(context, DERIVED_KEYS_FILE)
+
+    /**
+     * Backup's Drive credentials. A third file for the same reason there are two:
+     * disconnecting Drive must not be able to touch what opens the library.
+     */
+    fun driveTokens(context: Context): SecureStore = store(context, DRIVE_TOKENS_FILE)
 
     private fun store(context: Context, fileName: String): SecureStore = synchronized(cache) {
         cache.getOrPut(fileName) {

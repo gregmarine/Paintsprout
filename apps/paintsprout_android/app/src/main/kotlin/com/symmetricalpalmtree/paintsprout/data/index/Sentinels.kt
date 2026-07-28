@@ -26,7 +26,18 @@ object Sentinels {
     /** Root of the copied-objects tree, in the `clipboard` table. */
     const val CLIPBOARD_ROOT_ID = "00000000-0000-0000-0000-636c69706272" // "clipbr"
 
-    val ALL = listOf(PINNED_LIST_ID, CLIPBOARD_ID, SCRATCHPAD_ROOT_ID, CLIPBOARD_ROOT_ID)
+    /**
+     * The backup settings singleton in `objects`.
+     *
+     * Unlike its neighbours this one is **not** created at launch. Nothing reads
+     * it until someone opens Backup Settings, and a device that never does should
+     * carry no row saying so.
+     */
+    const val BACKUP_CONFIG_ID = "00000000-0000-0000-0000-6261636b7570" // "backup"
+
+    val ALL = listOf(
+        PINNED_LIST_ID, CLIPBOARD_ID, SCRATCHPAD_ROOT_ID, CLIPBOARD_ROOT_ID, BACKUP_CONFIG_ID,
+    )
 
     /** Decodes a sentinel's last group back to the word it spells. For tests and hex dumps. */
     fun wordOf(id: String): String {

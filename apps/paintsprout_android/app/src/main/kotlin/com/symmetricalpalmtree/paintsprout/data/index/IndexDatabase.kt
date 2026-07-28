@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import com.symmetricalpalmtree.paintsprout.data.SchemaSql
@@ -58,10 +59,26 @@ abstract class IndexDatabase : RoomDatabase() {
         )
             .openHelperFactory(factory)
             .addCallback(Bootstrap)
+            .addMigrations(MIGRATION_1_2)
             // No fallbackToDestructiveMigration, ever. A schema Room doesn't
             // recognise must be an error the user can be told about, not a library
             // that quietly empties itself.
             .build()
+
+        /**
+         * The backup columns, added to an index that predates them.
+         *
+         * Additive DDL and nothing else — the statements live in [SchemaSql] so
+         * the migration and the fresh-install bootstrap cannot describe different
+         * tables. A row already here keeps NULL in all three, which reads as
+         * "never backed up, not excluded": exactly right for a library the first
+         * backup run has not seen yet.
+         */
+        internal val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                SchemaSql.INDEX_BACKUP_COLUMNS_DDL.forEach(db::execSQL)
+            }
+        }
 
         private object Bootstrap : RoomDatabase.Callback() {
 

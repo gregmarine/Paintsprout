@@ -376,6 +376,9 @@ class LibraryActivity : AppCompatActivity() {
                         getString(R.string.library_duplicate),
                         getString(R.string.library_export),
                         getString(R.string.library_keying),
+                        getString(
+                            if (book.isExcludedFromBackup) R.string.backup_include else R.string.backup_exclude,
+                        ),
                         getString(R.string.library_delete),
                     ),
                 ) { _, which ->
@@ -389,10 +392,32 @@ class LibraryActivity : AppCompatActivity() {
                         3 -> duplicate(book)
                         4 -> export(book)
                         5 -> promptKeying(book)
-                        6 -> confirmDeleteBook(book)
+                        6 -> toggleBackupExclusion(book)
+                        7 -> confirmDeleteBook(book)
                     }
                 }
                 .show()
+        }
+    }
+
+    /**
+     * "Don't copy this one anywhere."
+     *
+     * A policy choice about a sketchbook rather than an edit to it, so it does not
+     * touch `updatedAt` — see `IndexEdit`. Nothing about the card changes, hence
+     * the toast: the only feedback there is, is the one we give.
+     */
+    private fun toggleBackupExclusion(book: IndexObject) {
+        lifecycleScope.launch {
+            val excluded = !book.isExcludedFromBackup
+            IndexGate.awaitReady().setExcludedFromBackup(book.id, excluded)
+            toast(
+                getString(
+                    if (excluded) R.string.backup_excluded_toast else R.string.backup_included_toast,
+                    book.name,
+                ),
+            )
+            refresh()
         }
     }
 
@@ -1013,6 +1038,7 @@ class LibraryActivity : AppCompatActivity() {
                                     getString(R.string.library_new_sketchbook),
                                     getString(R.string.library_new_folder),
                                     getString(R.string.library_import),
+                                    getString(R.string.library_backup),
                                     getString(R.string.rotate_title),
                                 ),
                             ) { _, which ->
@@ -1020,6 +1046,9 @@ class LibraryActivity : AppCompatActivity() {
                                     0 -> promptNewSketchbook()
                                     1 -> promptNewFolder()
                                     2 -> pickImport()
+                                    3 -> startActivity(
+                                        Intent(this@LibraryActivity, BackupSettingsActivity::class.java),
+                                    )
                                     else -> promptRotate()
                                 }
                             }

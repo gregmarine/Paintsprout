@@ -27,10 +27,11 @@ import java.sql.DriverManager
 class IndexSchemaDriftTest {
 
     private fun exportedSchema(): JsonObject {
-        val candidates = listOf(
-            File("schemas/com.symmetricalpalmtree.paintsprout.data.index.IndexDatabase/1.json"),
-            File("app/schemas/com.symmetricalpalmtree.paintsprout.data.index.IndexDatabase/1.json"),
-        )
+        // Named for the version the code claims, so a bump that forgets to commit
+        // the new export fails here rather than comparing against the old shape.
+        val dir = "schemas/com.symmetricalpalmtree.paintsprout.data.index.IndexDatabase"
+        val name = "${SchemaSql.INDEX_SCHEMA_VERSION}.json"
+        val candidates = listOf(File("$dir/$name"), File("app/$dir/$name"))
         val file = candidates.firstOrNull { it.exists() }
             ?: error("Room schema not exported — looked in ${candidates.map { it.absolutePath }}")
         return Json.parseToJsonElement(file.readText()).jsonObject

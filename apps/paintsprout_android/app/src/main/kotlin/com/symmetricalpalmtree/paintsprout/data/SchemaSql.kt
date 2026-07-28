@@ -25,8 +25,14 @@ object SchemaSql {
     /** `.soil` document schema version (`PRAGMA user_version`). */
     const val SOIL_SCHEMA_VERSION = 1
 
-    /** Global index schema version. */
-    const val INDEX_SCHEMA_VERSION = 1
+    /**
+     * Global index schema version.
+     *
+     * **v2** added the three columns backup needs on an `objects` row: `params`
+     * (the backup config singleton's JSON), and the per-destination
+     * `lastBackedUpLocal` / `lastBackedUpDrive` stamps.
+     */
+    const val INDEX_SCHEMA_VERSION = 2
 
     /**
      * The *container's* format version, carried in `sketchbook_meta`. Not a
@@ -184,7 +190,7 @@ object SchemaSql {
             "`deletedAt` INTEGER, " +
             "`order` INTEGER, " + // reserved: user-draggable tree order
             "`pageCount` INTEGER, " +
-            "`flags` INTEGER, " + // bit 0 = encrypted
+            "`flags` INTEGER, " + // bit 0 = encrypted, bit 1 = excluded from backup
             "`keyScope` TEXT, " + // 'GLOBAL' | 'SKETCHBOOK'
             "`canvasKind` TEXT, " + // 'FULL_SCREEN' | 'PRINT'
             "`canvasW` REAL, " + // inches, PRINT only — the card's aspect ratio
@@ -192,7 +198,27 @@ object SchemaSql {
             "`refId` TEXT, " + // list_item -> member id
             "`sortOrder` INTEGER, " + // list_item -> position
             "`blob` BLOB, " + // cover bytes
+            "`params` TEXT, " + // backup_config singleton's JSON, and nothing else
+            "`lastBackedUpLocal` INTEGER, " + // per-destination stamps; see BackupPredicates
+            "`lastBackedUpDrive` INTEGER, " +
             "PRIMARY KEY(`id`))"
+
+    /**
+     * v1 → v2: the backup columns, appended.
+     *
+     * `ALTER TABLE … ADD COLUMN` appends, and Room emits its columns in field
+     * order, so a migrated index and a freshly created one end up with the same
+     * shape — which is what Room's on-open validation actually compares. A test
+     * builds both and asserts it.
+     *
+     * Additive DDL only, and no row rewrite: a migration that touches data is a
+     * migration that can fail halfway on somebody's device.
+     */
+    val INDEX_BACKUP_COLUMNS_DDL: List<String> = listOf(
+        "ALTER TABLE `$INDEX_OBJECTS_TABLE` ADD COLUMN `params` TEXT",
+        "ALTER TABLE `$INDEX_OBJECTS_TABLE` ADD COLUMN `lastBackedUpLocal` INTEGER",
+        "ALTER TABLE `$INDEX_OBJECTS_TABLE` ADD COLUMN `lastBackedUpDrive` INTEGER",
+    )
 
     /** "The live folders under this parent", "the live sketchbooks under this parent". */
     const val INDEX_OBJECTS_INDEX_DDL =

@@ -27,6 +27,17 @@ android {
             // Movink 11 (and every other sprout target device) is 64-bit ARM.
             abiFilters += "arm64-v8a"
         }
+
+        // Backup's Google Drive credentials, read from the environment at build
+        // time and never from a file in the repo. Set DRIVE_CLIENT_ID and
+        // DRIVE_CLIENT_SECRET in your shell profile — see docs/backup.md. A build
+        // without them compiles fine; the Drive slot says it isn't configured.
+        buildConfigField(
+            "String", "DRIVE_CLIENT_ID", "\"${System.getenv("DRIVE_CLIENT_ID") ?: ""}\"",
+        )
+        buildConfigField(
+            "String", "DRIVE_CLIENT_SECRET", "\"${System.getenv("DRIVE_CLIENT_SECRET") ?: ""}\"",
+        )
     }
 
     compileOptions {
@@ -70,6 +81,10 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
+
+    // The LOCAL backup destination: a folder tree the user picks, reached through
+    // the Storage Access Framework, so no storage permission is ever requested.
+    implementation("androidx.documentfile:documentfile:1.0.1")
 
     // Off-thread stroke bakes: Dispatchers.Default composites, Main swaps + invalidates.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")

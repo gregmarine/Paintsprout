@@ -12,6 +12,7 @@ import com.symmetricalpalmtree.paintsprout.data.DbProbe
 import com.symmetricalpalmtree.paintsprout.data.SoilFiles
 import com.symmetricalpalmtree.paintsprout.data.SwapRecovery
 import com.symmetricalpalmtree.paintsprout.data.WalConfig
+import com.symmetricalpalmtree.paintsprout.data.backup.RestoreEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -125,6 +126,12 @@ object IndexGate {
 
     private suspend fun open(context: Context): IndexStatus = try {
         val root = SoilFiles.storageRoot(context)
+
+        // Before even the swap repair: a restore killed mid-commit has the whole
+        // previous library — index and garden together — sitting under an aside
+        // *directory*, and putting it back is what makes the files below exist at
+        // all. A no-op on any ordinary launch.
+        runCatching { RestoreEngine.recoverInterrupted(context) }
 
         // ALWAYS FIRST. A swap that was killed mid-rename leaves the index absent
         // with its data under an aside name, and a probe of an absent file says
@@ -272,6 +279,23 @@ object IndexGate {
                 RawKeyCache(CryptoStores.derivedKeys(context))
                     .global(RawKeyCache.INDEX_FILE_ID, file, passphrase)
             }
+        }
+    }
+
+    /**
+     * Folds the WAL back into the index file and reclaims freed pages, without
+     * closing anything.
+     *
+     * The index is the one database that never closes, so it is also the one that
+     * never reaches a clean seal on its own. Backup calls this before it copies:
+     * a `paintsprout.db` whose recent writes are still out in a `-wal` the copy
+     * does not take is an index that restores a version of the library older than
+     * the sketchbooks beside it.
+     */
+    suspend fun checkpointAndVacuum() {
+        val db = database ?: return
+        withContext(Dispatchers.IO) {
+            runCatching { WalConfig.seal(db.openHelper.writableDatabase) }
         }
     }
 

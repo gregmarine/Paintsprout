@@ -145,4 +145,77 @@
     <string name="rotate_running">Re-encrypting…</string>
     <string name="rotate_done">%1$d sketchbooks re-encrypted</string>
     <string name="rotate_done_partial">%1$d re-encrypted, %2$d set aside</string>
+
+    <!-- Backup -->
+    <string name="library_backup">Backup…</string>
+    <string name="backup_title">Backup</string>
+    <string name="backup_back">Back</string>
+    <string name="backup_enabled">On</string>
+    <string name="backup_not_set">Not set up</string>
+    <string name="backup_local">Local folder</string>
+    <string name="backup_drive">Google Drive</string>
+
+    <string name="backup_device_name">This device\'s folder name</string>
+    <string name="backup_device_name_hint">The subfolder your backups go in, so several devices can share one place.</string>
+    <string name="backup_device_name_save">Save name</string>
+    <string name="backup_device_name_saved">Saved</string>
+    <string name="backup_device_name_invalid">That name has nothing usable in it</string>
+
+    <string name="backup_local_title">Local backup</string>
+    <string name="backup_local_hint">Any folder this device can write to — internal storage, an SD card, a USB drive.</string>
+    <string name="backup_choose_folder">Choose folder…</string>
+
+    <string name="backup_drive_title">Google Drive backup</string>
+    <string name="backup_drive_hint">Copies into a “Paintsprout Backups” folder in your Drive, in this device\'s subfolder.</string>
+    <string name="backup_drive_connect">Connect Google Drive</string>
+    <string name="backup_drive_disconnect">Disconnect</string>
+    <string name="backup_drive_connected">Connected as %1$s</string>
+    <string name="backup_drive_connected_generic">Google Drive (connected)</string>
+    <string name="backup_drive_not_connected">Not connected</string>
+    <string name="backup_drive_unavailable">Google Drive isn\'t connected: %1$s</string>
+    <string name="backup_drive_unconfigured">This build has no Drive credentials — see docs/backup.md.</string>
+    <string name="backup_drive_auth_failed">That didn\'t connect. %1$s</string>
+    <string name="backup_drive_no_refresh">Connected, but Drive didn\'t issue a lasting token — you may have to reconnect later.</string>
+
+    <string name="backup_now">Back up now</string>
+    <string name="backup_running_title">Backing up</string>
+    <string name="backup_preparing">Getting ready…</string>
+    <string name="backup_progress">%1$d of %2$d\n%3$s</string>
+    <string name="backup_last_run">Last backup: %1$s</string>
+    <string name="backup_last_run_never">Last backup: never</string>
+    <string name="backup_done_title">Backup finished</string>
+    <string name="backup_failed">That didn\'t back up. %1$s</string>
+    <string name="backup_no_destinations">Nothing is switched on to back up to.</string>
+    <string name="backup_summary_line">%1$s: %2$d copied</string>
+    <string name="backup_summary_failed">, %1$d failed</string>
+    <string name="backup_summary_skipped">, %1$d skipped</string>
+    <string name="backup_summary_index_ok">, library index copied</string>
+    <string name="backup_summary_index_failed">, LIBRARY INDEX FAILED</string>
+
+    <string name="backup_exclude">Leave out of backups</string>
+    <string name="backup_include">Include in backups</string>
+    <string name="backup_excluded_toast">“%1$s” will be left out of backups</string>
+    <string name="backup_included_toast">“%1$s” will be backed up again</string>
+
+    <string name="backup_restore_heading">Restore</string>
+    <string name="backup_restore_hint">Replace this device\'s library with a backup. You\'ll need that backup\'s recovery key to open it.</string>
+    <string name="backup_restore_action_long">Restore from a backup…</string>
+    <string name="backup_restore_action">Restore</string>
+    <string name="backup_restore_title">Restore from</string>
+    <string name="backup_scanning">Looking for backups…</string>
+    <string name="backup_none_found">No backups found in %1$s.</string>
+    <string name="backup_choose">Choose a backup</string>
+    <string name="backup_restore_confirm_title">Replace your library?</string>
+    <string name="backup_restore_confirm_body">Restore “%1$s” (%2$s)?\n\nThis replaces everything on this device — every sketchbook here now is removed. You\'ll need that backup\'s recovery key to open it, and this can\'t be undone.</string>
+    <string name="backup_restoring_title">Restoring</string>
+    <string name="backup_restore_progress">%1$d of %2$d…</string>
+    <string name="backup_restore_done_title">Restored</string>
+    <string name="backup_restore_done_body">%1$s restored. Paintsprout will restart so you can unlock the library.</string>
+    <string name="backup_restore_failed">That didn\'t restore. %1$s</string>
+    <string name="backup_restart">Restart</string>
+
+    <plurals name="backup_sketchbook_count">
+        <item quantity="one">%d sketchbook</item>
+        <item quantity="other">%d sketchbooks</item>
+    </plurals>
 </resources>

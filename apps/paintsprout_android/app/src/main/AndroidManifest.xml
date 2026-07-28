@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!--
+        Backup's Google Drive destination, and nothing else. The app draws, files
+        and encrypts entirely offline; this is the one feature that leaves the
+        device, and it does so only when the user presses "Back up now".
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <application
         android:name=".PaintsproutApplication"
         android:allowBackup="true"
@@ -46,6 +54,24 @@
             android:exported="false"
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density"
             android:screenOrientation="fullUser" />
+
+        <!-- Backup destinations, "Back up now", and restore. -->
+        <activity
+            android:name=".BackupSettingsActivity"
+            android:exported="false"
+            android:screenOrientation="fullUser"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
+            Google's OAuth consent page in a WebView. adjustResize because the
+            sign-in form has text fields, and no configChanges: this screen holds
+            nothing a rotation could lose.
+        -->
+        <activity
+            android:name=".DriveAuthActivity"
+            android:exported="false"
+            android:screenOrientation="fullUser"
+            android:windowSoftInputMode="adjustResize" />
 
         <!--
             Staged export copies are shared by content URI rather than by path:

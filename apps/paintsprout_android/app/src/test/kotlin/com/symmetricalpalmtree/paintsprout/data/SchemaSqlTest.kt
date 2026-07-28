@@ -209,10 +209,65 @@ class SchemaSqlTest {
     // --- Versions -----------------------------------------------------------
 
     @Test
-    fun `schema versions start at one`() {
+    fun `the document format and container have not needed a version yet`() {
         assertEquals(1, SchemaSql.SOIL_SCHEMA_VERSION)
-        assertEquals(1, SchemaSql.INDEX_SCHEMA_VERSION)
         assertEquals(1, SchemaSql.CONTAINER_FORMAT_VERSION)
+        // The index is at 2: backup added three columns to `objects`.
+        assertEquals(2, SchemaSql.INDEX_SCHEMA_VERSION)
+    }
+
+    // --- The v1 → v2 migration ----------------------------------------------
+
+    /**
+     * The index exactly as v1 created it. Frozen on purpose — this is what is on a
+     * device that has not run this build yet, and it must not follow the constants
+     * forward.
+     */
+    private val indexObjectsV1 =
+        "CREATE TABLE IF NOT EXISTS `objects` (" +
+            "`id` TEXT NOT NULL, `type` TEXT NOT NULL, `name` TEXT NOT NULL, `parentId` TEXT, " +
+            "`createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `deletedAt` INTEGER, " +
+            "`order` INTEGER, `pageCount` INTEGER, `flags` INTEGER, `keyScope` TEXT, " +
+            "`canvasKind` TEXT, `canvasW` REAL, `canvasH` REAL, `refId` TEXT, " +
+            "`sortOrder` INTEGER, `blob` BLOB, PRIMARY KEY(`id`))"
+
+    /**
+     * The shape is what Room validates on open, so this is the test that decides
+     * whether a device that upgrades can still open its library at all.
+     */
+    @Test
+    fun `a migrated v1 index has the same shape as a fresh v2 one`() {
+        exec(indexObjectsV1)
+        SchemaSql.INDEX_BACKUP_COLUMNS_DDL.forEach(::exec)
+        val migrated = columns(SchemaSql.INDEX_OBJECTS_TABLE)
+
+        close()
+        open()
+        exec(SchemaSql.INDEX_OBJECTS_DDL)
+        val fresh = columns(SchemaSql.INDEX_OBJECTS_TABLE)
+
+        assertEquals(fresh, migrated)
+    }
+
+    /** Additive only. A migration that rewrites rows is one that can fail halfway. */
+    @Test
+    fun `the migration adds columns and touches nothing else`() {
+        exec(indexObjectsV1)
+        exec(
+            "INSERT INTO `objects` (`id`,`type`,`name`,`parentId`,`createdAt`,`updatedAt`,`flags`) " +
+                "VALUES ('b','sketchbook','Rope and tide',NULL,7,9,1)",
+        )
+        SchemaSql.INDEX_BACKUP_COLUMNS_DDL.forEach(::exec)
+
+        val row = rows("SELECT * FROM `objects`").single()
+        assertEquals("Rope and tide", row["name"])
+        assertEquals("9", row["updatedAt"])
+        assertEquals("1", row["flags"])
+        // NULL in all three reads as "never backed up, not excluded" — which is
+        // exactly right for a library the first run has not seen.
+        assertEquals(null, row["params"])
+        assertEquals(null, row["lastBackedUpLocal"])
+        assertEquals(null, row["lastBackedUpDrive"])
     }
 
     /** Both tables are named for what they hold. A reader finds them at fixed names. */
