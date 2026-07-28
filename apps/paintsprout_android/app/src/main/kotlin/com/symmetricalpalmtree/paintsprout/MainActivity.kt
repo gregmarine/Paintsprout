@@ -22,7 +22,6 @@ import android.widget.GridLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.res.ResourcesCompat
 import androidx.core.view.doOnLayout
@@ -111,21 +110,11 @@ class MainActivity : AppCompatActivity() {
     // width on any calibrated screen.
     private val sizes = Tool.values().associateWith { it.defaultSizeMm }.toMutableMap()
 
-    private val calibrationLauncher =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == RESULT_OK) {
-                val ppi = result.data?.getFloatExtra(CalibrationActivity.EXTRA_PPI, 0f) ?: 0f
-                if (ppi > 0f) {
-                    // Sizes are stored in mm; re-push at the new PPI so brush widths
-                    // stay their real physical size.
-                    applySizeToCanvas()
-                    Snackbar.make(
-                        binding.root, "Screen calibrated: ${ppi.roundToInt()} PPI",
-                        Snackbar.LENGTH_SHORT,
-                    ).show()
-                }
-            }
-        }
+    // Calibration is launched from the library now, not from here — it is a fact
+    // about the screen rather than about the drawing. Sizes are stored in mm and
+    // `applySizeToCanvas` reads the PPI fresh every time it runs, including at
+    // editor setup and on every tool change, so a screen measured between
+    // sessions is picked up without anything having to be told about it.
 
     // Rail views kept for state updates.
     private val toolButtons = mutableMapOf<Tool, ImageButton>()
@@ -1551,9 +1540,6 @@ class MainActivity : AppCompatActivity() {
         if (Focus.SHOW_SAVE_PNG) rail.addView(iconButton(R.drawable.ic_save, "Save PNG") { save() })
         canvasSizeBtn = iconButton(R.drawable.ic_canvas_size, "Canvas size") { pickCanvasSize() }
         if (Focus.SHOW_CANVAS_SIZE) rail.addView(canvasSizeBtn)
-        if (Focus.SHOW_CALIBRATE) {
-            rail.addView(iconButton(R.drawable.ic_calibrate, "Calibrate screen") { openCalibration() })
-        }
         if (Focus.SHOW_CLEAR) rail.addView(iconButton(R.drawable.ic_clear, "Clear") { confirmClear() })
         if (Focus.SHOW_HIDE_RAIL) {
             rail.addView(iconButton(R.drawable.ic_hide, "Hide toolbar") { setRailVisible(false) })
@@ -2463,10 +2449,6 @@ class MainActivity : AppCompatActivity() {
             )
             Snackbar.make(binding.root, msg, Snackbar.LENGTH_SHORT).show()
         }
-    }
-
-    private fun openCalibration() {
-        calibrationLauncher.launch(Intent(this, CalibrationActivity::class.java))
     }
 
     // --- Canvas size --------------------------------------------------------

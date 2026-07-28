@@ -116,20 +116,13 @@ object Focus {
     /** The sheet's true print size. A piece has physical dimensions. */
     const val SHOW_CANVAS_SIZE = true
 
-    /**
-     * Re-measuring the screen against a reference card.
-     *
-     * Off because both tablets are measured, not because calibration is a
-     * one-time thing — it is saved per device and does not travel. A new tablet
-     * arrives uncalibrated and says nothing about it: `effectivePpi` quietly
-     * falls back to whatever the OEM reports, and every physical size in the app
-     * is wrong by however wrong that figure is. The Movink 14 Pro reported 319.6
-     * PPI for a panel that measured 242.7 — a third too big, on the one number
-     * the whole 1:1 goal rests on.
-     *
-     * So: turn this back on when a new device appears, calibrate, turn it off.
-     */
-    const val SHOW_CALIBRATE = false
+    // Calibration used to be a flag here, shown on the rail and turned back on
+    // whenever a new tablet appeared. It is not a rail control: it says nothing
+    // about what the drawing is for, and hiding it made the one setting the whole
+    // 1:1 goal rests on reachable only by editing this file and rebuilding —
+    // which a release build cannot be talked into at all, since `run-as` refuses
+    // a non-debuggable package. It lives on the library screen now, always
+    // visible, because a tablet that has never been measured has no way to say so.
 
     /** Back to bare paper, behind a confirm. Undoable. */
     const val SHOW_CLEAR = true

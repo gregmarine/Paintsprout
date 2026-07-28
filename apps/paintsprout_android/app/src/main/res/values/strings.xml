@@ -146,6 +146,9 @@
     <string name="rotate_done">%1$d sketchbooks re-encrypted</string>
     <string name="rotate_done_partial">%1$d re-encrypted, %2$d set aside</string>
 
+    <string name="library_calibrate">Calibrate…</string>
+    <string name="library_calibrated">Screen calibrated: %1$d PPI</string>
+
     <!-- Backup -->
     <string name="library_backup">Backup…</string>
     <string name="backup_title">Backup</string>

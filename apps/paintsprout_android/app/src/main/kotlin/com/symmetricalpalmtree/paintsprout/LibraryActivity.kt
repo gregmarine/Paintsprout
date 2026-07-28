@@ -460,6 +460,23 @@ class LibraryActivity : AppCompatActivity() {
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
     ) { uri -> if (uri != null) beginImport(uri) }
 
+    /**
+     * Calibration saves itself before it returns, so nothing here has to store
+     * anything — the result is read only to say out loud that it worked.
+     *
+     * Which is the whole point of confirming it: an uncalibrated screen says
+     * nothing about being uncalibrated. It quietly uses whatever PPI the OEM
+     * reports, and on one of these tablets that is a third too high, so every
+     * physical size in the app is wrong and looks deliberate.
+     */
+    private val calibrationLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode != RESULT_OK) return@registerForActivityResult
+        val ppi = result.data?.getFloatExtra(CalibrationActivity.EXTRA_PPI, 0f) ?: 0f
+        if (ppi > 0f) toast(getString(R.string.library_calibrated, ppi.roundToInt()))
+    }
+
     private fun beginImport(uri: Uri) {
         lifecycleScope.launch {
             when (val step = runCatching { SoilImport.inspect(this@LibraryActivity, uri) }.getOrNull()) {
@@ -1028,6 +1045,26 @@ class LibraryActivity : AppCompatActivity() {
                         setOnClickListener { openScratchpad() }
                     },
             )
+            // Backup and Calibrate are the library's own business rather than a
+            // drawing's, which is why they are here and not on the rail: one is
+            // about the whole shelf, the other about the screen the shelf is on,
+            // and neither is a thing you reach for mid-stroke.
+            addView(
+                MaterialButton(this@LibraryActivity, null, com.google.android.material.R.attr.borderlessButtonStyle)
+                    .apply {
+                        text = getString(R.string.library_backup)
+                        setOnClickListener {
+                            startActivity(Intent(this@LibraryActivity, BackupSettingsActivity::class.java))
+                        }
+                    },
+            )
+            addView(
+                MaterialButton(this@LibraryActivity, null, com.google.android.material.R.attr.borderlessButtonStyle)
+                    .apply {
+                        text = getString(R.string.library_calibrate)
+                        setOnClickListener { calibrationLauncher.launch(Intent(this@LibraryActivity, CalibrationActivity::class.java)) }
+                    },
+            )
             addView(
                 MaterialButton(this@LibraryActivity).apply {
                     text = getString(R.string.library_new)
@@ -1038,7 +1075,6 @@ class LibraryActivity : AppCompatActivity() {
                                     getString(R.string.library_new_sketchbook),
                                     getString(R.string.library_new_folder),
                                     getString(R.string.library_import),
-                                    getString(R.string.library_backup),
                                     getString(R.string.rotate_title),
                                 ),
                             ) { _, which ->
@@ -1046,9 +1082,6 @@ class LibraryActivity : AppCompatActivity() {
                                     0 -> promptNewSketchbook()
                                     1 -> promptNewFolder()
                                     2 -> pickImport()
-                                    3 -> startActivity(
-                                        Intent(this@LibraryActivity, BackupSettingsActivity::class.java),
-                                    )
                                     else -> promptRotate()
                                 }
                             }
