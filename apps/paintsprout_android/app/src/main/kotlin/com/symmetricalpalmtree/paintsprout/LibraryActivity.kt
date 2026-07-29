@@ -327,9 +327,7 @@ class LibraryActivity : AppCompatActivity() {
             toast(getString(R.string.import_locked, minutes))
             return
         }
-        val field = EditText(this).apply {
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        }
+        val field = PassphraseField(this)
         MaterialAlertDialogBuilder(this)
             .setTitle(book.name)
             .setMessage(R.string.keying_unlock_body)
@@ -338,7 +336,7 @@ class LibraryActivity : AppCompatActivity() {
             .setPositiveButton(R.string.import_unlock) { _, _ ->
                 lifecycleScope.launch {
                     val ok = runCatching {
-                        Sketchbooks.unlock(this@LibraryActivity, book.id, field.text.toString())
+                        Sketchbooks.unlock(this@LibraryActivity, book.id, field.value)
                     }.getOrDefault(false)
                     if (ok) {
                         limiter.recordSuccess(book.id)
@@ -507,10 +505,7 @@ class LibraryActivity : AppCompatActivity() {
             SoilImport.discard(step.staged)
             return
         }
-        val field = EditText(this).apply {
-            hint = getString(R.string.import_unlock)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        }
+        val field = PassphraseField(this).apply { hint = getString(R.string.import_unlock) }
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.import_unlock_title)
             .setMessage(R.string.import_unlock_body)
@@ -519,7 +514,7 @@ class LibraryActivity : AppCompatActivity() {
             .setOnCancelListener { SoilImport.discard(step.staged) }
             .setPositiveButton(R.string.import_unlock) { _, _ ->
                 lifecycleScope.launch {
-                    when (val next = SoilImport.unlock(this@LibraryActivity, step.staged, field.text.toString())) {
+                    when (val next = SoilImport.unlock(this@LibraryActivity, step.staged, field.value)) {
                         is SoilImport.Step.Ready -> resolve(next)
                         is SoilImport.Step.NeedsKey -> {
                             toast(getString(R.string.import_wrong_key))
@@ -651,15 +646,13 @@ class LibraryActivity : AppCompatActivity() {
     }
 
     private fun askPassphrase(titleRes: Int, onEntered: (String) -> Unit) {
-        val field = EditText(this).apply {
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        }
+        val field = PassphraseField(this)
         MaterialAlertDialogBuilder(this)
             .setTitle(titleRes)
             .setView(padded(field))
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(android.R.string.ok) { _, _ ->
-                val entered = field.text.toString()
+                val entered = field.value
                 if (entered.isNotBlank()) onEntered(entered)
             }
             .show()
@@ -688,16 +681,14 @@ class LibraryActivity : AppCompatActivity() {
      * recovery key, so it is worth saying so before it happens.
      */
     private fun promptRotate() {
-        val field = EditText(this).apply {
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        }
+        val field = PassphraseField(this)
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.rotate_title)
             .setMessage(R.string.rotate_body)
             .setView(padded(field))
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.rotate_action) { _, _ ->
-                val entered = field.text.toString()
+                val entered = field.value
                 if (entered.isBlank()) return@setPositiveButton
                 lifecycleScope.launch {
                     toast(getString(R.string.rotate_running))

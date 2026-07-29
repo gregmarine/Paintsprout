@@ -7,12 +7,9 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
-import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.view.inputmethod.EditorInfo
-import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -47,7 +44,7 @@ class BootstrapActivity : AppCompatActivity() {
     private lateinit var title: TextView
     private lateinit var message: TextView
     private lateinit var spinner: ProgressBar
-    private lateinit var passphrase: EditText
+    private lateinit var passphrase: PassphraseField
     private lateinit var primary: MaterialButton
     private lateinit var secondary: MaterialButton
 
@@ -167,14 +164,14 @@ class BootstrapActivity : AppCompatActivity() {
     }
 
     private fun attemptUnlock() {
-        val entered = passphrase.text.toString()
+        val entered = passphrase.value
         if (entered.isEmpty()) return
         showBusy()
         lifecycleScope.launch {
             val result = IndexGate.unlock(this@BootstrapActivity, entered)
             render(result)
             if (result is IndexStatus.NeedsUnlock) {
-                passphrase.setText("")
+                passphrase.clear()
                 // A lockout has its own countdown message; a plain wrong answer
                 // says so, rather than repeating the neutral instructions.
                 if (result.lockedUntil <= System.currentTimeMillis()) {
@@ -263,22 +260,11 @@ class BootstrapActivity : AppCompatActivity() {
             visibility = View.GONE
         }
         spinner = ProgressBar(this).apply { isIndeterminate = true }
-        passphrase = EditText(this).apply {
+        passphrase = PassphraseField(this).apply {
             hint = getString(R.string.bootstrap_unlock_hint)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            gravity = Gravity.CENTER
             visibility = View.GONE
-            // Submitting from the keyboard is the natural gesture here, and it also
-            // means the flow never depends on the button being reachable.
-            imeOptions = EditorInfo.IME_ACTION_GO
-            setOnEditorActionListener { _, actionId, _ ->
-                if (actionId == EditorInfo.IME_ACTION_GO && primary.isEnabled) {
-                    attemptUnlock()
-                    true
-                } else {
-                    false
-                }
-            }
+            centre()
+            onSubmit { if (primary.isEnabled) attemptUnlock() }
         }
         primary = MaterialButton(this).apply { visibility = View.GONE }
         secondary = MaterialButton(this, null, com.google.android.material.R.attr.borderlessButtonStyle)
@@ -291,7 +277,17 @@ class BootstrapActivity : AppCompatActivity() {
             addView(title, lp())
             addView(message, lp(topMargin = pad(12)))
             addView(spinner, lp(topMargin = pad(24)).also { it.gravity = Gravity.CENTER })
-            addView(passphrase, lp(topMargin = pad(24)))
+            // Wide enough that a revealed recovery key fits on one line — the
+            // point of revealing it is comparing it against what it was copied
+            // from, and a key that wraps mid-group is harder to check than dots.
+            addView(
+                passphrase,
+                LinearLayout.LayoutParams(pad(RECOVERY_KEY_FIELD_DP), ViewGroup.LayoutParams.WRAP_CONTENT)
+                    .apply {
+                        gravity = Gravity.CENTER_HORIZONTAL
+                        topMargin = pad(24)
+                    },
+            )
             addView(primary, lp(topMargin = pad(24)))
             addView(secondary, lp(topMargin = pad(4)))
         }
@@ -306,4 +302,9 @@ class BootstrapActivity : AppCompatActivity() {
     }
 
     private fun pad(dp: Int): Int = (dp * resources.displayMetrics.density).roundToInt()
+
+    private companion object {
+        /** `PSPT-` plus eight groups of four, monospaced, with room for the eye. */
+        const val RECOVERY_KEY_FIELD_DP = 460
+    }
 }
