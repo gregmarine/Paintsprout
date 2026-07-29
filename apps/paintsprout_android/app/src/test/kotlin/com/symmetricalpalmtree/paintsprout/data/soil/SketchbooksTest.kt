@@ -67,4 +67,26 @@ class SketchbooksTest {
             assertEquals(preset.label, back.label)
         }
     }
+
+    /**
+     * A frame stores pixels where a print stores inches, which is why the kind is
+     * read before the numbers are. Reading 480 × 800 as inches would make a card
+     * forty feet wide, and reading a 7 × 5 print as pixels would make it a speck.
+     */
+    @Test
+    fun `every frame round-trips as its pixel grid`() {
+        for (frame in CanvasSize.FRAMES) {
+            assertEquals("FRAME", Sketchbooks.canvasKindOf(frame))
+            val (w, h) = Sketchbooks.canvasDimsOf(frame)
+            assertEquals(frame.pxW.toFloat(), w)
+            assertEquals(frame.pxH.toFloat(), h)
+            assertEquals(frame, Sketchbooks.canvasSizeOf(row("FRAME", w, h)))
+        }
+    }
+
+    @Test
+    fun `a print stores inches and a full screen stores nothing`() {
+        assertEquals(7f to 5f, Sketchbooks.canvasDimsOf(CanvasSize.Print(7f, 5f, "5 × 7 in")))
+        assertEquals(null to null, Sketchbooks.canvasDimsOf(CanvasSize.FullScreen))
+    }
 }

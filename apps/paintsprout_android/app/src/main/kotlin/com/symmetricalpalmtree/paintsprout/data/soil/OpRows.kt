@@ -22,6 +22,7 @@ import com.symmetricalpalmtree.paintsprout.paint.LayerOpacityOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerOrderOp
 import com.symmetricalpalmtree.paintsprout.paint.LayerVisibilityOp
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
+import com.symmetricalpalmtree.paintsprout.paint.PageSpace
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
 import com.symmetricalpalmtree.paintsprout.paint.PasteOp
 import com.symmetricalpalmtree.paintsprout.paint.StrokeOp
@@ -29,6 +30,7 @@ import com.symmetricalpalmtree.paintsprout.paint.Recipe
 import com.symmetricalpalmtree.paintsprout.paint.Stroke
 import com.symmetricalpalmtree.paintsprout.paint.SurfaceOp
 import com.symmetricalpalmtree.paintsprout.paint.Tool
+import kotlin.math.roundToInt
 
 /**
  * Paint ops, as rows.
@@ -47,16 +49,32 @@ object OpRows {
 
     // --- Strokes ------------------------------------------------------------
 
-    fun strokeRow(stroke: Stroke): SoilObject = SoilObject(
+    /**
+     * [space] carries the stroke back into the space the file is written in,
+     * which is the one the page was created in and keeps for life. It is the
+     * identity for a page being written by the tablet that made it — the usual
+     * case — and the inverse of the load-time fit otherwise. Writing in the file's
+     * own space rather than the current device's is what lets a page be opened
+     * anywhere without ever rewriting the marks already in it.
+     */
+    fun strokeRow(stroke: Stroke, space: PageSpace = PageSpace.IDENTITY): SoilObject = SoilObject(
         id = "",
         parentId = "",
         type = SoilType.STROKE,
         tool = stroke.tool.name,
         color = ArgbHex.encode(stroke.color),
-        strokeWidth = stroke.baseWidth,
+        strokeWidth = space.length(stroke.baseWidth),
         seed = stroke.seed.toLong(),
         flags = if (stroke.water) SoilFlags.STROKE_WATER else 0,
-        blob = StrokeCodec.encode(stroke.points),
+        blob = StrokeCodec.encode(
+            if (space.isIdentity) {
+                stroke.points
+            } else {
+                stroke.points.map {
+                    it.copy(position = space.point(it.position), width = space.length(it.width))
+                }
+            },
+        ),
     )
 
     /**
@@ -335,7 +353,8 @@ object OpRows {
      * A child of the stroke, and only written for a stroke that actually went
      * wet — a dry tool has none, and a wash that dried fully has no freeze.
      */
-    fun wetStateRow(stroke: Stroke): SoilObject? {
+    /** [space] is the **buffer** one — the crop is buffer px, unlike the points. */
+    fun wetStateRow(stroke: Stroke, space: PageSpace = PageSpace.IDENTITY): SoilObject? {
         val crop = stroke.wetCrop
         val schedule = stroke.wetSchedule
         val freeze = stroke.dryFreeze
@@ -347,7 +366,14 @@ object OpRows {
             blob = WetStateCodec.encode(
                 WetStateCodec.WetState(
                     schedule = schedule.toIntArray(),
-                    crop = crop?.let { intArrayOf(it.left, it.top, it.right, it.bottom) },
+                    crop = crop?.let {
+                        intArrayOf(
+                            space.x(it.left.toFloat()).roundToInt(),
+                            space.y(it.top.toFloat()).roundToInt(),
+                            space.x(it.right.toFloat()).roundToInt(),
+                            space.y(it.bottom.toFloat()).roundToInt(),
+                        )
+                    },
                     dryFreeze = freeze,
                 ),
             ),

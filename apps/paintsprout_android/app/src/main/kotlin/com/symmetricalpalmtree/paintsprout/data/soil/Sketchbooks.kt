@@ -16,6 +16,7 @@ import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.util.Random
 import java.util.UUID
+import kotlin.math.roundToInt
 
 /**
  * A sketchbook as the user means it: a file *and* a row in the library.
@@ -36,7 +37,7 @@ object Sketchbooks {
     ): IndexObject = withContext(Dispatchers.IO) {
         val index = IndexGate.awaitReady()
         val id = UUID.randomUUID().toString()
-        val print = canvasSize as? CanvasSize.Print
+        val (w, h) = canvasDimsOf(canvasSize)
 
         // The file first: a row pointing at a document that failed to be created
         // is the worse of the two half-states.
@@ -45,8 +46,8 @@ object Sketchbooks {
             repositoryFor(soil, id).createDocument(
                 title = name,
                 canvasKind = canvasKindOf(canvasSize),
-                canvasWidthInches = print?.wIn,
-                canvasHeightInches = print?.hIn,
+                canvasWidth = w,
+                canvasHeight = h,
                 surfaceKind = surface.name,
                 surfaceSeed = Random().nextLong(),
             )
@@ -59,8 +60,8 @@ object Sketchbooks {
             parentId = parentId,
             id = id,
             canvasKind = canvasKindOf(canvasSize),
-            canvasW = print?.wIn,
-            canvasH = print?.hIn,
+            canvasW = w,
+            canvasH = h,
             keyScope = KeyScope.GLOBAL,
         ).also {
             index.setPageCount(id, 1)
@@ -138,27 +139,37 @@ object Sketchbooks {
 
     fun canvasKindOf(size: CanvasSize): String = when (size) {
         is CanvasSize.Print -> "PRINT"
+        is CanvasSize.Frame -> "FRAME"
         else -> "FULL_SCREEN"
     }
 
-    fun canvasSizeOf(row: IndexObject): CanvasSize {
-        val w = row.canvasW
-        val h = row.canvasH
-        return if (row.canvasKind == "PRINT" && w != null && h != null) {
-            CanvasSize.Print(w, h, CanvasSize.PRESETS.firstOrNull { it.wIn == w && it.hIn == h }?.label ?: "$w × $h in")
-        } else {
-            CanvasSize.FullScreen
-        }
+    /**
+     * The pair of numbers stored beside [canvasKindOf], or nulls for a full screen.
+     *
+     * The unit follows the kind, which is why the kind is what gets read first:
+     * inches for a PRINT, pixels for a FRAME. A frame has no size in inches that
+     * would survive the round trip — its physical size is a property of the panel
+     * it hangs in, and its pixel grid is the thing the artwork actually occupies.
+     */
+    fun canvasDimsOf(size: CanvasSize): Pair<Float?, Float?> = when (size) {
+        is CanvasSize.Print -> size.wIn to size.hIn
+        is CanvasSize.Frame -> size.pxW.toFloat() to size.pxH.toFloat()
+        else -> null to null
     }
 
+    fun canvasSizeOf(row: IndexObject): CanvasSize =
+        canvasSizeOf(row.canvasKind, row.canvasW, row.canvasH)
+
     /** The same reading, from the document's own root row rather than the index. */
-    fun canvasSizeOfRoot(root: SoilObject): CanvasSize {
-        val w = root.width
-        val h = root.height
-        return if (root.kind == "PRINT" && w != null && h != null) {
-            CanvasSize.Print(w, h, CanvasSize.PRESETS.firstOrNull { it.wIn == w && it.hIn == h }?.label ?: "$w × $h in")
-        } else {
-            CanvasSize.FullScreen
+    fun canvasSizeOfRoot(root: SoilObject): CanvasSize =
+        canvasSizeOf(root.kind, root.width, root.height)
+
+    private fun canvasSizeOf(kind: String?, w: Float?, h: Float?): CanvasSize {
+        if (w == null || h == null) return CanvasSize.FullScreen
+        return when (kind) {
+            "PRINT" -> CanvasSize.printOf(w, h)
+            "FRAME" -> CanvasSize.frameOf(w.roundToInt(), h.roundToInt())
+            else -> CanvasSize.FullScreen
         }
     }
 

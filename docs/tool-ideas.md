@@ -41,7 +41,7 @@ physically rotate the tablet instead.
 - ✅ **Color:** HSV wheel + swatches
 - ✅ **Editable shape tools:** line, arc, polyline, polyarc (handle-edit before bake)
 - ✅ **Export:** PNG to device gallery
-- ✅ **True-size (1:1) output:** screen calibration to real PPI (physical-reference match), brush/tool sizes in millimetres, real-size canvas presets (drawn 1:1, centred in a mat), and DPI-stamped PNG that prints at the exact on-screen physical size — verified on paper
+- ✅ **True-size (1:1) output:** screen calibration to real PPI (physical-reference match), brush/tool sizes in millimetres, real-size canvas presets (drawn 1:1, centred in a mat), and DPI-stamped PNG that prints at the exact on-screen physical size — verified on paper. E-ink frame canvases are the deliberate exception: pixel-exact to the frame's grid rather than true-size to the glass
 - ✅ **Input:** pressure + tilt, palm rejection, stylus-only
 
 ---
@@ -169,7 +169,8 @@ Biggest structural gap. Two layers today (surface, paint); paint layer is flat r
 | ⬜ | Import an image | As a layer or reference |
 | ⬜ | Reference panel | Floating window with a source photo |
 | ✅ | Print-accurate export (1:1) | Tool sizes in mm + DPI-stamped PNG (pHYs) → prints at the exact on-screen physical size. Needs a calibrated screen |
-| ✅ | Canvas presets | Full screen + real-size print presets (4×4, 4×6, 5×5, 5×7, 8×10) filtered to what fits the calibrated screen, plus custom. Drawn 1:1 (no zoom), centred in a mat, drawing constrained to the sheet |
+| ✅ | Canvas presets | Custom, real-size print presets (4×4, 4×6, 5×7) filtered to what fits the calibrated screen, the largest 2:3 sheet that fits, and full screen. Drawn 1:1 (no zoom), centred in a mat, drawing constrained to the sheet |
+| ✅ | E-ink frame canvases | Spectra 6 7.3 (480×800) and 13.3 (1200×1600): the buffer is the frame's own pixel grid, the sheet is shown at the size it hangs (shrunk if the panel is too small), and the PNG carries the frame's DPI rather than the tablet's. Landscape like every other sheet, though the panels are specified portrait. The one canvas measured in pixels instead of inches |
 | ⬜ | Crop / resize / trim / straighten | |
 | ⬜ | Export formats | JPG/WebP, layered ORA/PSD, SVG for vector shapes |
 | ⬜ | Time-lapse recording | Procreate headline feature; people share the videos |

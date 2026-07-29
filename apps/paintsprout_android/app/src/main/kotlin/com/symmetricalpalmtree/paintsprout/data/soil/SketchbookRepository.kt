@@ -52,8 +52,10 @@ class SketchbookRepository(
     fun ensureRoot(
         title: String = "",
         canvasKind: String? = null,
-        canvasWidthInches: Float? = null,
-        canvasHeightInches: Float? = null,
+        // Unit follows the kind — inches for a PRINT, pixels for a FRAME. See
+        // Sketchbooks.canvasDimsOf, which is the only thing that fills these in.
+        canvasWidth: Float? = null,
+        canvasHeight: Float? = null,
     ): SoilObject {
         store.byId(rootId)?.let { return it }
         val at = now()
@@ -65,8 +67,8 @@ class SketchbookRepository(
             updatedAt = at,
             text = title,
             kind = canvasKind,
-            width = canvasWidthInches,
-            height = canvasHeightInches,
+            width = canvasWidth,
+            height = canvasHeight,
         )
         store.insert(root)
         return root
@@ -81,12 +83,12 @@ class SketchbookRepository(
     fun createDocument(
         title: String,
         canvasKind: String? = null,
-        canvasWidthInches: Float? = null,
-        canvasHeightInches: Float? = null,
+        canvasWidth: Float? = null,
+        canvasHeight: Float? = null,
         surfaceKind: String? = null,
         surfaceSeed: Long? = null,
     ): SoilObject = store.transaction {
-        ensureRoot(title, canvasKind, canvasWidthInches, canvasHeightInches)
+        ensureRoot(title, canvasKind, canvasWidth, canvasHeight)
         ensurePalette()
         addPage(surfaceKind = surfaceKind, surfaceSeed = surfaceSeed)
     }
@@ -123,8 +125,8 @@ class SketchbookRepository(
         plainColor: String? = null,
         surfaceSeed: Long? = null,
         surfaceParams: Params = Params.EMPTY,
-        bufferWidth: Float? = null,
-        bufferHeight: Float? = null,
+        drawnWidth: Float? = null,
+        drawnHeight: Float? = null,
         atIndex: Int? = null,
     ): SoilObject = store.transaction {
         val at = now()
@@ -139,8 +141,8 @@ class SketchbookRepository(
             color = plainColor,
             seed = surfaceSeed,
             params = surfaceParams.encode(),
-            width = bufferWidth,
-            height = bufferHeight,
+            width = drawnWidth,
+            height = drawnHeight,
         )
         store.insert(page)
         addLayer(page.id)
@@ -193,9 +195,14 @@ class SketchbookRepository(
         return committedOps(layer.id).lastOrNull { it.type == SoilType.SURFACE_OP } ?: page
     }
 
-    fun setPageSize(pageId: String, bufferWidth: Float, bufferHeight: Float) {
+    /**
+     * Records the view size a page's marks are in — the space the file keeps for
+     * that page's whole life. Written once, when the page takes its first mark;
+     * see `DocumentSession.stampSpaceIfUnclaimed` for why never again.
+     */
+    fun setPageSize(pageId: String, drawnWidth: Float, drawnHeight: Float) {
         val page = store.byId(pageId) ?: return
-        store.upsert(page.copy(width = bufferWidth, height = bufferHeight, updatedAt = now()))
+        store.upsert(page.copy(width = drawnWidth, height = drawnHeight, updatedAt = now()))
     }
 
     /**

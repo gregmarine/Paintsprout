@@ -29,6 +29,7 @@ import com.symmetricalpalmtree.paintsprout.paint.LayerVisibilityOp
 import com.symmetricalpalmtree.paintsprout.paint.StackEntry
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
+import com.symmetricalpalmtree.paintsprout.paint.PageSpace
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
 import com.symmetricalpalmtree.paintsprout.paint.PasteOp
 import com.symmetricalpalmtree.paintsprout.paint.Pot
@@ -97,6 +98,56 @@ class DocumentSession private constructor(
     @Volatile
     var isDirty: Boolean = false
         private set
+
+    // --- The page's own coordinate space -------------------------------------
+
+    /**
+     * How to get from the space this device is drawing in back to the one the
+     * page's rows are written in — the inverse of the fit applied on load.
+     *
+     * A page keeps the space it was created in for life. That is what makes the
+     * conversion a pair of multiplications on the way in and out rather than a
+     * bulk rewrite of every stroke the first time a sketchbook is opened on
+     * another tablet, and it means the marks in the file and the size stamped
+     * beside them can never disagree, however a session ends.
+     *
+     * [toFileView] is for stroke geometry (view px), [toFileBuffer] for the wet
+     * crop (buffer px) — see [PageRemap].
+     */
+    @Volatile
+    var toFileView: PageSpace = PageSpace.IDENTITY
+
+    @Volatile
+    var toFileBuffer: PageSpace = PageSpace.IDENTITY
+
+    /**
+     * The view size to stamp on a page that has never carried one, set by whoever
+     * owns the canvas. Null before a canvas exists, in which case nothing is
+     * stamped and the page stays as portable as it was.
+     */
+    @Volatile
+    var drawnSize: Pair<Int, Int>? = null
+
+    /**
+     * Whether the current page already held marks when it was opened.
+     *
+     * An empty page can be stamped with this device's size the moment it takes its
+     * first mark, because that is demonstrably the space the mark is in. A page
+     * that arrived with marks and no stamp cannot: its geometry is in some earlier
+     * device's space and claiming otherwise would move the existing artwork on the
+     * tablet that drew it, which is worse than leaving it alone.
+     */
+    private var pageArrivedWithOps = false
+
+    /** Stamps the page's space if it has none and has earned one. */
+    private fun stampSpaceIfUnclaimed() {
+        if (pageArrivedWithOps) return
+        val (w, h) = drawnSize ?: return
+        val page = repo.pages().firstOrNull { it.id == pageId } ?: return
+        if (page.width != null && page.height != null) return
+        repo.setPageSize(pageId, w.toFloat(), h.toFloat())
+        pageArrivedWithOps = true // stamped once; later ops are already in this space
+    }
 
     // --- Recording ----------------------------------------------------------
 
@@ -195,16 +246,17 @@ class DocumentSession private constructor(
     private fun target(op: PaintOp): String = op.layerId.ifEmpty { layerId }
 
     private fun write(op: PaintOp) {
+        stampSpaceIfUnclaimed()
         when (op) {
             is StrokeOp -> {
-                val row = repo.appendOp(target(op), OpRows.strokeRow(op.stroke))
+                val row = repo.appendOp(target(op), OpRows.strokeRow(op.stroke, toFileView))
                 // The frisket and the wet state are properties of this one stroke,
                 // not steps in the history, so they hang off it as children and
                 // replay with it.
                 op.clip?.let { clip ->
                     maskOf(clip)?.let { repo.attach(row.id, OpRows.clipRow(it, DOWNSAMPLE)) }
                 }
-                OpRows.wetStateRow(op.stroke)?.let { repo.attach(row.id, it) }
+                OpRows.wetStateRow(op.stroke, toFileBuffer)?.let { repo.attach(row.id, it) }
             }
 
             is FillOp -> maskOf(op.mask)?.let {
@@ -217,7 +269,7 @@ class DocumentSession private constructor(
 
             is MoveOp -> maskOf(op.sourceMask)?.let {
                 val matrix = FloatArray(9).also { m -> op.transform.getValues(m) }
-                repo.appendOp(target(op), OpRows.moveRow(matrix, it, DOWNSAMPLE))
+                repo.appendOp(target(op), OpRows.moveRow(toFileBuffer.matrix(matrix), it, DOWNSAMPLE))
             }
 
             // One row on the timeline, with the pasted ops beneath it — so undo
@@ -264,11 +316,14 @@ class DocumentSession private constructor(
     private fun writeUnder(parentId: String, op: PaintOp, order: Int) {
         when (op) {
             is StrokeOp -> {
-                val row = repo.attach(parentId, OpRows.strokeRow(op.stroke).copy(order = order))
+                val row = repo.attach(
+                    parentId,
+                    OpRows.strokeRow(op.stroke, toFileView).copy(order = order),
+                )
                 op.clip?.let { clip ->
                     maskOf(clip)?.let { repo.attach(row.id, OpRows.clipRow(it, DOWNSAMPLE)) }
                 }
-                OpRows.wetStateRow(op.stroke)?.let { repo.attach(row.id, it) }
+                OpRows.wetStateRow(op.stroke, toFileBuffer)?.let { repo.attach(row.id, it) }
             }
 
             is FillOp -> maskOf(op.mask)?.let {
@@ -416,6 +471,13 @@ class DocumentSession private constructor(
      */
     class PageSnapshot(
         val canvasSize: CanvasSize,
+        /**
+         * The view size the page's marks are recorded in, or null for a page
+         * written before pages carried one. The caller fits its canvas to this —
+         * see [PageSpace] — and nothing else in this snapshot is scaled yet.
+         */
+        val drawnW: Float?,
+        val drawnH: Float?,
         val surface: SurfaceOp,
         val surfaceSeed: Long?,
         val committed: List<PaintOp>,
@@ -508,14 +570,22 @@ class DocumentSession private constructor(
                         ?.also { it.layerId = row.parentId }
                 }
 
+            val committed = rebuild(committedRows)
+            val undone = rebuild(undoneRows)
+            // Only a page that arrives empty may later claim this device's space
+            // as its own — see [stampSpaceIfUnclaimed].
+            pageArrivedWithOps = committed.isNotEmpty() || undone.isNotEmpty()
+
             PageSnapshot(
                 // The size is the book's, not the page's: a sketchbook is bought
                 // at one size and every page in it shares that.
                 canvasSize = repo.root()?.let(Sketchbooks::canvasSizeOfRoot) ?: CanvasSize.FullScreen,
+                drawnW = page?.width,
+                drawnH = page?.height,
                 surface = surface,
                 surfaceSeed = page?.seed,
-                committed = rebuild(committedRows),
-                undone = rebuild(undoneRows),
+                committed = committed,
+                undone = undone,
                 cachedPaint = decodeCache(),
                 pots = repo.pots().map {
                     Pot(
@@ -716,6 +786,10 @@ class DocumentSession private constructor(
                     surfaceKind = surface.kind.name,
                     plainColor = ArgbHex.encode(surface.plainColor),
                     surfaceSeed = seed,
+                    // A page made here is made on a canvas, so its space is known
+                    // at birth rather than at its first mark.
+                    drawnWidth = drawnSize?.first?.toFloat(),
+                    drawnHeight = drawnSize?.second?.toFloat(),
                     surfaceParams = SurfaceParamsCodec.encode(
                         canvas = surface.canvas, watercolor = surface.watercolor, wood = surface.wood,
                         stone = surface.stone, concrete = surface.concrete, metal = surface.metal,

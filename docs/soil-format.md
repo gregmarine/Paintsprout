@@ -135,10 +135,61 @@ buys is that a new object type costs no migration, no join and no per-type reade
 | `order` | sort among siblings; **the op index** under a layer |
 | `createdAt`, `updatedAt` | epoch ms |
 | `deletedAt` | NULL is alive. Soft delete is the only delete |
-| `x`, `y`, `width`, `height` | geometry, buffer px — top-left plus extents, never right/bottom |
+| `x`, `y`, `width`, `height` | geometry, buffer px — top-left plus extents, never right/bottom. Two rows read them otherwise, and say so: the root's canvas size and the page's own space, both below |
 | `text`, `color`, `refId`, `flags`, `seed`, `kind`, `params` | shared scalars |
 | `tool`, `strokeWidth`, `opacity`, `blendMode`, `undoDepth`, `opCount`, `amount` | paint-specific |
 | `blob` | geometry, masks, pixels |
+
+### The canvas size, on the root row
+
+`kind` on the root row is the canvas size, and it is what says how `width` and
+`height` are measured. Read the kind first; the numbers alone do not carry their
+own unit.
+
+| `kind` | `width`, `height` | What it is |
+|---|---|---|
+| `FULL_SCREEN` | NULL | the panel, whatever panel it is opened on |
+| `PRINT` | **inches** | a sheet of paper, drawn 1:1 at true size |
+| `FRAME` | **pixels** | an e-ink art frame — a fixed grid at a fixed wall size |
+
+A `FRAME` is the one canvas that is not measured in inches, because a frame's
+physical size belongs to the panel rather than to the artwork: what the drawing
+occupies is the frame's pixel grid, exactly, and that is what has to survive the
+round trip. The physical size is looked up from the grid on the way back in
+(`CanvasSize.frameOf`), so a grid a build has never met keeps its pixels and only
+guesses at how large it hangs.
+
+Reading a `FRAME`'s `480 × 800` as inches would give a card forty feet wide, which
+is the whole reason the kind is read first.
+
+### The page's own space
+
+`width`/`height` on a **page** row are that page's view size in px — the space its
+marks are recorded in. Not the same thing as the root row's canvas size, and not
+the same as the buffer: a 5 × 7 sheet is 1606 × 1147 px on a 229.5 PPI screen and
+1699 × 1213 on a 242.7 one, because a print is drawn at true physical size and the
+pixels underneath it are a different size on each.
+
+Stroke geometry is in that space. So are the widths. Masks are not — a fill, an
+erase and a frisket stretch to the whole buffer when they replay, so they are
+already proportional and travel unchanged.
+
+**A page keeps the space it was created in for life.** Opening it somewhere else
+fits the marks into the new screen on the way in and puts them back on the way out
+(`PageSpace`, `PageRemap`), rather than rewriting what is already stored. That way
+a session that ends badly can never leave a page whose marks and whose stamp
+disagree — the file is only ever in one space, the one it says it is in.
+
+The fit is uniform and centred. For a print or a frame both axes agree and it is a
+plain scale; for `FULL_SCREEN`, whose shape is the panel's, they do not, and the
+sheet is fitted with a margin rather than stretched.
+
+`NULL` means a page written before pages recorded this, and it is read as "assume
+this device" — which is exactly how such a page has always been opened. A page is
+stamped when it is created on a canvas, or at its first mark if it was not; a page
+that arrives holding marks and no stamp is never stamped, because its geometry is
+in some earlier device's space and saying otherwise would move artwork on the very
+tablet that drew it.
 
 ### Hierarchy
 

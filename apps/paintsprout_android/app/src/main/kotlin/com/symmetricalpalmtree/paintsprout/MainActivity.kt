@@ -40,6 +40,7 @@ import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.ChalkboardParams
 import com.symmetricalpalmtree.paintsprout.paint.ConcreteParams
 import com.symmetricalpalmtree.paintsprout.paint.MetalParams
+import com.symmetricalpalmtree.paintsprout.paint.PageSpace
 import com.symmetricalpalmtree.paintsprout.paint.PageTurn
 import com.symmetricalpalmtree.paintsprout.paint.Pot
 import com.symmetricalpalmtree.paintsprout.paint.StoneParams
@@ -293,6 +294,16 @@ class MainActivity : AppCompatActivity() {
 
             session = opened
             rememberWhereWeAre()
+
+            // Wired before the load, unlike the edit hooks below: this one is not
+            // an edit, and the restore it reports on happens during the load.
+            // A page drawn on another tablet is fitted to this one on the way in,
+            // and what goes back out has to be put back the way it came.
+            binding.canvas.onPageSpace = { view, buffer ->
+                opened.toFileView = view.inverse()
+                opened.toFileBuffer = buffer.inverse()
+                opened.drawnSize = binding.canvas.drawnWidth to binding.canvas.drawnHeight
+            }
 
             // Load before wiring the hooks, so restoring a page does not read back
             // as a fresh burst of edits to write straight out again.
@@ -665,7 +676,9 @@ class MainActivity : AppCompatActivity() {
         if (page.layers.isNotEmpty()) {
             binding.canvas.restoreLayers(page.layers, page.activeLayer, page.folders, page.shape)
         }
-        binding.canvas.restore(page.committed, page.undone, page.cachedPaint)
+        binding.canvas.restore(
+            page.committed, page.undone, page.cachedPaint, page.drawnW, page.drawnH,
+        )
         refreshLayers()
         updateRail()
     }
@@ -2453,27 +2466,26 @@ class MainActivity : AppCompatActivity() {
 
     // --- Canvas size --------------------------------------------------------
 
-    /** Full screen + every print size that fits the calibrated screen + Custom. */
+    /** Custom, then every size that fits the calibrated screen, then full screen. */
     private fun pickCanvasSize() {
         val ppi = Calibration.effectivePpi(this)
         val vw = binding.canvas.width
         val vh = binding.canvas.height
-        val options = buildList<CanvasSize> {
-            add(CanvasSize.FullScreen)
-            addAll(
-                CanvasSize.offered(
-                    Calibration.pxToIn(vw.toFloat(), ppi),
-                    Calibration.pxToIn(vh.toFloat(), ppi),
-                ),
-            )
-        }
-        val labels = (options.map { it.label } + "Custom…").toTypedArray()
+        val options = CanvasSize.choices(
+            Calibration.pxToIn(vw.toFloat(), ppi),
+            Calibration.pxToIn(vh.toFloat(), ppi),
+        )
+        // Custom leads: it is the only entry that asks a question rather than
+        // answering one, and burying it under a list it does not belong to made it
+        // read as an afterthought.
+        val labels = (listOf("Custom…") + options.map { it.label }).toTypedArray()
+        val checked = options.indexOf(canvasSize).let { if (it < 0) -1 else it + 1 }
         MaterialAlertDialogBuilder(this)
             .setTitle("Canvas size")
-            .setSingleChoiceItems(labels, options.indexOf(canvasSize)) { dialog, which ->
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
                 dialog.dismiss()
-                if (which == options.size) pickCustomCanvasSize(ppi, vw, vh)
-                else chooseCanvasSize(options[which])
+                if (which == 0) pickCustomCanvasSize(ppi, vw, vh)
+                else chooseCanvasSize(options[which - 1])
             }
             .show()
     }

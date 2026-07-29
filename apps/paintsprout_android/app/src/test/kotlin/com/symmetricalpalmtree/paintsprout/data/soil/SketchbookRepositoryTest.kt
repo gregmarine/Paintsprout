@@ -47,7 +47,7 @@ class SketchbookRepositoryTest {
 
     @Test
     fun `a new document has a root, a page, a layer and a palette`() {
-        repo.createDocument("Harbour studies", canvasKind = "PRINT", canvasWidthInches = 7f, canvasHeightInches = 5f)
+        repo.createDocument("Harbour studies", canvasKind = "PRINT", canvasWidth = 7f, canvasHeight = 5f)
 
         val root = repo.root()!!
         assertEquals(SoilType.SKETCHBOOK, root.type)
@@ -533,5 +533,30 @@ class SketchbookRepositoryTest {
 
         repo.deletePage(second.id)
         assertNull("a deleted page is not somewhere to land", repo.lastOpenedPage())
+    }
+
+    /**
+     * The view size a page's marks are in, so a sketchbook drawn on one tablet
+     * can be opened on another. A page created without one stays without one —
+     * that is every page written before this existed, and the right thing to do
+     * with those is nothing.
+     */
+    @Test
+    fun `a page records the size it was drawn at, or honestly records nothing`() {
+        repo.createDocument("x")
+        val blank = repo.pages().single()
+        assertNull(blank.width)
+        assertNull(blank.height)
+
+        val stamped = repo.addPage(drawnWidth = 1606.5f, drawnHeight = 1147.5f)
+        assertEquals(1606.5f, stamped.width)
+        assertEquals(1147.5f, stamped.height)
+
+        // And one can claim its space later, which is what an empty page does the
+        // moment it takes a mark.
+        repo.setPageSize(blank.id, 2200f, 1440f)
+        val claimed = repo.pages().first { it.id == blank.id }
+        assertEquals(2200f, claimed.width)
+        assertEquals(1440f, claimed.height)
     }
 }

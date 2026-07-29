@@ -51,6 +51,8 @@ import com.symmetricalpalmtree.paintsprout.paint.GpuRender
 import com.symmetricalpalmtree.paintsprout.paint.LassoLoop
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
 import com.symmetricalpalmtree.paintsprout.paint.PageTurn
+import com.symmetricalpalmtree.paintsprout.paint.PageRemap
+import com.symmetricalpalmtree.paintsprout.paint.PageSpace
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
 import com.symmetricalpalmtree.paintsprout.paint.PasteOp
 import com.symmetricalpalmtree.paintsprout.paint.PigmentMixer
@@ -390,6 +392,17 @@ class PaintCanvasView @JvmOverloads constructor(
     private var canvasLeft = 0
     private var canvasTop = 0
 
+    /**
+     * Buffer px per logical (on-screen) px — everything drawn in view coordinates is
+     * scaled by this on its way into the buffer.
+     *
+     * [SUPER_SAMPLE] for a print or the full screen, where the buffer *is* the
+     * sheet as shown. A [CanvasSize.Frame] sets it instead: its buffer is fixed at
+     * the frame's own pixel grid while the sheet is shown at the frame's physical
+     * size, and this is the ratio between the two.
+     */
+    private var superSample = SUPER_SAMPLE
+
     /** Physical size of the drawing surface. [CanvasSize.FullScreen] fills the panel. */
     var canvasSize: CanvasSize = CanvasSize.FullScreen
         private set
@@ -576,7 +589,15 @@ class PaintCanvasView @JvmOverloads constructor(
     /** White where selected (half-buffer resolution), or null when unselected. */
     private var selectionMask: Bitmap? = null
 
-    /** Selection bounds in VIEW (= buffer) pixels. */
+    /**
+     * Selection bounds in **view** px.
+     *
+     * View and buffer were the same space until a [CanvasSize.Frame] could set
+     * [superSample] to something other than one, and this rectangle is touched by
+     * both — the dashed frame and the handle hit-tests are view-space, the bake and
+     * the mask are buffer-space. It is held in view px because that is the space
+     * the gesture arrives in; [floatMatrix] is the one place that converts.
+     */
     private val selRect = RectF()
 
     /** Fired when a selection appears (true) or is cleared (false). */
@@ -587,6 +608,7 @@ class PaintCanvasView @JvmOverloads constructor(
     private var floating: Bitmap? = null       // lifted paint (buffer res)
     private var paintHole: Bitmap? = null      // committed paint with the region removed
     private var floatSourceMask: Bitmap? = null
+    /** View px, like [selRect] — it accumulates raw finger travel. */
     private val floatTranslate = PointF(0f, 0f)
     private var floatScale = 1f
     private var floatRotation = 0f // radians
@@ -828,7 +850,7 @@ class PaintCanvasView @JvmOverloads constructor(
             // held still would grow the schedule (and every later replay of it)
             // by thirty no-op ticks a second. Stamping resumes the ticking.
             if (wetStamped > 0 && !sim.isCalm) {
-                sim.tick(ToothCache.rawFieldFor(surface), surface.toothScale * SUPER_SAMPLE)
+                sim.tick(ToothCache.rawFieldFor(surface), surface.toothScale * superSample)
                 stroke.wetSchedule.add(wetStamped)
                 invalidate()
             }
@@ -944,7 +966,7 @@ class PaintCanvasView @JvmOverloads constructor(
         reconfigureBuffers(w, h)
         // A page can be handed over before the view has been measured; now that
         // there are buffers to draw onto, put it up.
-        pendingRestore?.let { (ops, undone, cached) -> restore(ops, undone, cached) }
+        pendingRestore?.let { restore(it.committed, it.undone, it.cached, it.drawnW, it.drawnH) }
     }
 
     /**
@@ -960,8 +982,18 @@ class PaintCanvasView @JvmOverloads constructor(
         logicalH = lh
         canvasLeft = (w - lw) / 2
         canvasTop = (h - lh) / 2
-        bufW = (lw * SUPER_SAMPLE).roundToInt()
-        bufH = (lh * SUPER_SAMPLE).roundToInt()
+        val frame = canvasSize as? CanvasSize.Frame
+        if (frame != null) {
+            // The frame's own grid, exactly — the artwork is stored in the pixels
+            // the frame will show it in, so nothing resamples on the way out.
+            bufW = frame.pxW
+            bufH = frame.pxH
+            superSample = frame.pxH.toFloat() / lh
+        } else {
+            bufW = (lw * SUPER_SAMPLE).roundToInt()
+            bufH = (lh * SUPER_SAMPLE).roundToInt()
+            superSample = SUPER_SAMPLE
+        }
         srcRect.set(0, 0, bufW, bufH)
         dstRect.set(0, 0, lw, lh)
 
@@ -1004,6 +1036,10 @@ class PaintCanvasView @JvmOverloads constructor(
             val ph = Calibration.inToPx(s.hIn, ppi).roundToInt().coerceIn(1, h)
             pw to ph
         }
+        // A frame lies down like every other sheet here, at its physical size on
+        // the glass, shrunk only if the panel is too small to hold it. See
+        // [CanvasSize.Frame.displayPx].
+        is CanvasSize.Frame -> s.displayPx(Calibration.effectivePpi(context), w, h)
     }
 
     /**
@@ -1713,7 +1749,7 @@ class PaintCanvasView @JvmOverloads constructor(
                     drawColor(Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
                     save()
                     translate(-l, -t)
-                    scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                    scale(superSample, superSample)
                     StrokeRenderer.paintStroke(this, stroke, surface, liveWetness(stroke))
                     restore()
                 }
@@ -1721,7 +1757,7 @@ class PaintCanvasView @JvmOverloads constructor(
                     setLocalMatrix(Matrix().apply { setTranslate(l, t) })
                 }
             }
-            val avgW = avgWidth(stroke) * SUPER_SAMPLE
+            val avgW = avgWidth(stroke) * superSample
             val soften = max(2f, avgW * 0.14f)
             val spread = max(4f, avgW * 0.30f) * if (stroke.water) WATER_SPREAD_SCALE else 1f
             b = RectF()
@@ -1793,7 +1829,7 @@ class PaintCanvasView @JvmOverloads constructor(
         }
         val l = crop.left.toFloat()
         val t = crop.top.toFloat()
-        val avgW = avgWidth(stroke) * SUPER_SAMPLE
+        val avgW = avgWidth(stroke) * superSample
         val soften = max(2f, avgW * 0.14f)
         val clearFeather = max(2f, avgW * 0.10f)
         // Clean water re-wets harder than a pigmented wash: it pushes the paint
@@ -1843,8 +1879,8 @@ class PaintCanvasView @JvmOverloads constructor(
     private fun drawWetPending(canvas: Canvas) {
         for (p in wetPending) {
             val dst = RectF(
-                p.crop.left / SUPER_SAMPLE, p.crop.top / SUPER_SAMPLE,
-                p.crop.right / SUPER_SAMPLE, p.crop.bottom / SUPER_SAMPLE,
+                p.crop.left / superSample, p.crop.top / superSample,
+                p.crop.right / superSample, p.crop.bottom / superSample,
             )
             canvas.drawBitmap(p.snapshot, null, dst, wetPendingPaint)
         }
@@ -1886,10 +1922,10 @@ class PaintCanvasView @JvmOverloads constructor(
 
     /** The live sim crop: [activeBounds] padded like [watercolorCrop], quantized. */
     private fun liveWetCrop(): Rect {
-        val pad = (activeMaxWidth / 2f + activeMaxWidth * 1.5f + 16f) * SUPER_SAMPLE
+        val pad = (activeMaxWidth / 2f + activeMaxWidth * 1.5f + 16f) * superSample
         return quantizedCrop(
-            activeBounds.left * SUPER_SAMPLE - pad, activeBounds.top * SUPER_SAMPLE - pad,
-            activeBounds.right * SUPER_SAMPLE + pad, activeBounds.bottom * SUPER_SAMPLE + pad,
+            activeBounds.left * superSample - pad, activeBounds.top * superSample - pad,
+            activeBounds.right * superSample + pad, activeBounds.bottom * superSample + pad,
         )
     }
 
@@ -3468,7 +3504,7 @@ class PaintCanvasView @JvmOverloads constructor(
                 u.union(sim.crop)
                 sim.grow(quantizedCrop(u.left.toFloat(), u.top.toFloat(), u.right.toFloat(), u.bottom.toFloat()))
             }
-            sim.stampPoint(point, stroke.color, SUPER_SAMPLE)
+            sim.stampPoint(point, stroke.color, superSample)
             wetStamped = stroke.points.size
         }
     }
@@ -3627,8 +3663,8 @@ class PaintCanvasView @JvmOverloads constructor(
 
     private fun pickupColorAt(pos: Vec2): Int {
         pickupWasTrail = false
-        val bx = (pos.x * SUPER_SAMPLE).toInt()
-        val by = (pos.y * SUPER_SAMPLE).toInt()
+        val bx = (pos.x * superSample).toInt()
+        val by = (pos.y * superSample).toInt()
         if (bx < 0 || by < 0 || bx >= bufW || by >= bufH) return 0
 
         paintBmp?.getPixel(bx, by)?.let { if ((it ushr 24) > PICKUP_ALPHA_FLOOR) return it }
@@ -3645,7 +3681,7 @@ class PaintCanvasView @JvmOverloads constructor(
     private fun stampPickupTrail(pos: Vec2, width: Float, @ColorInt color: Int) {
         val c = pickupCanvas ?: return
         pickupStampPaint.color = color or 0xFF000000.toInt()
-        c.drawCircle(pos.x * SUPER_SAMPLE, pos.y * SUPER_SAMPLE, (width * SUPER_SAMPLE) / 2f, pickupStampPaint)
+        c.drawCircle(pos.x * superSample, pos.y * superSample, (width * superSample) / 2f, pickupStampPaint)
     }
 
     // --- Wet-trace ledger (smearing) ------------------------------------------
@@ -3810,7 +3846,7 @@ class PaintCanvasView @JvmOverloads constructor(
                         } else {
                             Canvas(cur).apply {
                                 save()
-                                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                                scale(superSample, superSample)
                                 StrokeRenderer.paintStroke(this, s, surface)
                                 restore()
                             }
@@ -3822,7 +3858,7 @@ class PaintCanvasView @JvmOverloads constructor(
                             } else {
                                 Canvas(it).apply {
                                     save()
-                                    scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                                    scale(superSample, superSample)
                                     StrokeRenderer.paintStroke(this, s, surface)
                                     restore()
                                 }
@@ -3838,7 +3874,7 @@ class PaintCanvasView @JvmOverloads constructor(
                     Canvas(cur).let {
                         SelectionRender.paintToothedFill(
                             it, op.mask, RectF(0f, 0f, bufW.toFloat(), bufH.toFloat()),
-                            op.color, surface, surface.toothScale * SUPER_SAMPLE,
+                            op.color, surface, surface.toothScale * superSample,
                         )
                     }
                 }
@@ -3888,6 +3924,21 @@ class PaintCanvasView @JvmOverloads constructor(
     /** Buffer dimensions, so a cached raster can be checked against this device. */
     val bufferWidth: Int get() = bufW
     val bufferHeight: Int get() = bufH
+
+    /**
+     * The sheet's size on screen, in view px — the space a mark is recorded in,
+     * and so the space a page stamps as its own. Not the buffer: for a frame the
+     * two differ.
+     */
+    val drawnWidth: Int get() = logicalW
+    val drawnHeight: Int get() = logicalH
+
+    /**
+     * Reports the fit a [restore] resolved: how the page's recorded space maps to
+     * this one, for marks and for the buffer. Fires after layout when the restore
+     * had to wait for it, which is why this is a callback rather than a return.
+     */
+    var onPageSpace: ((view: PageSpace, buffer: PageSpace) -> Unit)? = null
 
     /**
      * A copy of the composited paint, for the raster cache. Null before layout.
@@ -3942,15 +3993,38 @@ class PaintCanvasView @JvmOverloads constructor(
      * and waiting. When it is absent, or its dimensions do not match this device's
      * buffer, the ops are replayed instead: a degradation, never a failure.
      *
+     * [drawnW] and [drawnH] are the view size the page's marks were recorded in —
+     * another tablet's, possibly. The ops are fitted from that space into this
+     * one before anything is folded, and [onPageSpace] reports the conversion so
+     * that saving can put later marks back in the space the file is written in.
+     * Null means a page from before pages recorded their size, which is opened
+     * exactly as it always was.
+     *
      * Safe to call before layout. The work is deferred until the buffers exist,
-     * because until then there is nothing to draw onto.
+     * because until then there is nothing to draw onto — and, since the fit needs
+     * the buffers too, deferring it is what keeps the two in step.
      */
-    fun restore(committedOps: List<PaintOp>, undoneOps: List<PaintOp>, cached: Bitmap?) {
+    fun restore(
+        committedOps: List<PaintOp>,
+        undoneOps: List<PaintOp>,
+        cached: Bitmap?,
+        drawnW: Float? = null,
+        drawnH: Float? = null,
+    ) {
         if (bufW <= 0 || bufH <= 0) {
-            pendingRestore = Triple(committedOps, undoneOps, cached)
+            pendingRestore = PendingRestore(committedOps, undoneOps, cached, drawnW, drawnH)
             return
         }
         pendingRestore = null
+
+        // Marks are view px; the wet crop that rides along with a wash is buffer
+        // px. They are the same fit unless this is a frame, whose buffer is its
+        // own fixed grid and therefore already the same on every tablet.
+        val viewFit = PageSpace.fit(drawnW, drawnH, logicalW.toFloat(), logicalH.toFloat())
+        val bufferFit = if (canvasSize is CanvasSize.Frame) PageSpace.IDENTITY else viewFit
+        PageRemap.apply(committedOps, viewFit, bufferFit)
+        PageRemap.apply(undoneOps, viewFit, bufferFit)
+        onPageSpace?.invoke(viewFit, bufferFit)
 
         // A selection belongs to the page it was drawn on: its mask is in that
         // page's buffer, and carrying it to the next one leaves marching ants
@@ -4048,7 +4122,15 @@ class PaintCanvasView @JvmOverloads constructor(
     }
 
     /** Set when [restore] arrives before the buffers exist; replayed on layout. */
-    private var pendingRestore: Triple<List<PaintOp>, List<PaintOp>, Bitmap?>? = null
+    private class PendingRestore(
+        val committed: List<PaintOp>,
+        val undone: List<PaintOp>,
+        val cached: Bitmap?,
+        val drawnW: Float?,
+        val drawnH: Float?,
+    )
+
+    private var pendingRestore: PendingRestore? = null
 
     fun undo() {
         // A settling wash commits first (it becomes the newest op — so the FIRST
@@ -4157,8 +4239,8 @@ class PaintCanvasView @JvmOverloads constructor(
     private suspend fun runWandSelection(logical: PointF) {
         commitFloating()
         val paint = paintBmp ?: return
-        val seedX = logical.x.roundToInt().coerceIn(0, bufW - 1)
-        val seedY = logical.y.roundToInt().coerceIn(0, bufH - 1)
+        val seedX = (logical.x * superSample).roundToInt().coerceIn(0, bufW - 1)
+        val seedY = (logical.y * superSample).roundToInt().coerceIn(0, bufH - 1)
         val w = bufW
         val h = bufH
         val result = withContext(Dispatchers.Default) {
@@ -4178,7 +4260,8 @@ class PaintCanvasView @JvmOverloads constructor(
         val maskBmp = createBitmap(result.width, result.height).apply {
             setPixels(result.mask, 0, result.width, 0, 0, result.width, result.height)
         }
-        val ds = WandFloodFill.DOWNSAMPLE.toFloat()
+        // The wand works at DOWNSAMPLE of the *buffer*; [selRect] is view px.
+        val ds = WandFloodFill.DOWNSAMPLE.toFloat() / superSample
         val old = selectionMask
         selectionMask = maskBmp
         selRect.set(
@@ -4214,7 +4297,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val ds = WandFloodFill.DOWNSAMPLE.toFloat()
         val w = (bufW + WandFloodFill.DOWNSAMPLE - 1) / WandFloodFill.DOWNSAMPLE
         val h = (bufH + WandFloodFill.DOWNSAMPLE - 1) / WandFloodFill.DOWNSAMPLE
-        val scale = SUPER_SAMPLE / ds
+        val scale = superSample / ds
 
         val path = Path().apply {
             moveTo(loop[0] * scale, loop[1] * scale)
@@ -4236,10 +4319,10 @@ class PaintCanvasView @JvmOverloads constructor(
         // Clamped to the sheet: the loop may well have run off the edge of it, and
         // a selection frame floating out in the mat has nothing to grab.
         selRect.set(
-            (bounds[0] * SUPER_SAMPLE).coerceIn(0f, bufW.toFloat()),
-            (bounds[1] * SUPER_SAMPLE).coerceIn(0f, bufH.toFloat()),
-            (bounds[2] * SUPER_SAMPLE).coerceIn(0f, bufW.toFloat()),
-            (bounds[3] * SUPER_SAMPLE).coerceIn(0f, bufH.toFloat()),
+            bounds[0].coerceIn(0f, logicalW.toFloat()),
+            bounds[1].coerceIn(0f, logicalH.toFloat()),
+            bounds[2].coerceIn(0f, logicalW.toFloat()),
+            bounds[3].coerceIn(0f, logicalH.toFloat()),
         )
         floatTranslate.set(0f, 0f)
         floatScale = 1f
@@ -4360,8 +4443,18 @@ class PaintCanvasView @JvmOverloads constructor(
 
     /**
      * The current float transform (scale + rotate about the selection centre, then
-     * translate) as an affine [Matrix]. [sampleScale] scales the pivot/translation
-     * into the target space: 1 for buffer/view coords, 1/DOWNSAMPLE for the mask.
+     * translate) as an affine [Matrix].
+     *
+     * [selRect] and [floatTranslate] are both **view px**, so this comes out in
+     * view space at [sampleScale] 1 — which is what the live preview, the dashed
+     * frame and the handle hit-tests all want. [sampleScale] carries it into the
+     * other two spaces: [superSample] for the buffer, and that over DOWNSAMPLE for
+     * the half-resolution mask.
+     *
+     * Only the pivot and the translation are scaled, because that is the whole of
+     * the conversion: rotating by an angle and scaling by a factor mean the same
+     * thing in either space, and a similarity transform conjugated by a uniform
+     * scale changes nothing else.
      */
     private fun floatMatrix(sampleScale: Float): Matrix {
         val px = selRect.centerX() * sampleScale
@@ -4477,8 +4570,8 @@ class PaintCanvasView @JvmOverloads constructor(
             discardFloating()
             return
         }
-        val bufMatrix = floatMatrix(1f)
-        val maskMatrix = floatMatrix(1f / WandFloodFill.DOWNSAMPLE)
+        val bufMatrix = floatMatrix(superSample)
+        val maskMatrix = floatMatrix(superSample / WandFloodFill.DOWNSAMPLE)
         val newRect = boundsOf(floatCorners())
         val op = MoveOp(sourceMask.copy(Bitmap.Config.ARGB_8888, false), Matrix(bufMatrix))
         val liveMask = selectionMask
@@ -4672,7 +4765,7 @@ class PaintCanvasView @JvmOverloads constructor(
         if (cw <= 0 || ch <= 0) return null
         val l = crop.left.toFloat()
         val t = crop.top.toFloat()
-        val avgW = avgWidth(stroke) * SUPER_SAMPLE
+        val avgW = avgWidth(stroke) * superSample
         val soften = max(2f, avgW * 0.14f)
         val clearFeather = max(2f, avgW * 0.10f)
         val spread = max(4f, avgW * 0.30f) * if (stroke.water) WATER_SPREAD_SCALE else 1f
@@ -4685,7 +4778,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val backdrop = GpuRender.renderToBitmap(cw, ch) { canvas ->
             nodes += recordWetBackdrop(
                 canvas as android.graphics.RecordingCanvas, base, drawMask, cw, ch,
-                SUPER_SAMPLE, clearFeather, spread, soften, l, t, dilute, drawOverBase,
+                superSample, clearFeather, spread, soften, l, t, dilute, drawOverBase,
             )
         }
         nodes.forEach { it.discardDisplayList() }
@@ -4697,7 +4790,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val wash = createBitmap(cw, ch)
         Canvas(wash).apply {
             translate(-l, -t)
-            scale(SUPER_SAMPLE, SUPER_SAMPLE)
+            scale(superSample, superSample)
             StrokeRenderer.paintStroke(this, stroke, surface, stroke.dryFreeze)
         }
         val agsl = pigmentAgsl
@@ -4737,18 +4830,18 @@ class PaintCanvasView @JvmOverloads constructor(
         val sim = bakeWetSim ?: WetSim(agsl[0], agsl[1], agsl[2]).also { bakeWetSim = it }
         sim.begin(crop)
         val tooth = ToothCache.rawFieldFor(surface)
-        val toothScale = surface.toothScale * SUPER_SAMPLE
+        val toothScale = surface.toothScale * superSample
         var cursor = 0
         for (n in stroke.wetSchedule) {
             while (cursor < n && cursor < stroke.points.size) {
-                sim.stampPoint(stroke.points[cursor], stroke.color, SUPER_SAMPLE)
+                sim.stampPoint(stroke.points[cursor], stroke.color, superSample)
                 cursor++
             }
             sim.tick(tooth, toothScale)
         }
         // Points laid after the last live tick were stamped but never advanced.
         while (cursor < stroke.points.size) {
-            sim.stampPoint(stroke.points[cursor], stroke.color, SUPER_SAMPLE)
+            sim.stampPoint(stroke.points[cursor], stroke.color, superSample)
             cursor++
         }
         val wash = sim.presentToBitmap()
@@ -4757,7 +4850,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val t = crop.top.toFloat()
         val region = strokeRegionPath(stroke)
         val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
-        val avgW = avgWidth(stroke) * SUPER_SAMPLE
+        val avgW = avgWidth(stroke) * superSample
         val soften = max(2f, avgW * 0.14f)
         val clearFeather = max(2f, avgW * 0.10f)
         val spread = max(4f, avgW * 0.30f)
@@ -4765,7 +4858,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val backdrop = GpuRender.renderToBitmap(cw, ch) { canvas ->
             nodes += recordWetBackdrop(
                 canvas as android.graphics.RecordingCanvas, base, { c -> c.drawPath(region, white) },
-                cw, ch, SUPER_SAMPLE, clearFeather, spread, soften, l, t,
+                cw, ch, superSample, clearFeather, spread, soften, l, t,
             )
         }
         nodes.forEach { it.discardDisplayList() }
@@ -4810,10 +4903,10 @@ class PaintCanvasView @JvmOverloads constructor(
         // Must cover everything the pipeline draws: the ribbon (maxW/2), the
         // bloom + bleed reach (~1.44*avgW, see drawWetLive's mixer rect), with
         // margin so the crop-clamped shaders never show their edge.
-        val pad = (maxW / 2f + avgW * 1.5f + 16f) * SUPER_SAMPLE
+        val pad = (maxW / 2f + avgW * 1.5f + 16f) * superSample
         return quantizedCrop(
-            minX * SUPER_SAMPLE - pad, minY * SUPER_SAMPLE - pad,
-            maxX * SUPER_SAMPLE + pad, maxY * SUPER_SAMPLE + pad,
+            minX * superSample - pad, minY * superSample - pad,
+            maxX * superSample + pad, maxY * superSample + pad,
         )
     }
 
@@ -5510,7 +5603,7 @@ class PaintCanvasView @JvmOverloads constructor(
         if (la != null && lb != null) {
             Canvas(paintCopy).apply {
                 save()
-                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                scale(superSample, superSample)
                 StrokeRenderer.paintStroke(this, buildLineStroke(la, lb), surface = this@PaintCanvasView.surface)
                 restore()
             }
@@ -5521,7 +5614,7 @@ class PaintCanvasView @JvmOverloads constructor(
         if (aa != null && ab != null && am != null) {
             Canvas(paintCopy).apply {
                 save()
-                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                scale(superSample, superSample)
                 StrokeRenderer.paintStroke(this, buildArcStroke(aa, ab, am), surface = this@PaintCanvasView.surface)
                 restore()
             }
@@ -5529,7 +5622,7 @@ class PaintCanvasView @JvmOverloads constructor(
         if (polyPts.size >= 2) {
             Canvas(paintCopy).apply {
                 save()
-                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                scale(superSample, superSample)
                 StrokeRenderer.paintStroke(this, buildPolyStroke(), surface = this@PaintCanvasView.surface)
                 restore()
             }
@@ -5537,7 +5630,7 @@ class PaintCanvasView @JvmOverloads constructor(
         if (paAnchors.size >= 2) {
             Canvas(paintCopy).apply {
                 save()
-                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                scale(superSample, superSample)
                 StrokeRenderer.paintStroke(this, buildPolyarcStroke(), surface = this@PaintCanvasView.surface)
                 restore()
             }
@@ -5552,8 +5645,15 @@ class PaintCanvasView @JvmOverloads constructor(
                     }
                     val name = "paintsprout_${System.currentTimeMillis()}"
                     // Stamp the file with the physical resolution so it prints 1:1
-                    // with the screen: the buffer is SUPER_SAMPLE× the view pixels.
-                    val dpi = Calibration.effectivePpi(context) * SUPER_SAMPLE
+                    // with the screen: the buffer is superSample× the view pixels.
+                    //
+                    // A frame answers for itself. Its sheet may have been shrunk to
+                    // fit the panel, which would make the screen's reading of the
+                    // ratio far too high — but the pixels are the frame's own and
+                    // so is the size they hang at, and neither depends on the
+                    // tablet the painting happened on.
+                    val dpi = (canvasSize as? CanvasSize.Frame)?.dpi
+                        ?: (Calibration.effectivePpi(context) * superSample)
                     val where = GalleryExport.savePng(context, flat, name, dpi)
                     flat.recycle()
                     where
@@ -5579,6 +5679,15 @@ class PaintCanvasView @JvmOverloads constructor(
         // so the mask keeps growing under a resting or lifted pen.
         const val WATER_BACKDROP_STRIDE = 4
         const val WATER_BACKDROP_STRIDE_MS = 100L
+
+        /**
+         * Buffer px per on-screen px for a sheet drawn at true size — one, because
+         * a print is 1:1 with the panel by definition and there is nothing to gain
+         * from painting it at a resolution the screen cannot show.
+         *
+         * A [CanvasSize.Frame] overrides it per canvas: its buffer is the frame's
+         * grid, not the screen's.
+         */
         const val SUPER_SAMPLE = 1.0f
 
         // Input conditioning: EMA weight per raw sample (~10 ms time constant at

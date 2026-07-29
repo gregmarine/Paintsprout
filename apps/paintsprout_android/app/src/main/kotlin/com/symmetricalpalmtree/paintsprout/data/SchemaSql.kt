@@ -113,7 +113,9 @@ object SchemaSql {
         "`refId` TEXT", // intra-file reference (lastOpenedPage, …)
         "`flags` INTEGER", // per-type bitfield
         "`seed` INTEGER", // per-artwork surface seed / per-stroke texture seed
-        "`kind` TEXT", // SurfaceKind name, or CanvasSize kind on the root row
+        // SurfaceKind name, or the CanvasSize kind on the root row — PRINT,
+        // FRAME or FULL_SCREEN, which is what says how width/height are measured.
+        "`kind` TEXT",
         "`params` TEXT", // small closed JSON bag: page, surface_op, palette only
 
         // Paint-specific.
@@ -193,7 +195,9 @@ object SchemaSql {
             "`flags` INTEGER, " + // bit 0 = encrypted, bit 1 = excluded from backup
             "`keyScope` TEXT, " + // 'GLOBAL' | 'SKETCHBOOK'
             "`canvasKind` TEXT, " + // 'FULL_SCREEN' | 'PRINT'
-            "`canvasW` REAL, " + // inches, PRINT only — the card's aspect ratio
+            // Unit follows canvasKind: inches for PRINT, px for FRAME, null for a
+            // full screen. Either way it is the card's aspect ratio.
+            "`canvasW` REAL, " +
             "`canvasH` REAL, " +
             "`refId` TEXT, " + // list_item -> member id
             "`sortOrder` INTEGER, " + // list_item -> position

@@ -860,10 +860,13 @@ class LibraryActivity : AppCompatActivity() {
         // The same list the editor offers, and for the same reason: a book created
         // larger than the panel could never be drawn at the size it claims.
         val (maxW, maxH) = maxSheetInches()
-        val sizes = listOf<CanvasSize>(CanvasSize.FullScreen) + CanvasSize.offered(maxW, maxH)
-        var chosen = 0
+        val sizes = CanvasSize.choices(maxW, maxH)
+        // Full screen is the default, and it sits at the end of the list — so the
+        // row that starts checked is the last one, not the first.
+        val defaultIndex = sizes.indexOf(CanvasSize.FullScreen).coerceAtLeast(0)
+        var chosen = defaultIndex
 
-        // Custom sits last, and its fields appear only once it is picked — a size
+        // Custom sits first, but its fields appear only once it is picked — a size
         // form permanently open would make the question look harder than choosing
         // off the list, which is what nearly everyone wants.
         val startW = sizes.filterIsInstance<CanvasSize.Print>().lastOrNull()?.wIn ?: maxW
@@ -897,21 +900,21 @@ class LibraryActivity : AppCompatActivity() {
 
         val customIndex = sizes.size
         val choices = RadioGroup(this).apply {
-            sizes.forEachIndexed { i, size ->
-                addView(
-                    RadioButton(this@LibraryActivity).apply {
-                        text = size.label
-                        id = i + 1
-                        isChecked = i == 0
-                    },
-                )
-            }
             addView(
                 RadioButton(this@LibraryActivity).apply {
                     text = getString(R.string.library_size_custom)
                     id = customIndex + 1
                 },
             )
+            sizes.forEachIndexed { i, size ->
+                addView(
+                    RadioButton(this@LibraryActivity).apply {
+                        text = size.label
+                        id = i + 1
+                        isChecked = i == defaultIndex
+                    },
+                )
+            }
             setOnCheckedChangeListener { _, id ->
                 chosen = id - 1
                 customPanel.visibility = if (chosen == customIndex) View.VISIBLE else View.GONE

@@ -52,8 +52,11 @@ class Stroke(
      * brush's bristle count is a property of the brush, not of how hard one
      * stroke pressed — and replay re-renders identically because it's stored.
      * 0 falls back to the observed stroke width (legacy strokes, tests).
+     *
+     * A `var` only so [PageRemap] can rescale a page opened on a tablet whose
+     * pixels are a different size. Nothing else writes it.
      */
-    val baseWidth: Float = 0f,
+    var baseWidth: Float = 0f,
     /**
      * A clean-water stroke (watercolor's water mode): deposits no pigment,
      * only re-wets — the paint underneath is diluted and pushed, harder than
