@@ -169,11 +169,24 @@ class MainActivity : AppCompatActivity() {
     /** Outlives this screen, so a flush is never cut short by leaving it. */
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /**
+     * Whether the screen has already been asked for this visit.
+     *
+     * Not "whether it is held" — whether it has been *asked for*. The system's
+     * own confirmation is what makes the difference: it takes the window focus,
+     * and the focus change it gives back on dismissal is the same one that would
+     * ask again. A refusal has to stick for the visit, or there is no way out of
+     * the dialog. [onStart] clears it, so a later visit may ask again — though a
+     * lock still held from the last one means it never gets that far.
+     */
+    private var screenAsked = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        keepBackGestureOffTheEdges()
 
         buildRail()
         setupTray()
@@ -228,6 +241,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        // A fresh visit to the editor asks for the screen again, whatever the
+        // answer was last time — including an unpin the artist did by hand.
+        screenAsked = false
         val displays = getSystemService(android.hardware.display.DisplayManager::class.java)
         displays?.registerDisplayListener(displayListener, android.os.Handler(android.os.Looper.getMainLooper()))
         applyOrientation()
@@ -260,7 +276,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) hideSystemBars()
+        if (hasFocus) {
+            hideSystemBars()
+            holdTheScreen()
+        }
     }
 
     /**
@@ -1537,6 +1556,52 @@ class MainActivity : AppCompatActivity() {
         WindowInsetsControllerCompat(window, binding.root).apply {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
+    /**
+     * Takes the screen, if the app is not already holding it.
+     *
+     * The editor is the only place that asks, and it asks as rarely as it can:
+     * every ask is a system dialog that cannot be suppressed, so a lock already
+     * held — carried back from the library, or through a page turn — is left
+     * exactly where it is. See [ScreenLock] for why it is held rather than
+     * taken and given back around each painting.
+     *
+     * Asking is best-effort by design: the answer is the artist's, and a device
+     * that will not pin simply carries on unpinned rather than failing the
+     * screen it is trying to protect.
+     */
+    private fun holdTheScreen() {
+        if (screenAsked || holdsTheScreen()) return
+        screenAsked = true
+        runCatching { startLockTask() }
+    }
+
+    /**
+     * Keeps Android's back gesture off the left and right edges of the glass.
+     *
+     * The system reserves a strip down each side for it, and a pen working out
+     * to the edge of the sheet is inside that strip. An app may ask for those
+     * two strips back. It may not ask for the status bar pull at the top or the
+     * home and app-switch swipes at the bottom: the system holds those as
+     * mandatory and grants them to nobody, which is why [holdTheScreen] exists.
+     *
+     * At most 200dp per edge is honoured however much is asked for, so this asks
+     * for the whole edge and takes what it is given. Set on the root rather than
+     * the canvas because the desk turns with the tablet and these rects are read
+     * in the view's own space: the window's edges are the ones that stay put.
+     */
+    private fun keepBackGestureOffTheEdges() {
+        binding.root.addOnLayoutChangeListener { v, left, top, right, bottom, _, _, _, _ ->
+            val w = right - left
+            val h = bottom - top
+            if (w <= 0 || h <= 0) return@addOnLayoutChangeListener
+            val strip = (EDGE_GESTURE_DP * resources.displayMetrics.density).roundToInt()
+            v.systemGestureExclusionRects = listOf(
+                Rect(0, 0, strip, h),
+                Rect(w - strip, 0, w, h),
+            )
         }
     }
 
@@ -2919,6 +2984,15 @@ class MainActivity : AppCompatActivity() {
         /** How small the palette is as it leaves the swatch, and how long it takes. */
         const val TRAY_POP_FROM = 0.35f
         const val TRAY_POP_MS = 170L
+
+        /**
+         * How far in from each side the back gesture is asked to keep out.
+         *
+         * Comfortably wider than the strip any device actually reserves — the
+         * exclusion only ever applies where a system gesture already lives, so
+         * asking for more than there is costs nothing and misses nothing.
+         */
+        const val EDGE_GESTURE_DP = 48f
 
         // Material palette, matching the Flutter reference's swatch list.
         val SWATCHES = intArrayOf(

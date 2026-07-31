@@ -294,7 +294,8 @@ class BackupSettingsActivity : AppCompatActivity() {
         .setItems(
             arrayOf(getString(R.string.backup_local), getString(R.string.backup_drive)),
         ) { _, which ->
-            if (which == 0) pickRestoreTree.launch(null) else restoreFromDrive()
+            // The folder picker is another app; a held screen would swallow it.
+            if (which == 0) { releaseTheScreen(); pickRestoreTree.launch(null) } else restoreFromDrive()
         }
         .setNegativeButton(android.R.string.cancel, null)
         .show()
@@ -415,6 +416,9 @@ class BackupSettingsActivity : AppCompatActivity() {
      * just cleared, so nothing here can read the library any more.
      */
     private fun restart() {
+        // A fresh task, which a held screen will not let start — and the process
+        // is about to go, so there is nobody left to give the screen back.
+        releaseTheScreen()
         packageManager.getLaunchIntentForPackage(packageName)
             ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
             ?.let(::startActivity)
@@ -472,7 +476,8 @@ class BackupSettingsActivity : AppCompatActivity() {
                 row(
                     MaterialButton(this@BackupSettingsActivity).apply {
                         text = getString(R.string.backup_choose_folder)
-                        setOnClickListener { pickLocalTree.launch(null) }
+                        // Another app's picker — see releaseTheScreen.
+                        setOnClickListener { releaseTheScreen(); pickLocalTree.launch(null) }
                     },
                     localSwitch,
                 ),

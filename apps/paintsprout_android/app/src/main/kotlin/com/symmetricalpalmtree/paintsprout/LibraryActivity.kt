@@ -434,6 +434,9 @@ class LibraryActivity : AppCompatActivity() {
                 toast(getString(R.string.library_failed))
                 return@launch
             }
+            // The share sheet belongs to another app, and a held screen will not
+            // open one — silently. Unlock the door before using it.
+            releaseTheScreen()
             startActivity(SoilExport.shareIntent(uri, name))
         }
     }
@@ -449,6 +452,8 @@ class LibraryActivity : AppCompatActivity() {
      * it: the file is identified by what is inside it, not by what it is called.
      */
     private fun pickImport() {
+        // The picker is another app; a held screen would refuse to show it.
+        releaseTheScreen()
         runCatching {
             importFile.launch(arrayOf("*/*"))
         }.onFailure { toast(getString(R.string.import_failed)) }
