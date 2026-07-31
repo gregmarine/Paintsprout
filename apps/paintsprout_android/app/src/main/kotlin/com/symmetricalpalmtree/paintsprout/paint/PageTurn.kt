@@ -29,11 +29,33 @@ enum class PageTurn {
          * horizontally, and it is genuinely sideways rather than a diagonal that
          * happened to go far enough — hence the comparison against [dy] rather
          * than an angle, which is the same test and cheaper.
+         *
+         * [quarter] is how far the sheet has been turned away from the person
+         * looking at it — the same count the rail's glyphs turn back by. Sideways
+         * means sideways *to them*: the drag arrives in the sheet's coordinates,
+         * which stay pinned to the glass, so at a quarter turn a sweep across the
+         * page is a sweep down the sheet and would otherwise turn nothing.
          */
-        fun of(dx: Float, dy: Float, minimum: Float): PageTurn? {
-            if (abs(dx) < minimum) return null
-            if (abs(dx) < abs(dy) * 2f) return null
-            return if (dx < 0f) FORWARD else BACK
+        fun of(dx: Float, dy: Float, minimum: Float, quarter: Int = 0): PageTurn? {
+            val (sx, sy) = asSeen(dx, dy, quarter)
+            if (abs(sx) < minimum) return null
+            if (abs(sx) < abs(sy) * 2f) return null
+            return if (sx < 0f) FORWARD else BACK
         }
+
+        /**
+         * A drag in the sheet's coordinates, re-expressed in the viewer's.
+         *
+         * The frame holding the sheet is rotated by `-quarter * 90°` to keep the
+         * paper square on the glass, so undoing that turn is what carries a
+         * direction back into the space the hand moved in.
+         */
+        private fun asSeen(dx: Float, dy: Float, quarter: Int): Pair<Float, Float> =
+            when (((quarter % 4) + 4) % 4) {
+                0 -> dx to dy
+                1 -> dy to -dx
+                2 -> -dx to -dy
+                else -> -dy to dx
+            }
     }
 }

@@ -39,4 +39,57 @@ class PageTurnTest {
     fun `sideways enough is sideways`() {
         assertEquals(PageTurn.FORWARD, PageTurn.of(dx = -400f, dy = 199f, minimum = min))
     }
+
+    // --- Turned tablet -------------------------------------------------------
+    //
+    // The sheet stays pinned to the glass, so at a quarter turn the drag arrives
+    // rotated. Sideways has to mean sideways to the person, not to the paper.
+
+    /**
+     * The same sweep the artist makes, whichever way up the tablet is.
+     *
+     * Written as "what reaches the sheet when the hand goes left" for each
+     * quarter, so a wrong sign here is a page turning the wrong way rather than
+     * an abstraction that merely looks plausible.
+     */
+    @Test
+    fun `a leftward sweep turns forward at every quarter`() {
+        assertEquals("upright", PageTurn.FORWARD, PageTurn.of(-400f, 0f, min, quarter = 0))
+        assertEquals("quarter turn", PageTurn.FORWARD, PageTurn.of(0f, -400f, min, quarter = 1))
+        assertEquals("upside down", PageTurn.FORWARD, PageTurn.of(400f, 0f, min, quarter = 2))
+        assertEquals("three quarters", PageTurn.FORWARD, PageTurn.of(0f, 400f, min, quarter = 3))
+    }
+
+    @Test
+    fun `a rightward sweep turns back at every quarter`() {
+        assertEquals("upright", PageTurn.BACK, PageTurn.of(400f, 0f, min, quarter = 0))
+        assertEquals("quarter turn", PageTurn.BACK, PageTurn.of(0f, 400f, min, quarter = 1))
+        assertEquals("upside down", PageTurn.BACK, PageTurn.of(-400f, 0f, min, quarter = 2))
+        assertEquals("three quarters", PageTurn.BACK, PageTurn.of(0f, -400f, min, quarter = 3))
+    }
+
+    /**
+     * And the drag that *used* to work at a quarter turn now correctly does
+     * nothing: across the sheet is up the page when the page is on its side.
+     */
+    @Test
+    fun `a sweep across the sheet turns nothing once the tablet is turned`() {
+        assertNull(PageTurn.of(-400f, 0f, min, quarter = 1))
+        assertNull(PageTurn.of(400f, 0f, min, quarter = 3))
+    }
+
+    @Test
+    fun `the short and the diagonal are still refused when turned`() {
+        assertNull("short", PageTurn.of(0f, -179f, min, quarter = 1))
+        assertNull("diagonal", PageTurn.of(400f, -400f, min, quarter = 1))
+        assertEquals("sideways enough", PageTurn.FORWARD, PageTurn.of(199f, -400f, min, quarter = 1))
+    }
+
+    /** A quarter is a count, not an angle: it wraps, and it may arrive negative. */
+    @Test
+    fun `quarters outside zero to three wrap`() {
+        assertEquals(PageTurn.FORWARD, PageTurn.of(0f, -400f, min, quarter = 5))
+        assertEquals(PageTurn.FORWARD, PageTurn.of(0f, -400f, min, quarter = -3))
+        assertEquals(PageTurn.FORWARD, PageTurn.of(-400f, 0f, min, quarter = 4))
+    }
 }

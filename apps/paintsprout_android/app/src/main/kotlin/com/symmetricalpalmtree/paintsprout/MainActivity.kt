@@ -410,10 +410,15 @@ class MainActivity : AppCompatActivity() {
             .setItems(actions.toTypedArray()) { _, which ->
                 lifecycleScope.launch {
                     when (actions[which]) {
-                        "Duplicate" -> open.duplicatePage(page.id, binding.canvas.paintSnapshot())?.let(::applyPage)
+                        "Duplicate" -> open.duplicatePage(page.id, settledSnapshot())?.let(::applyPage)
                         "Move left" -> open.movePage(page.id, page.index - 1)
                         "Move right" -> open.movePage(page.id, page.index + 1)
-                        "Delete" -> open.deletePage(page.id)?.let(::applyPage)
+                        // Nothing to snapshot — the page is going — but a page
+                        // still arrives afterwards, onto the same buffers.
+                        "Delete" -> {
+                            binding.canvas.settle()
+                            open.deletePage(page.id)?.let(::applyPage)
+                        }
                     }
                     refreshPageLabel()
                 }
@@ -431,7 +436,7 @@ class MainActivity : AppCompatActivity() {
                 currentSurface(), plainColor, canvasParams, watercolorParams, woodParams,
                 stoneParams, concreteParams, metalParams, chalkboardParams,
             )
-            open.addPage(surface, java.util.Random().nextLong(), binding.canvas.paintSnapshot())
+            open.addPage(surface, java.util.Random().nextLong(), settledSnapshot())
                 ?.let(::applyPage)
             refreshPageLabel()
         }
@@ -440,7 +445,7 @@ class MainActivity : AppCompatActivity() {
     private fun switchToPage(id: String) {
         val open = session ?: return
         lifecycleScope.launch {
-            open.switchTo(id, binding.canvas.paintSnapshot())?.let(::applyPage)
+            open.switchTo(id, settledSnapshot())?.let(::applyPage)
             refreshPageLabel()
         }
     }
@@ -460,9 +465,23 @@ class MainActivity : AppCompatActivity() {
             if (here < 0) return@launch
             val there = if (direction == PageTurn.FORWARD) here + 1 else here - 1
             val target = pages.getOrNull(there) ?: return@launch
-            open.switchTo(target.id, binding.canvas.paintSnapshot())?.let(::applyPage)
+            open.switchTo(target.id, settledSnapshot())?.let(::applyPage)
             refreshPageLabel()
         }
+    }
+
+    /**
+     * The page as it finally stands, with nothing still on its way onto it.
+     *
+     * Every path that puts a page away goes through here. Loading the next page
+     * recycles the layer bitmaps and empties the history, and a bake is off-thread
+     * — so without the wait, a page turned a moment too early either killed the
+     * bake on a recycled bitmap or delivered its stroke to the page that had just
+     * arrived. See `PaintCanvasView.settle`.
+     */
+    private suspend fun settledSnapshot(): Bitmap? {
+        binding.canvas.settle()
+        return binding.canvas.paintSnapshot()
     }
 
     /**
@@ -1473,6 +1492,9 @@ class MainActivity : AppCompatActivity() {
             frame.layoutParams = lp
         }
         frame.rotation = -quarter * 90f
+        // The sheet does not turn, so a swipe across it has to be read as the
+        // hand meant it rather than as the paper received it.
+        binding.canvas.artistQuarter = quarter
 
         if (quarter != chromeQuarter) {
             val first = chromeQuarter < 0
@@ -1651,15 +1673,20 @@ class MainActivity : AppCompatActivity() {
     private fun reopenDocument() {
         val open = session ?: return
         session = null
-        detachCanvasHooks()
-        val paint = if (open.isDirty) binding.canvas.paintSnapshot() else null
-        val cover = if (open.isDirty) binding.canvas.coverSnapshot() else null
-        // The seal runs on the scope that outlives this screen and is *joined*
-        // rather than fired off: leaving mid-switch must not skip it, and the next
-        // document must not open on top of it.
-        val sealed = applicationScope.launch { runCatching { open.close(paint, cover) } }
         lifecycleScope.launch {
-            sealed.join()
+            // Settled while the hooks are still on, and that order is the point:
+            // they carry each committed step into the document, and a stroke that
+            // finished baking after they came off would be folded into the picture
+            // and written down nowhere. The hooks hold the session they were made
+            // with, so clearing [session] above does not disturb them.
+            binding.canvas.settle()
+            detachCanvasHooks()
+            val paint = if (open.isDirty) binding.canvas.paintSnapshot() else null
+            val cover = if (open.isDirty) binding.canvas.coverSnapshot() else null
+            // The seal runs on the scope that outlives this screen and is *joined*
+            // rather than fired off: leaving mid-switch must not skip it, and the
+            // next document must not open on top of it.
+            applicationScope.launch { runCatching { open.close(paint, cover) } }.join()
             attachDocument()
         }
     }

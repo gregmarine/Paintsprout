@@ -603,6 +603,17 @@ class PaintCanvasView @JvmOverloads constructor(
 
     /** A finger swept across the sheet: [PageTurn.FORWARD] or [PageTurn.BACK]. */
     var onPageTurn: ((PageTurn) -> Unit)? = null
+
+    /**
+     * Quarter turns between the sheet and the person looking at it.
+     *
+     * The sheet stays pinned to the glass however the tablet is held, which is the
+     * whole point of it — but a hand sweeping the page aside is moving in the
+     * artist's space, not the paper's. Set from the same place that turns the
+     * rail's glyphs back, and used for exactly one thing: reading which way a
+     * finger went. See [PageTurn.of].
+     */
+    var artistQuarter: Int = 0
     val canUndo: Boolean get() = committed.isNotEmpty()
     val canRedo: Boolean get() = redoStack.isNotEmpty()
 
@@ -2386,11 +2397,19 @@ class PaintCanvasView @JvmOverloads constructor(
                 val from = touchStart.remove(event.getPointerId(ai)) ?: return true
                 if (touchStart.isNotEmpty()) return true // still fingers down; wait
                 if (touchMaxCount == 1 && touchMoved) {
-                    val turn = PageTurn.of(
-                        dx = event.getX(ai) - from.x,
-                        dy = event.getY(ai) - from.y,
-                        minimum = PAGE_TURN_MIN_DP * resources.displayMetrics.density,
-                    )
+                    // Not mid-mark. The hand that turns a sheet is not the hand
+                    // holding the pencil, but they are both on the tablet, and a
+                    // page turned out from under a stroke leaves the stroke behind.
+                    val turn = if (active != null) {
+                        null
+                    } else {
+                        PageTurn.of(
+                            dx = event.getX(ai) - from.x,
+                            dy = event.getY(ai) - from.y,
+                            minimum = PAGE_TURN_MIN_DP * resources.displayMetrics.density,
+                            quarter = artistQuarter,
+                        )
+                    }
                     touchMaxCount = 0
                     touchMoved = false
                     pendingTapCount = 0
@@ -4550,12 +4569,40 @@ class PaintCanvasView @JvmOverloads constructor(
         onHistoryChanged?.invoke()
     }
 
-    /** Waits for pending strokes to bake so a following op composites on top. */
+    /**
+     * Waits for pending strokes to bake so a following op composites on top.
+     *
+     * A rebuild counts as pending too: it is refolding every layer from history
+     * onto fresh bitmaps, and an op composited into the old ones while it runs is
+     * an op that was never made. [kickBake] stands aside for the same reason, so
+     * this has to wait it out rather than push through it.
+     */
     private suspend fun flushPending() {
-        while (unbaked.isNotEmpty() || baking) {
-            if (!baking && unbaked.isNotEmpty()) kickBake()
+        while (unbaked.isNotEmpty() || baking || rebuilding) {
+            if (!baking && !rebuilding && unbaked.isNotEmpty()) kickBake()
             delay(8)
         }
+    }
+
+    /**
+     * Everything in flight finished, so the page can be put down.
+     *
+     * **Call this before taking a page away from the view.** A bake runs off the
+     * UI thread against a layer's bitmap, and loading the next page recycles those
+     * bitmaps and empties the history — so a page turned while a stroke was baking
+     * either died on a recycled bitmap or landed its paint, and its op, on the page
+     * that had just arrived. The window is only as long as one fold, which is why
+     * it took until a slow brush stroke to be noticed.
+     *
+     * The order is what makes it safe to leave: a lifted selection is set down
+     * first (it belongs to the page it was lifted from), then a settling wash is
+     * committed as shown, and only then does the queue drain — because both of
+     * those *add* to it.
+     */
+    suspend fun settle() {
+        commitFloating()
+        interruptWet()
+        flushPending()
     }
 
     // --- Floating move/transform --------------------------------------------
