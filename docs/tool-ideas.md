@@ -42,7 +42,7 @@ physically rotate the tablet instead.
 - ✅ **Editable shape tools:** line, arc, polyline, polyarc (handle-edit before bake)
 - ✅ **Export:** PNG to device gallery
 - ✅ **True-size (1:1) output:** screen calibration to real PPI (physical-reference match), brush/tool sizes in millimetres, real-size canvas presets (drawn 1:1, centred in a mat), and DPI-stamped PNG that prints at the exact on-screen physical size — verified on paper. E-ink frame canvases are the deliberate exception: pixel-exact to the frame's grid rather than true-size to the glass
-- ✅ **Input:** pressure + tilt, palm rejection, stylus-only
+- ✅ **Input:** pressure + tilt, palm rejection, stylus-only; a pen arriving from off the sheet goes live the instant it crosses onto it
 
 ---
 
@@ -243,6 +243,7 @@ Where Paintsprout could be genuinely unlike anything else — the hard parts are
 | Status | Item | Notes |
 |--------|------|-------|
 | ✅ | Screen calibration | Match a physical reference (ID card / business / index card / ruler) with the stylus to store true PPI per device; underpins 1:1 print |
+| ✅ | The pen is live where it crosses onto the sheet | A press landing in the mat — or arriving already moving from off the panel — used to be thrown away, so a hand coming in from the side had to lift and start again over the paper. The press is now kept, and the mark begins at the first sample on paper, dispatched as a real pen-down built from *that* sample's own pressure and tilt rather than the end of whatever batch it arrived in. `PaintCanvasView.beginOnEntry` |
 | ⬜ | Stylus barrel-button mapping | Movink has buttons we're not using |
 | ⬜ | Eraser end of stylus | Flips to eraser tool automatically |
 | ⬜ | Speed → width tapering | For ink strokes |

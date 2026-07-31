@@ -427,6 +427,19 @@ class PaintCanvasView @JvmOverloads constructor(
     private var active: Stroke? = null
     private var activeClip: Bitmap? = null
     private var activePointerId = INVALID_POINTER
+
+    /**
+     * A pen that came down off the sheet and has not reached it yet.
+     *
+     * The mat is not paper and nothing is painted on it, but a press that lands
+     * there is not necessarily a press meant for it. A hand coming in from the
+     * side of the panel puts the pen down beyond the edge of the sheet and is
+     * already moving by the time it arrives; asking it to lift and start again
+     * once it is over the paper is asking it to draw the way the mat is drawn,
+     * not the way paper is. So the press is kept rather than dropped, and the
+     * mark begins at the crossing. [INVALID_POINTER] when there is none waiting.
+     */
+    private var pendingEntryId = INVALID_POINTER
     private val unbaked = mutableListOf<Stroke>()
     private val unbakedClips = mutableListOf<Bitmap?>()
 
@@ -1059,6 +1072,7 @@ class PaintCanvasView @JvmOverloads constructor(
         unbakedClips.clear()
         unbakedLayers.clear()
         active = null
+        pendingEntryId = INVALID_POINTER
         endActiveExtras()
         recycleWashScratch()
         recycleCheckpoints()
@@ -2154,80 +2168,22 @@ class PaintCanvasView @JvmOverloads constructor(
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                // Ignore presses that land in the mat around the sheet.
-                if (!insideCanvas(event.getX(actionIndex), event.getY(actionIndex))) return true
-                // A new mark cuts a still-settling wash short (committed as shown).
-                interruptWet()
-                if (tool == Tool.WAND) {
-                    handleWandDown(event, actionIndex)
+                // A press in the mat is not a mark, but it may be on its way to
+                // being one — hold on to it and let the crossing start the mark.
+                if (!insideCanvas(event.getX(actionIndex), event.getY(actionIndex))) {
+                    pendingEntryId = event.getPointerId(actionIndex)
                     return true
                 }
-                if (tool == Tool.LASSO) {
-                    handleLassoDown(event, actionIndex)
-                    return true
-                }
-                if (tool == Tool.LINE) {
-                    handleLineDown(event, actionIndex)
-                    return true
-                }
-                if (tool == Tool.ARC) {
-                    handleArcDown(event, actionIndex)
-                    return true
-                }
-                if (tool == Tool.POLYLINE) {
-                    handlePolyDown(event, actionIndex)
-                    return true
-                }
-                if (tool == Tool.POLYARC) {
-                    handlePolyarcDown(event, actionIndex)
-                    return true
-                }
-                if (active != null) return true
-                activePointerId = event.getPointerId(actionIndex)
-                pressureMax = event.device
-                    ?.getMotionRange(MotionEvent.AXIS_PRESSURE)
-                    ?.max
-                    ?.takeIf { it > 0f } ?: 1.0f
-                val color = if (tool == Tool.ERASER) Color.WHITE else strokeColor
-                // Capture the frisket this stroke is drawn under, if any.
-                activeClip = selectionMask?.copy(Bitmap.Config.ARGB_8888, false)
-                // And the sheet it is being drawn on, for the same reason.
-                strokeLayer = activeLayer.id
-                // Paint is spent over distance travelled; a new stroke starts
-                // from its own first point, not wherever the last one ended.
-                lastDepositPos = null
-                markerLastPos = null
-                markerDir = null
-                penSpeedEma = 0f
-                beginConditioning(
-                    event.getPressure(actionIndex),
-                    event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
-                )
-                val stroke = Stroke(
-                    tool, color, seed = Random.nextInt(), baseWidth = sizeFor(tool),
-                    water = tool == Tool.WATERCOLOR && waterMode,
-                )
-                active = stroke
-                if (tool == Tool.SPRAY) {
-                    removeCallbacks(sprayDwell)
-                    postDelayed(sprayDwell, SPRAY_DWELL_MS)
-                }
-                if (tool == Tool.WATERCOLOR) {
-                    startWetSim(stroke)
-                    startDrying(stroke)
-                }
-                // Extras first: the first sample stamps the pickup trail, which
-                // beginActiveExtras would otherwise immediately erase.
-                beginActiveExtras()
-                addSample(
-                    stroke, event.getX(actionIndex), event.getY(actionIndex),
-                    event.getPressure(actionIndex), event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
-                )
-                invalidate()
+                pendingEntryId = INVALID_POINTER
+                stylusDown(event, actionIndex)
                 return true
             }
 
             MotionEvent.ACTION_MOVE -> {
+                // A mark that began off the sheet begins in earnest here, at the
+                // sample that crosses onto it; the rest of the batch follows.
+                val replayFrom = if (pendingEntryId == INVALID_POINTER) 0 else beginOnEntry(event)
+                if (replayFrom < 0) return true
                 if (tool == Tool.WAND) {
                     handleWandMove(event)
                     return true
@@ -2255,22 +2211,31 @@ class PaintCanvasView @JvmOverloads constructor(
                 val stroke = active ?: return true
                 val pi = event.findPointerIndex(activePointerId)
                 if (pi < 0) return true
-                for (h in 0 until event.historySize) {
+                for (h in replayFrom until event.historySize) {
                     addSample(
                         stroke, event.getHistoricalX(pi, h), event.getHistoricalY(pi, h),
                         event.getHistoricalPressure(pi, h),
                         event.getHistoricalAxisValue(MotionEvent.AXIS_TILT, pi, h),
                     )
                 }
-                addSample(
-                    stroke, event.getX(pi), event.getY(pi),
-                    event.getPressure(pi), event.getAxisValue(MotionEvent.AXIS_TILT, pi),
-                )
+                // Skipped when the crossing *was* the trailing sample: it has just
+                // been laid down as the first point and is not laid down twice.
+                if (replayFrom <= event.historySize) {
+                    addSample(
+                        stroke, event.getX(pi), event.getY(pi),
+                        event.getPressure(pi), event.getAxisValue(MotionEvent.AXIS_TILT, pi),
+                    )
+                }
                 invalidate()
                 return true
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                // A pen that lifted without ever reaching the sheet leaves nothing
+                // behind but this.
+                if (event.getPointerId(actionIndex) == pendingEntryId) {
+                    pendingEntryId = INVALID_POINTER
+                }
                 if (tool == Tool.WAND) {
                     handleWandUp(event, actionIndex)
                     return true
@@ -2325,6 +2290,138 @@ class PaintCanvasView @JvmOverloads constructor(
             }
         }
         return true
+    }
+
+    /**
+     * Lays the pen down on the sheet: everything a press means, once it is known
+     * to be on paper.
+     *
+     * Split out from [onTouchEvent] because a press is not the only way a mark
+     * starts. A pen arriving from off the sheet is set down at the moment it
+     * crosses, from a sample of a move batch rather than from a down event, and
+     * what happens then has to be the same thing to the last detail — see
+     * [beginOnEntry].
+     */
+    private fun stylusDown(event: MotionEvent, actionIndex: Int) {
+        // A new mark cuts a still-settling wash short (committed as shown).
+        interruptWet()
+        if (tool == Tool.WAND) return handleWandDown(event, actionIndex)
+        if (tool == Tool.LASSO) return handleLassoDown(event, actionIndex)
+        if (tool == Tool.LINE) return handleLineDown(event, actionIndex)
+        if (tool == Tool.ARC) return handleArcDown(event, actionIndex)
+        if (tool == Tool.POLYLINE) return handlePolyDown(event, actionIndex)
+        if (tool == Tool.POLYARC) return handlePolyarcDown(event, actionIndex)
+        if (active != null) return
+        activePointerId = event.getPointerId(actionIndex)
+        pressureMax = event.device
+            ?.getMotionRange(MotionEvent.AXIS_PRESSURE)
+            ?.max
+            ?.takeIf { it > 0f } ?: 1.0f
+        val color = if (tool == Tool.ERASER) Color.WHITE else strokeColor
+        // Capture the frisket this stroke is drawn under, if any.
+        activeClip = selectionMask?.copy(Bitmap.Config.ARGB_8888, false)
+        // And the sheet it is being drawn on, for the same reason.
+        strokeLayer = activeLayer.id
+        // Paint is spent over distance travelled; a new stroke starts
+        // from its own first point, not wherever the last one ended.
+        lastDepositPos = null
+        markerLastPos = null
+        markerDir = null
+        penSpeedEma = 0f
+        beginConditioning(
+            event.getPressure(actionIndex),
+            event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
+        )
+        val stroke = Stroke(
+            tool, color, seed = Random.nextInt(), baseWidth = sizeFor(tool),
+            water = tool == Tool.WATERCOLOR && waterMode,
+        )
+        active = stroke
+        if (tool == Tool.SPRAY) {
+            removeCallbacks(sprayDwell)
+            postDelayed(sprayDwell, SPRAY_DWELL_MS)
+        }
+        if (tool == Tool.WATERCOLOR) {
+            startWetSim(stroke)
+            startDrying(stroke)
+        }
+        // Extras first: the first sample stamps the pickup trail, which
+        // beginActiveExtras would otherwise immediately erase.
+        beginActiveExtras()
+        addSample(
+            stroke, event.getX(actionIndex), event.getY(actionIndex),
+            event.getPressure(actionIndex), event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
+        )
+        invalidate()
+    }
+
+    /**
+     * Sets the pen down at the point where a mark that began off the sheet first
+     * reaches it.
+     *
+     * A move batch carries several samples, and the crossing can be any of them,
+     * so they are walked in order and the first one on paper is the one the mark
+     * starts from. That sample is handed to [stylusDown] as a pen-down of its
+     * own, which is why it is worth building a real event for: the first sample
+     * of a stroke sets its conditioning, and pressure and tilt at the crossing —
+     * not at the end of the batch it happened to arrive in — are what a pen
+     * already in motion actually had.
+     *
+     * Returns the index of the first sample still to be drawn, counting the
+     * batch's trailing position as one past its history, or -1 while the pen is
+     * still off the sheet.
+     */
+    private fun beginOnEntry(event: MotionEvent): Int {
+        val pi = event.findPointerIndex(pendingEntryId)
+        if (pi < 0) {
+            pendingEntryId = INVALID_POINTER
+            return -1
+        }
+        val history = event.historySize
+        for (i in 0..history) {
+            val x = if (i < history) event.getHistoricalX(pi, i) else event.getX(pi)
+            val y = if (i < history) event.getHistoricalY(pi, i) else event.getY(pi)
+            if (!insideCanvas(x, y)) continue
+            pendingEntryId = INVALID_POINTER
+            val down = entryDown(event, pi, i)
+            try {
+                stylusDown(down, 0)
+            } finally {
+                down.recycle()
+            }
+            return i + 1
+        }
+        return -1
+    }
+
+    /**
+     * A pen-down built from one sample of a move batch.
+     *
+     * Copied whole rather than rebuilt from x and y: everything a stroke's first
+     * sample is asked for — pressure, tilt, which end of the pen it is — comes
+     * off the coordinates, and the device the ranges are read from comes off the
+     * event. The coordinates are already canvas-local; the offset [onTouchEvent]
+     * applies to the batch moves its history with it.
+     */
+    private fun entryDown(event: MotionEvent, pointerIndex: Int, sample: Int): MotionEvent {
+        val props = MotionEvent.PointerProperties()
+        event.getPointerProperties(pointerIndex, props)
+        val coords = MotionEvent.PointerCoords()
+        val at: Long
+        if (sample < event.historySize) {
+            event.getHistoricalPointerCoords(pointerIndex, sample, coords)
+            at = event.getHistoricalEventTime(sample)
+        } else {
+            event.getPointerCoords(pointerIndex, coords)
+            at = event.eventTime
+        }
+        return MotionEvent.obtain(
+            event.downTime, at, MotionEvent.ACTION_DOWN,
+            1, arrayOf(props), arrayOf(coords),
+            event.metaState, event.buttonState,
+            event.xPrecision, event.yPrecision,
+            event.deviceId, event.edgeFlags, event.source, event.flags,
+        )
     }
 
     /**
