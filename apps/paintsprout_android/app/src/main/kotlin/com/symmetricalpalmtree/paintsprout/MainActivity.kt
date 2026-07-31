@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.content.Intent
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
@@ -14,17 +15,16 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.res.ResourcesCompat
-import androidx.core.view.doOnLayout
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -33,6 +33,7 @@ import com.google.android.material.slider.Slider
 import com.google.android.material.snackbar.Snackbar
 import com.symmetricalpalmtree.paintsprout.databinding.ActivityMainBinding
 import com.symmetricalpalmtree.paintsprout.paint.AVAILABLE_SURFACES
+import com.symmetricalpalmtree.paintsprout.paint.BrushLoad
 import com.symmetricalpalmtree.paintsprout.paint.Calibration
 import com.symmetricalpalmtree.paintsprout.paint.Layer
 import com.symmetricalpalmtree.paintsprout.paint.CanvasParams
@@ -93,7 +94,12 @@ class MainActivity : AppCompatActivity() {
     /** The palette. Pots and the mixing well; see [TrayView]. */
     private val tray = Tray()
     private var trayOut = false
-    private var trayHiddenX = 0f
+
+    /** Where the palette rests, and where it grows out of. See [placeTray]. */
+    private var trayRestX = 0f
+    private var trayRestY = 0f
+    private var trayFromX = 0f
+    private var trayFromY = 0f
 
     private var hasSelection = false
     private var hasPendingLine = false
@@ -723,12 +729,30 @@ class MainActivity : AppCompatActivity() {
 
     // --- Layers ---------------------------------------------------------------
 
+    /**
+     * Opens the layers panel, and closes the palette if it is out.
+     *
+     * One at a time. They are two opaque cards over the same sheet, and they can
+     * still land on each other — the palette hangs off the rail in the glass's
+     * space while the panel sits in the artist's, so how close they come depends on
+     * which way the tablet is being held, and the panel is drawn over the palette
+     * when they meet. Nothing is lost by it either way: you mix a colour and then
+     * paint with it, you choose a sheet and then draw on it. Neither is a thing you
+     * do while doing the other.
+     */
     private fun toggleLayerPanel() {
         val showing = binding.layerPanel.visibility == View.VISIBLE
         binding.layerPanel.visibility = if (showing) View.GONE else View.VISIBLE
-        if (!showing) refreshLayers()
+        if (!showing) {
+            if (trayOut) setTrayOut(false)
+            refreshLayers()
+        }
         updateRail()
     }
+
+    /** True while the layers panel is up. */
+    private val layersShowing: Boolean
+        get() = binding.layerPanel.visibility == View.VISIBLE
 
     /**
      * Redraws the list from the canvas.
@@ -858,7 +882,12 @@ class MainActivity : AppCompatActivity() {
             addView(top)
             addView(slider)
             setOnClickListener {
-                if (canvas.selectLayer(index)) refreshLayers() else toast(getString(R.string.layers_hidden))
+                when (canvas.selectLayer(index)) {
+                    PaintCanvasView.LayerPick.OK -> refreshLayers()
+                    PaintCanvasView.LayerPick.HIDDEN -> toast(getString(R.string.layers_hidden))
+                    PaintCanvasView.LayerPick.DRAWING -> toast(getString(R.string.layers_drawing))
+                    PaintCanvasView.LayerPick.FLOATING -> toast(getString(R.string.layers_floating))
+                }
             }
             setOnLongClickListener { stackMenu(id); true }
         }
@@ -1470,6 +1499,16 @@ class MainActivity : AppCompatActivity() {
             if (v is ImageButton || v is TextView) turn(v)
         }
         turn(binding.btnShowRail)
+        // The palette hangs off the rail, so it turns with the glass like the rail
+        // does — but it is a thing you read, and it is square, so its face can be
+        // turned back without moving it by a pixel.
+        turn(binding.trayCard)
+        // Where the swatch is has just changed; where the palette belongs with it.
+        if (trayOut) {
+            placeTray()
+            binding.trayCard.translationX = trayRestX
+            binding.trayCard.translationY = trayRestY
+        }
     }
 
     private fun hideSystemBars() {
@@ -1498,8 +1537,17 @@ class MainActivity : AppCompatActivity() {
         }
         rail.addView(divider())
 
-        colorBtn = iconButton(0, "Color") { pickColor("Stroke color", color) { onColorChanged(it) } }
-        if (Focus.SHOW_COLOR) rail.addView(colorBtn)
+        // The swatch opens the palette; holding the palette's well opens the
+        // wheel. One button for "the paint", rather than a button for the colour
+        // and a tab for the palette at opposite edges of the screen.
+        //
+        // With no palette to open it falls back to the wheel directly, so the
+        // colour is still reachable when the tray is out of scope. It is added for
+        // *either* flag, because the tray has no other way in.
+        colorBtn = iconButton(0, "Paint") {
+            if (Focus.SHOW_TRAY) setTrayOut(!trayOut) else pickColor("Stroke color", color) { onColorChanged(it) }
+        }
+        if (Focus.SHOW_COLOR || Focus.SHOW_TRAY) rail.addView(colorBtn)
 
         sizeBtn = textButton("Size") { pickSize() }
         if (Focus.SHOW_SIZE) rail.addView(sizeBtn)
@@ -1637,9 +1685,16 @@ class MainActivity : AppCompatActivity() {
         // a print size to belong to, and nothing to print it at.
         canvasSizeBtn.visibility = if (isScratchpad) View.GONE else View.VISIBLE
 
-        // The colour is moot while the brush carries clean water.
-        colorBtn.visibility =
-            if (tool == Tool.ERASER || (tool == Tool.WATERCOLOR && waterMode)) View.GONE else View.VISIBLE
+        // The colour is moot while the brush carries clean water — but the palette
+        // is not, and this is the only way to it, so with a tray to open the button
+        // stays. What you have on the brush is worth seeing while you erase; it is
+        // what you will be painting with next.
+        colorBtn.visibility = when {
+            Focus.SHOW_TRAY -> View.VISIBLE
+            tool == Tool.ERASER || (tool == Tool.WATERCOLOR && waterMode) -> View.GONE
+            else -> View.VISIBLE
+        }
+        colorBtn.background = if (trayOut) selectedBg() else rippleBg()
         colorBtn.setImageDrawable(swatchDrawable(color))
         // iconButton tints every icon slate so the tool glyphs match; the swatch
         // *is* the colour, so it must not be tinted or it always reads dark.
@@ -1700,7 +1755,38 @@ class MainActivity : AppCompatActivity() {
             String.format("%.1f", mm)
         }
 
+    /**
+     * The colour, chosen outright: onto the palette, into the brush, onto the rail.
+     *
+     * What the wheel does. **The wheel is not a rival to the palette, it is another
+     * way of mixing on it** — so what it produces goes into the well like any other
+     * colour, and the palette can never sit there showing something that is not
+     * what is being painted with.
+     *
+     * It replaces the well rather than dabbing into it, because a colour dialled in
+     * on the wheel is a *specific* colour: added to whatever was already mixed it
+     * would come out as something else, which is not what was asked for. The brush
+     * is recharged flat for exactly the same reason, and has been all along.
+     */
     private fun onColorChanged(c: Int) {
+        useColor(c)
+        tray.clearMixture()
+        tray.dab(c)
+        binding.tray.invalidate()
+        binding.canvas.loadBrush(BrushLoad.of(c))
+        recordPalette()
+    }
+
+    /**
+     * The colour, changed — and the brush left holding whatever it holds.
+     *
+     * For colour arriving from the palette itself, where the brush's load is the
+     * palette's business and not this function's. Mixing in the well says what is
+     * being painted with; only the brush needs the extra touch to be *given* some,
+     * because only the brush spends it.
+     */
+    private fun useColor(c: Int) {
+        if (c == color) return
         color = c
         binding.canvas.strokeColor = c
         updateRail()
@@ -1709,6 +1795,9 @@ class MainActivity : AppCompatActivity() {
     private fun setRailVisible(visible: Boolean) {
         binding.railCard.visibility = if (visible) View.VISIBLE else View.GONE
         binding.btnShowRail.visibility = if (visible) View.GONE else View.VISIBLE
+        // The palette hangs off a button on the rail. With the rail gone it would
+        // be floating beside nothing, and nothing left on screen would close it.
+        if (!visible && trayOut) setTrayOut(false)
     }
 
     // --- Mixing tray --------------------------------------------------------
@@ -1719,11 +1808,8 @@ class MainActivity : AppCompatActivity() {
      * canvas away every time you reach for the palette.
      */
     private fun setupTray() {
-        // A palette with one colour on it is furniture. The panel is dismissed
-        // outright rather than parked off-screen, so its tab is not left sitting
-        // on the edge of the sheet inviting a pull that opens nothing useful.
         if (!Focus.SHOW_TRAY) {
-            binding.trayPanel.visibility = View.GONE
+            binding.trayCard.visibility = View.GONE
             return
         }
         binding.tray.tray = tray
@@ -1732,8 +1818,7 @@ class MainActivity : AppCompatActivity() {
             // onColorChanged would recharge the brush with one flat pigment and
             // discard the recipe just mixed.
             binding.canvas.loadBrush(load)
-            color = load.color
-            updateRail()
+            useColor(load.color)
             recordPalette()
         }
         binding.tray.onAddPot = {
@@ -1743,71 +1828,105 @@ class MainActivity : AppCompatActivity() {
                 recordPalette()
             }
         }
-        binding.tray.onMixtureChanged = { recordPalette() }
-
-        // Park the palette off-screen until it's pulled out, leaving the tab.
-        binding.trayPanel.doOnLayout {
-            trayHiddenX = binding.trayCard.width.toFloat() +
-                (binding.trayCard.layoutParams as? ViewGroup.MarginLayoutParams)?.marginEnd?.toFloat().orZero()
-            binding.trayPanel.translationX = trayHiddenX
-            updateTrayTab()
+        binding.tray.onMixtureChanged = {
+            // Mixing a colour *is* choosing it. The swatch and every dry tool take
+            // it the moment it appears in the well; the brush still has to be
+            // given some, because the brush is the only one that spends it.
+            //
+            // A wiped well leaves the colour where it was rather than blanking it:
+            // you cleaned the palette, you did not stop painting in that colour.
+            if (Focus.SHOW_COLOR) tray.mixedColor?.let { useColor(it) }
+            recordPalette()
         }
-
-        attachTrayTabGesture()
+        // Holding the well asks for a colour outright. Offered only where the
+        // rail would offer one anyway — the palette must not become a second door
+        // into a colour picker that [Focus] has closed.
+        binding.tray.onWellHold = if (Focus.SHOW_COLOR) {
+            { pickColor("Stroke color", color) { onColorChanged(it) } }
+        } else {
+            null
+        }
     }
 
     /**
-     * The tab both taps and drags: a tap toggles, a drag follows the finger and
-     * snaps to whichever side it was heading for.
+     * Puts the palette beside the colour swatch.
+     *
+     * Recomputed every time it opens rather than pinned once: the rail scrolls,
+     * what is on it changes with the tool, and the whole frame turns with the
+     * tablet. Beside rather than over, and clamped to the frame, so the palette
+     * never hangs off the glass or sits on top of the button that opened it.
+     *
+     * Everything here is in the frame's own coordinates, which is what makes it
+     * simple — [faceTheArtist] turns the card's face back afterwards, and the card
+     * is square, so that turn cannot move it.
+     *
+     * The card is INVISIBLE rather than GONE when it is away, and that is load
+     * bearing: a gone view is never measured, so this ran with a width of zero and
+     * left the palette parked in the frame's top corner, off the screen's edge.
      */
-    private fun attachTrayTabGesture() {
-        val slop = ViewConfiguration.get(this).scaledTouchSlop
-        var downX = 0f
-        var startX = 0f
-        var dragging = false
+    private fun placeTray() {
+        val frame = binding.deviceFrame
+        val card = binding.trayCard
+        if (card.width == 0 || frame.width == 0) return
+        val gap = dp(8)
+        val margin = dp(12)
 
-        binding.trayTab.setOnTouchListener { _, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    downX = event.rawX
-                    startX = binding.trayPanel.translationX
-                    dragging = false
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = event.rawX - downX
-                    if (!dragging && Math.abs(dx) > slop) dragging = true
-                    if (dragging) {
-                        binding.trayPanel.translationX = (startX + dx).coerceIn(0f, trayHiddenX)
-                    }
-                    true
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (dragging) {
-                        // Snap to whichever side it's closer to.
-                        setTrayOut(binding.trayPanel.translationX < trayHiddenX / 2f)
-                    } else {
-                        setTrayOut(!trayOut)
-                    }
-                    true
-                }
-                else -> false
-            }
-        }
+        val anchor = Rect(0, 0, colorBtn.width, colorBtn.height)
+        frame.offsetDescendantRectToMyCoords(colorBtn, anchor)
+
+        val restX = (binding.railCard.right + gap)
+            .coerceAtMost(frame.width - card.width - margin)
+            .coerceAtLeast(margin)
+        val restY = (anchor.centerY() - card.height / 2)
+            .coerceIn(margin, (frame.height - card.height - margin).coerceAtLeast(margin))
+
+        trayRestX = restX.toFloat()
+        trayRestY = restY.toFloat()
+        // Where it starts from: collapsed onto the swatch. Translation is applied
+        // after the card's own rotation, so this is unaffected by which way up the
+        // frame is — the palette grows out of the button in every orientation.
+        trayFromX = anchor.centerX() - card.width / 2f
+        trayFromY = anchor.centerY() - card.height / 2f
     }
 
+    /**
+     * Opens or closes the palette, growing it out of the swatch and back into it.
+     *
+     * A dialog was never right for this — you mix a colour *while* painting, and a
+     * modal puts the canvas away every time you reach for the paint. So it is a
+     * card that appears beside the button you pressed and leaves the sheet where
+     * it is.
+     */
     private fun setTrayOut(out: Boolean) {
+        if (!Focus.SHOW_TRAY) return
         trayOut = out
-        binding.trayPanel.animate()
-            .translationX(if (out) 0f else trayHiddenX)
-            .setDuration(180)
-            .start()
-        updateTrayTab()
-    }
-
-    private fun updateTrayTab() {
-        // Chevron points the way the palette will travel.
-        binding.trayTabIcon.setImageResource(if (trayOut) R.drawable.ic_show else R.drawable.ic_hide)
+        // Whichever of the two cards is being reached for is the one that gets the
+        // sheet. See [toggleLayerPanel].
+        if (out && layersShowing) toggleLayerPanel()
+        val card = binding.trayCard
+        card.animate().cancel()
+        if (out) {
+            placeTray()
+            card.translationX = trayFromX
+            card.translationY = trayFromY
+            card.scaleX = TRAY_POP_FROM
+            card.scaleY = TRAY_POP_FROM
+            card.alpha = 0f
+            card.visibility = View.VISIBLE
+            card.animate()
+                .translationX(trayRestX).translationY(trayRestY)
+                .scaleX(1f).scaleY(1f).alpha(1f)
+                .setDuration(TRAY_POP_MS)
+                .start()
+        } else {
+            card.animate()
+                .translationX(trayFromX).translationY(trayFromY)
+                .scaleX(TRAY_POP_FROM).scaleY(TRAY_POP_FROM).alpha(0f)
+                .setDuration(TRAY_POP_MS)
+                .withEndAction { if (!trayOut) card.visibility = View.INVISIBLE }
+                .start()
+        }
+        updateRail()
     }
 
     /** Labels a wheel colour by its nearest named pigment, so pots stay nameable. */
@@ -1820,8 +1939,6 @@ class MainActivity : AppCompatActivity() {
         }
         return nearest?.let { "Mixed (near ${it.name})" } ?: "Mixed"
     }
-
-    private fun Float?.orZero(): Float = this ?: 0f
 
     // --- Pickers ------------------------------------------------------------
 
@@ -2003,8 +2120,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** HSV colour wheel + brightness slider, with swatch quick-picks. */
+    /**
+     * One colour, and several ways to say it: the wheel by eye, R/G/B by number,
+     * or a hex code straight in.
+     *
+     * Every control holds the same colour, so moving any of them moves the rest,
+     * and [spread] is the only place that happens. It writes to everything **but**
+     * the control the change came from: a field that rewrites itself mid-keystroke
+     * fights whoever is typing in it, which is the rule `ColorFields.kt` inherited
+     * from the size fields. It also keeps a typed triple exact — the wheel holds
+     * HSV, and a round trip through hue and saturation can shift a channel by a
+     * unit. What you typed is what gets used.
+     */
     private fun pickColor(title: String, initial: Int, onUse: (Int) -> Unit) {
         var working = initial or (0xFF shl 24)
+        // Set while one control's value is being copied into the others, so that
+        // their listeners don't copy it straight back and chase it in a circle.
+        var syncing = false
+
         val preview = View(this)
         val wheel = ColorWheelView(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(240), dp(240)).apply {
@@ -2015,37 +2148,106 @@ class MainActivity : AppCompatActivity() {
         val valueSlider = Slider(this).apply {
             valueFrom = 0f; valueTo = 1f
         }
-        fun show(c: Int) {
-            working = c
-            preview.background = previewSwatch(c)
+        val rSlider = channelSlider(Color.red(working))
+        val gSlider = channelSlider(Color.green(working))
+        val bSlider = channelSlider(Color.blue(working))
+        val rEntry = channelField(Color.red(working))
+        val gEntry = channelField(Color.green(working))
+        val bEntry = channelField(Color.blue(working))
+        val hexEntry = hexField(working)
+
+        /**
+         * Takes [c] as the colour and brings every control up to date except
+         * [source], which already holds it.
+         *
+         * The wheel stands for itself and for the brightness slider under it:
+         * between them they hold one HSV colour, and neither can move without the
+         * other having agreed already.
+         */
+        fun spread(c: Int, source: Any?) {
+            if (syncing) return
+            syncing = true
+            working = c or (0xFF shl 24)
+            val r = Color.red(working)
+            val g = Color.green(working)
+            val b = Color.blue(working)
+            preview.background = previewSwatch(working)
+            if (source !== wheel) {
+                wheel.setColor(working)
+                valueSlider.value = FloatArray(3).also { Color.colorToHSV(working, it) }[2]
+            }
+            if (source !== rSlider) rSlider.value = r.toFloat()
+            if (source !== gSlider) gSlider.value = g.toFloat()
+            if (source !== bSlider) bSlider.value = b.toFloat()
+            // The caret goes to the end of a value that was replaced wholesale,
+            // which is where it would be if it had just been typed.
+            if (source !== rEntry) rEntry.setTextKeepingCaretAtEnd(r.toString())
+            if (source !== gEntry) gEntry.setTextKeepingCaretAtEnd(g.toString())
+            if (source !== bEntry) bEntry.setTextKeepingCaretAtEnd(b.toString())
+            if (source !== hexEntry) hexEntry.setTextKeepingCaretAtEnd(hexOf(working))
+            syncing = false
         }
+
         wheel.setColor(working)
         valueSlider.value = FloatArray(3).also { Color.colorToHSV(working, it) }[2]
 
-        wheel.onColorChanged = { c -> show(c) }
+        wheel.onColorChanged = { c -> spread(c, wheel) }
         valueSlider.addOnChangeListener { _, v, _ ->
+            if (syncing) return@addOnChangeListener
             wheel.setValue(v)
-            show(wheel.color)
+            spread(wheel.color, wheel)
         }
+        // A channel moved, by whichever of its two controls: the colour is read
+        // off all three, since the other two are already holding what they hold.
+        // An empty field is mid-edit rather than a request for zero, so it reads
+        // as the channel that is there.
+        fun fromSliders(source: Slider) = spread(
+            rgbOf(rSlider.value.toInt(), gSlider.value.toInt(), bSlider.value.toInt()),
+            source,
+        )
+        fun fromFields(source: EditText) = spread(
+            rgbOf(
+                rEntry.channel(Color.red(working)),
+                gEntry.channel(Color.green(working)),
+                bEntry.channel(Color.blue(working)),
+            ),
+            source,
+        )
+        rSlider.addOnChangeListener { _, _, _ -> fromSliders(rSlider) }
+        gSlider.addOnChangeListener { _, _, _ -> fromSliders(gSlider) }
+        bSlider.addOnChangeListener { _, _, _ -> fromSliders(bSlider) }
+        rEntry.onEdit { fromFields(rEntry) }
+        gEntry.onEdit { fromFields(gEntry) }
+        bEntry.onEdit { fromFields(bEntry) }
+        // An unreadable hex code moves nothing: half of one is a moment in the
+        // middle of typing, not an instruction to go somewhere.
+        hexEntry.onEdit { parseHexColor(hexEntry.text.toString())?.let { spread(it, hexEntry) } }
 
         val grid = GridLayout(this).apply {
             columnCount = 9
             setPadding(0, dp(8), 0, dp(4))
         }
-        for (c in SWATCHES) {
-            grid.addView(swatchCell(c) {
-                wheel.setColor(c)
-                valueSlider.value = FloatArray(3).also { Color.colorToHSV(c, it) }[2]
-                show(c)
-            })
-        }
+        for (c in SWATCHES) grid.addView(swatchCell(c) { spread(c, null) })
         preview.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(28))
         preview.background = previewSwatch(working)
 
-        val content = vbox(wheel, labelled("V", valueSlider), preview, grid)
+        val content = vbox(
+            wheel,
+            labelled("V", valueSlider),
+            preview,
+            channelRow("R", rSlider, rEntry),
+            channelRow("G", gSlider, gEntry),
+            channelRow("B", bSlider, bEntry),
+            channelRow("#", View(this), hexEntry),
+            grid,
+        )
         MaterialAlertDialogBuilder(this)
             .setTitle(title)
-            .setView(content)
+            // Scrolled, because this is now taller than a dialog is allowed to be
+            // in landscape. The wheel already refuses to let a scroller steal its
+            // drags (`requestDisallowInterceptTouchEvent`), so dragging it still
+            // picks a colour rather than scrolling the dialog.
+            .setView(ScrollView(this).apply { addView(content) })
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Use") { _, _ -> onUse(working) }
             .show()
@@ -2686,6 +2888,10 @@ class MainActivity : AppCompatActivity() {
         // Brush/tool size range in millimetres (physical mark width).
         const val SIZE_MIN_MM = 0.1f
         const val SIZE_MAX_MM = 40f
+
+        /** How small the palette is as it leaves the swatch, and how long it takes. */
+        const val TRAY_POP_FROM = 0.35f
+        const val TRAY_POP_MS = 170L
 
         // Material palette, matching the Flutter reference's swatch list.
         val SWATCHES = intArrayOf(

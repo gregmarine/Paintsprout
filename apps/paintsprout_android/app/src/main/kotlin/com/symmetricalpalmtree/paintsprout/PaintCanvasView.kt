@@ -148,22 +148,30 @@ class PaintCanvasView @JvmOverloads constructor(
     var waterMode = false
 
     /**
-     * Deposit color (ARGB). Ignored by the eraser.
+     * **The colour being painted with.** One value, and the only one — every tool
+     * that has a colour takes it from here.
      *
-     * Setting it recharges the brush with that colour, so picking a colour off
-     * the wheel behaves the way it always has — you don't have to visit the tray
-     * to paint. Mixing on the tray goes through [loadBrush] instead.
+     * There are two ways of *using* it, which is not the same as there being two
+     * of it. A pencil or a pen simply marks in it and never runs out. A brush has
+     * to be charged with it first ([loadBrush]) and then spends what it was given,
+     * which is why the brush is the only tool that has to go back to the palette.
+     *
+     * What the brush is carrying can therefore drift away from this — it drains,
+     * and it picks up whatever it is dragged through — and that drift belongs to
+     * the brush, not to the colour. The swatch on the rail goes on showing the
+     * paint that was chosen rather than the mud presently on the bristles, and a
+     * pencil picked up mid-brushstroke draws the colour you chose.
+     *
+     * Setting this does *not* charge the brush. Choosing a colour and picking up
+     * a loaded brush are two acts, and one property that quietly did both is what
+     * made the tray and the rail disagree about what colour it was.
      */
     @ColorInt
     private var _strokeColor: Int = Color.BLACK
 
     var strokeColor: Int
         @ColorInt get() = _strokeColor
-        set(@ColorInt value) {
-            _strokeColor = value
-            brushLoad = BrushLoad.of(value)
-            onBrushLoadChanged?.invoke(brushLoad)
-        }
+        set(@ColorInt value) { _strokeColor = value }
 
     /**
      * What the brush is currently carrying: a mixture and how much of it is
@@ -177,11 +185,11 @@ class PaintCanvasView @JvmOverloads constructor(
     var onBrushLoadChanged: ((BrushLoad) -> Unit)? = null
 
     /**
-     * Charges the brush from the tray's well, keeping the mixture intact.
+     * Charges the brush, keeping the mixture intact so it can be contaminated
+     * meaningfully — a flat recharge would throw away the recipe just mixed.
      *
-     * Deliberately not routed through [strokeColor]: that setter recharges with
-     * a single flat pigment, which would throw away the recipe you just mixed
-     * and leave a brush that can't be contaminated meaningfully.
+     * A charge is also a statement of what is being painted with, so it sets
+     * [strokeColor] too. The reverse does not hold: see there.
      */
     fun loadBrush(load: BrushLoad) {
         brushLoad = load
@@ -421,6 +429,29 @@ class PaintCanvasView @JvmOverloads constructor(
     private var activePointerId = INVALID_POINTER
     private val unbaked = mutableListOf<Stroke>()
     private val unbakedClips = mutableListOf<Bitmap?>()
+
+    /**
+     * Which layer each queued stroke landed on, recorded at pen-up.
+     *
+     * The bake is off-thread and the queue outlives it, so between a stroke
+     * leaving the pen and reaching the pixels the layer under it can change —
+     * tap the sketch layer to check something while the ink is still baking and
+     * the two are no longer the same place. Asking at bake time gives whichever
+     * layer is selected *then*, which is how ink ends up on the wrong sheet.
+     * Parallel to [unbaked] and cleared with it, like [unbakedClips].
+     */
+    private val unbakedLayers = mutableListOf<String>()
+
+    /**
+     * The layer the stroke now under the pen was started on.
+     *
+     * Captured at pen-down rather than read at pen-up, because the stack can be
+     * rearranged while a mark is being made — the layer panel is its own view and
+     * takes a second hand's taps whatever the pen is doing, and a wash goes on
+     * settling for seconds after the pen has lifted. A mark belongs to the sheet
+     * it was drawn on; nothing done to the stack afterwards moves it.
+     */
+    private var strokeLayer: String = ""
     private var pressureMax = 1.0f
 
     // --- Touch history gestures (finger, not stylus) ------------------------
@@ -946,6 +977,7 @@ class PaintCanvasView @JvmOverloads constructor(
         }
         unbaked.add(stroke)
         unbakedClips.add(clip)
+        unbakedLayers.add(strokeLayer.ifEmpty { activeLayer.id })
         kickBake()
         invalidate()
     }
@@ -1014,6 +1046,7 @@ class PaintCanvasView @JvmOverloads constructor(
         abortWet()
         unbaked.clear()
         unbakedClips.clear()
+        unbakedLayers.clear()
         active = null
         endActiveExtras()
         recycleWashScratch()
@@ -1951,6 +1984,7 @@ class PaintCanvasView @JvmOverloads constructor(
         wetStamped = 0
         unbaked.add(stroke)
         unbakedClips.add(clip)
+        unbakedLayers.add(strokeLayer.ifEmpty { activeLayer.id })
         kickBake()
         invalidate()
     }
@@ -2146,6 +2180,8 @@ class PaintCanvasView @JvmOverloads constructor(
                 val color = if (tool == Tool.ERASER) Color.WHITE else strokeColor
                 // Capture the frisket this stroke is drawn under, if any.
                 activeClip = selectionMask?.copy(Bitmap.Config.ARGB_8888, false)
+                // And the sheet it is being drawn on, for the same reason.
+                strokeLayer = activeLayer.id
                 // Paint is spent over distance travelled; a new stroke starts
                 // from its own first point, not wherever the last one ended.
                 lastDepositPos = null
@@ -2264,6 +2300,7 @@ class PaintCanvasView @JvmOverloads constructor(
                     } else {
                         unbaked.add(stroke)
                         unbakedClips.add(activeClip)
+                        unbakedLayers.add(strokeLayer.ifEmpty { activeLayer.id })
                         kickBake()
                     }
                     active = null
@@ -3656,6 +3693,16 @@ class PaintCanvasView @JvmOverloads constructor(
      * underneath and the brush could never pick anything up. So the trail only
      * speaks where there is no committed paint — a later part of the stroke
      * crossing back over an earlier part on bare ground.
+     *
+     * **The layer under the pen, and no other.** [paintBmp] is the active layer,
+     * so a brush dragged over a colour that is really on the sheet below picks up
+     * nothing, however plainly that colour can be seen. This looks wrong for a
+     * moment and is the only defensible answer: lifting paint from a lower layer
+     * and depositing it here would leave two copies of it, one on each sheet, and
+     * the original is not ours to take. It is also why the wet ledger is keyed by
+     * layer (see [WetTrace]). A layer's own opacity is ignored for the same
+     * reason it is ignored everywhere else — it changes how the paint composites,
+     * not what colour the paint is.
      */
     /** Whether [pickupColorAt]'s last answer came from the live trail (always
      *  wet) rather than committed paint (wet per the trace ledger). */
@@ -3692,12 +3739,24 @@ class PaintCanvasView @JvmOverloads constructor(
      * smears it. Geometry is the stroke's own spine (hit-tested per point
      * width), so wetness follows the mark, not its bounding box.
      */
-    private class WetTrace(val stroke: Stroke, val bounds: RectF, val windowMs: Long, val bornAt: Long)
+    private class WetTrace(
+        val stroke: Stroke,
+        /**
+         * Which layer's paint is wet. Smearing lifts pixels from the layer under
+         * the pen and nothing else, so wetness has to be about that layer too —
+         * otherwise fresh ink on the sheet above would make the dry paint below
+         * it smearable, at a spot where nothing wet was ever laid.
+         */
+        val layerId: String,
+        val bounds: RectF,
+        val windowMs: Long,
+        val bornAt: Long,
+    )
 
     private val wetTraces = ArrayDeque<WetTrace>()
 
-    /** Starts [stroke]'s wet window (called as it heads into the bake). */
-    private fun recordWetTrace(stroke: Stroke) {
+    /** Starts [stroke]'s wet window on [layerId] (called as it heads into the bake). */
+    private fun recordWetTrace(stroke: Stroke, layerId: String) {
         val win = com.symmetricalpalmtree.paintsprout.paint.ToolProfile.of(stroke.tool).wetMs
         if (win <= 0L || stroke.isEmpty) return
         var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE
@@ -3710,7 +3769,7 @@ class PaintCanvasView @JvmOverloads constructor(
         }
         val pad = maxW / 2f + WET_TRACE_SLACK_PX
         val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
-        wetTraces.addLast(WetTrace(stroke, bounds, win, SystemClock.uptimeMillis()))
+        wetTraces.addLast(WetTrace(stroke, layerId, bounds, win, SystemClock.uptimeMillis()))
         while (wetTraces.size > WET_TRACE_MAX) wetTraces.removeFirst()
     }
 
@@ -3723,8 +3782,10 @@ class PaintCanvasView @JvmOverloads constructor(
         if (wetTraces.isEmpty()) return 0f
         val now = SystemClock.uptimeMillis()
         wetTraces.removeAll { now - it.bornAt >= it.windowMs }
+        val here = activeLayer.id
         var best = 0f
         for (t in wetTraces) {
+            if (t.layerId != here) continue
             val fresh = 1f - (now - t.bornAt).toFloat() / t.windowMs
             if (fresh <= best) continue
             if (!t.bounds.contains(pos.x, pos.y)) continue
@@ -3790,34 +3851,72 @@ class PaintCanvasView @JvmOverloads constructor(
 
     // --- Baking -------------------------------------------------------------
 
+    /**
+     * Folds the front of the queue into the layer those strokes were drawn on.
+     *
+     * The layer comes from the queue rather than from the selection, and every
+     * pixel here goes through it rather than through [paintBmp]. Nothing in this
+     * method may ask what is selected: it is called again from its own tail, and
+     * it hands off to another thread in between, so "the layer under the pen" is
+     * a different answer by the time the paint lands. Reading it there put a
+     * layer's finished pixels onto whichever sheet had since been tapped and
+     * recycled the one it displaced — one tap on the layers panel at the wrong
+     * moment, and a layer was gone.
+     *
+     * One layer per batch, so a queue that spans a change of layer is baked in
+     * runs. Ordinary drawing never fills more than one.
+     */
     private fun kickBake() {
         if (baking || rebuilding || unbaked.isEmpty()) return
-        val base = paintBmp ?: return
+        val ontoId = unbakedLayers.first()
+        val n = unbakedLayers.takeWhile { it == ontoId }.size
+        // A layer deleted while its paint was still queued is shelved, not
+        // destroyed, and its ops stay on the timeline — so the paint still has
+        // somewhere to land, and it comes back with the layer if the deletion is
+        // undone.
+        //
+        // An id in neither place belongs to a page that has since closed. Those
+        // strokes are dropped rather than left at the head of the queue: they have
+        // nowhere to go, and [flushPending] spins until the queue drains.
+        val onto = layersById[ontoId] ?: retired[ontoId]
+        if (onto == null) {
+            unbakedClips.subList(0, n).forEach { it?.recycle() }
+            unbaked.subList(0, n).clear()
+            unbakedClips.subList(0, n).clear()
+            unbakedLayers.subList(0, n).clear()
+            invalidate()
+            if (unbaked.isNotEmpty()) kickBake()
+            return
+        }
+        // No pixels yet means the view has not been laid out; the queue waits for
+        // layout rather than losing its paint to it.
+        val base = onto.bmp ?: return
         baking = true
-        val batch = unbaked.toList()
-        val clips = unbakedClips.toList()
-        // Tagged now, while the layer under the pen is still the one they landed
-        // on: the bake finishes on another thread, and by then the selection may
-        // have moved on.
-        val onto = activeLayer.id
-        val ops = batch.indices.map { StrokeOp(batch[it], clips[it]).also { op -> op.layerId = onto } }
+        val batch = unbaked.subList(0, n).toList()
+        val clips = unbakedClips.subList(0, n).toList()
+        val ops = batch.indices.map { StrokeOp(batch[it], clips[it]).also { op -> op.layerId = ontoId } }
         // The paint these strokes laid starts its wet window now (≈ pen-up):
         // while it lasts, a brush dragged through them smears them. Undo
         // rebuilds don't come through here, so replayed history never
         // re-wets.
-        batch.forEach(::recordWetTrace)
+        batch.forEach { recordWetTrace(it, ontoId) }
         scope.launch {
             val next = withContext(Dispatchers.Default) {
                 foldOps(base.copy(Bitmap.Config.ARGB_8888, true), ops)
             }
-            val old = paintBmp
-            paintBmp = next
-            unbaked.subList(0, batch.size).clear()
-            unbakedClips.subList(0, batch.size).clear()
+            val old = onto.bmp
+            onto.bmp = next
+            unbaked.subList(0, n).clear()
+            unbakedClips.subList(0, n).clear()
+            unbakedLayers.subList(0, n).clear()
             committed.addAll(ops)
             ops.forEach { onOpCommitted?.invoke(it) }
             clearRedo()
-            storeCheckpoint(activeOpCount(), next)
+            // Checkpoints are kept for the layer under the pen alone and indexed
+            // by that layer's own op count, so one taken of somebody else's
+            // pixels is worse than none: a later undo would resume the wrong
+            // paint from it.
+            if (onto === activeLayer) storeCheckpoint(activeOpCount(), next)
             old?.recycle()
             baking = false
             pruneWetPending()
@@ -4172,7 +4271,12 @@ class PaintCanvasView @JvmOverloads constructor(
     private fun rebuild() {
         rebuilding = true
         val stack = layers.toList()
-        val activeId = activeLayer.id
+        // Held as the layer itself, not as whatever is selected when the fold
+        // lands: the checkpoint below is indexed by *this* layer's op count, and
+        // a layer tapped meanwhile would be filed under a count that is not its
+        // own — an undo would then resume from someone else's paint.
+        val checkpointed = activeLayer
+        val activeId = checkpointed.id
         val perLayer = stack.associate { l -> l.id to committed.filter { it.layerId == l.id } }
         val activeCount = perLayer[activeId]?.size ?: 0
         val startIdx = checkpoints.floorKey(activeCount) ?: 0
@@ -4194,7 +4298,9 @@ class PaintCanvasView @JvmOverloads constructor(
                 l.bmp?.recycle()
                 l.bmp = bmp
             }
-            activeLayer.bmp?.let { storeCheckpoint(activeCount, it) }
+            if (checkpointed === activeLayer) {
+                checkpointed.bmp?.let { storeCheckpoint(activeCount, it) }
+            }
             rebuilding = false
             invalidate()
             onHistoryChanged?.invoke()
@@ -4411,18 +4517,34 @@ class PaintCanvasView @JvmOverloads constructor(
         }
     }
 
-    /** Bakes [op] onto the paint layer and records it as a committed step. */
+    /**
+     * Bakes [op] onto the layer under the pen and records it as a committed step.
+     *
+     * Everything that is not a freehand stroke arrives here — a shape's commit, a
+     * fill, an erase-inside, a paste — and every one of them was landing on the
+     * page without saying which layer it landed on. A step that names no layer
+     * belongs to none: the fold matches each layer's ops by name, so the mark
+     * showed up under the pen and then vanished at the next undo, having been
+     * left out of every layer's rebuild. It reappeared on reload, on the bottom
+     * layer, because that is where an untagged step gets adopted.
+     *
+     * Tagged and resolved before the fold, then written back to that same layer,
+     * for [kickBake]'s reason: this suspends in the middle, and the selection can
+     * move while it does.
+     */
     private suspend fun applyCommittedOp(op: PaintOp) {
-        val base = paintBmp ?: return
+        val onto = activeLayer
+        if (op.layerId.isEmpty()) op.layerId = onto.id
+        val base = onto.bmp ?: return
         val next = withContext(Dispatchers.Default) {
             foldOps(base.copy(Bitmap.Config.ARGB_8888, true), listOf(op))
         }
-        val old = paintBmp
-        paintBmp = next
+        val old = onto.bmp
+        onto.bmp = next
         committed.add(op)
         onOpCommitted?.invoke(op)
         clearRedo()
-        storeCheckpoint(activeOpCount(), next)
+        if (onto === activeLayer) storeCheckpoint(activeOpCount(), next)
         old?.recycle()
         invalidate()
         onHistoryChanged?.invoke()
@@ -4561,7 +4683,12 @@ class PaintCanvasView @JvmOverloads constructor(
     /** Bakes the floating move into the paint as a [MoveOp] and re-lands the mask. */
     private suspend fun commitFloating() {
         val sourceMask = floatSourceMask
-        val base = paintBmp
+        // The layer the paint was lifted from, held for the same reason
+        // [applyCommittedOp] holds it. Selecting another layer is refused while
+        // something is floating, but adding one is not, and either way this
+        // suspends before it writes.
+        val onto = activeLayer
+        val base = onto.bmp
         if (floating == null || sourceMask == null || base == null) {
             discardFloating()
             return
@@ -4574,20 +4701,21 @@ class PaintCanvasView @JvmOverloads constructor(
         val maskMatrix = floatMatrix(superSample / WandFloodFill.DOWNSAMPLE)
         val newRect = boundsOf(floatCorners())
         val op = MoveOp(sourceMask.copy(Bitmap.Config.ARGB_8888, false), Matrix(bufMatrix))
+        op.layerId = onto.id
         val liveMask = selectionMask
         val (newPaint, movedMask) = withContext(Dispatchers.Default) {
             compositeMove(base, op) to (liveMask?.let { transformMask(it, maskMatrix) })
         }
-        val oldPaint = paintBmp
+        val oldPaint = onto.bmp
         val oldMask = selectionMask
         val f = floating
         val hh = paintHole
         val m = floatSourceMask
-        paintBmp = newPaint
+        onto.bmp = newPaint
         committed.add(op)
         onOpCommitted?.invoke(op)
         clearRedo()
-        storeCheckpoint(activeOpCount(), newPaint)
+        if (onto === activeLayer) storeCheckpoint(activeOpCount(), newPaint)
         if (movedMask != null) selectionMask = movedMask
         selRect.set(newRect)
         floating = null
@@ -5228,15 +5356,34 @@ class PaintCanvasView @JvmOverloads constructor(
     }
 
     /**
-     * Selects a layer to paint on. Hidden layers cannot be selected: a stroke
-     * that lands somewhere invisible looks exactly like a stroke that failed.
+     * What came of asking for a layer — and when it was refused, why.
+     *
+     * Three answers rather than a yes/no, because the caller has to say something
+     * and there is no message that is true of all three. One boolean here meant a
+     * lifted selection was reported as a hidden layer, which is not a smaller
+     * mistake than saying nothing.
      */
-    fun selectLayer(index: Int): Boolean {
-        if (index !in layers.indices || !shown(layers[index])) return false
-        if (index == activeIndex) return true
+    enum class LayerPick { OK, HIDDEN, DRAWING, FLOATING }
+
+    /**
+     * Selects a layer to paint on.
+     *
+     * Hidden layers cannot be selected: a stroke that lands somewhere invisible
+     * looks exactly like a stroke that failed. Nor can the sheet be changed out
+     * from under a mark in progress — the panel is its own view and will take a
+     * second hand's tap while the pen is down, and a stroke that finished
+     * somewhere other than where it started is not a thing to have to explain.
+     * (The mark itself is safe either way: it carries the layer it began on, see
+     * [strokeLayer]. This is so the preview does not jump.)
+     */
+    fun selectLayer(index: Int): LayerPick {
+        if (index !in layers.indices) return LayerPick.HIDDEN
+        if (!shown(layers[index])) return LayerPick.HIDDEN
+        if (index == activeIndex) return LayerPick.OK
+        if (active != null) return LayerPick.DRAWING
         // A lifted selection belongs to the layer it was lifted from; carrying it
         // across would set it down somewhere it never came from. Put it down first.
-        if (floating != null) return false
+        if (floating != null) return LayerPick.FLOATING
         interruptWet()
         activeIndex = index
         // Checkpoints belong to whichever layer they were folded from.
@@ -5244,7 +5391,7 @@ class PaintCanvasView @JvmOverloads constructor(
         invalidate()
         onLayersChanged?.invoke()
         onHistoryChanged?.invoke()
-        return true
+        return LayerPick.OK
     }
 
     fun setLayerVisible(index: Int, visible: Boolean) {
@@ -5525,6 +5672,7 @@ class PaintCanvasView @JvmOverloads constructor(
         unbaked.clear()
         unbakedClips.forEach { it?.recycle() }
         unbakedClips.clear()
+        unbakedLayers.clear()
         active = null
         activeClip?.recycle()
         activeClip = null

@@ -20,7 +20,8 @@ import kotlin.math.sin
 /**
  * A painter's palette: pots of pigment around the rim, a well in the middle
  * where they mix. Drag (or tap) a pot to dab it into the well, tap the well to
- * load the brush from it.
+ * load the brush from it, hold the well to ask for a colour outright
+ * ([onWellHold]).
  *
  * The colour in the well is not blended in RGB — it is mixed spectrally, so
  * ultramarine and cadmium yellow make green here exactly as they would on the
@@ -43,6 +44,20 @@ class TrayView @JvmOverloads constructor(
 
     /** Fired when the well is tapped, with what the brush picked up. */
     var onLoadBrush: ((BrushLoad) -> Unit)? = null
+
+    /**
+     * Fired when the well is held down — the host opens the colour wheel.
+     *
+     * On the well rather than anywhere else because the well is the colour: it is
+     * what the brush will load, and asking for a colour outright is the same
+     * request as mixing one, made impatiently. Held rather than tapped because a
+     * tap on the well already means something, and it is the thing you do far more
+     * often.
+     *
+     * Null means the host is not offering a colour picker, and then holding the
+     * well does nothing at all.
+     */
+    var onWellHold: (() -> Unit)? = null
 
     /** Fired when the "+" pot is tapped — the host opens the colour wheel. */
     var onAddPot: (() -> Unit)? = null
@@ -81,12 +96,43 @@ class TrayView @JvmOverloads constructor(
     private var dragOverWell = false
     private var pressedSlot: Slot? = null
 
+    /**
+     * Set once a hold on the well has fired, so the release that follows does not
+     * *also* load the brush — one press should do one thing.
+     */
+    private var wellHeld = false
+
+    private val wellHold = Runnable {
+        val handler = onWellHold ?: return@Runnable
+        wellHeld = true
+        performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+        handler()
+    }
+
+    private fun armWellHold() {
+        if (onWellHold == null) return
+        wellHeld = false
+        postDelayed(wellHold, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+    }
+
+    private fun disarmWellHold() {
+        removeCallbacks(wellHold)
+    }
+
     private val density = resources.displayMetrics.density
     private fun dp(v: Float) = v * density
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         layoutSlots()
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        // A pending hold outlives the view otherwise, and fires into a palette
+        // that is no longer on screen.
+        disarmWellHold()
+        wellHeld = false
     }
 
     /**
@@ -258,6 +304,8 @@ class TrayView @JvmOverloads constructor(
                     dragY = y
                     dragOverWell = false
                     invalidate()
+                } else if (slot == null && inWell(x, y)) {
+                    armWellHold()
                 }
                 return true
             }
@@ -269,16 +317,24 @@ class TrayView @JvmOverloads constructor(
                     dragOverWell = inWell(x, y)
                     invalidate()
                 }
+                // A finger that has wandered off the well was going somewhere
+                // else; only a press that stays put is a hold.
+                if (!inWell(x, y)) disarmWellHold()
                 return true
             }
 
             MotionEvent.ACTION_UP -> {
                 val pot = dragPot
                 val pressed = pressedSlot
+                val held = wellHeld
+                disarmWellHold()
+                wellHeld = false
                 dragPot = null
                 dragOverWell = false
 
                 when {
+                    // The hold already did this press's work.
+                    held -> Unit
                     // Dragged a pot into the well, or just tapped it — both dab.
                     // Tapping is the forgiving path; dragging is the physical one.
                     pot != null && (inWell(x, y) || slotAt(x, y)?.pot == pot) -> {
@@ -300,6 +356,8 @@ class TrayView @JvmOverloads constructor(
             }
 
             MotionEvent.ACTION_CANCEL -> {
+                disarmWellHold()
+                wellHeld = false
                 dragPot = null
                 dragOverWell = false
                 pressedSlot = null

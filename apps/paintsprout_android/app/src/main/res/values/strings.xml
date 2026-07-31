@@ -61,6 +61,8 @@
     <string name="layers_reorder">Reorder layer</string>
     <string name="layers_opacity">Opacity</string>
     <string name="layers_hidden">Show a layer before drawing on it.</string>
+    <string name="layers_drawing">Finish the mark first.</string>
+    <string name="layers_floating">Set the selection down first.</string>
     <string name="layers_delete_title">Delete “%1$s”?</string>
     <string name="layers_delete_warning">Everything drawn on this layer goes with it. Undo brings it back.</string>
     <string name="layers_delete_confirm">Delete</string>

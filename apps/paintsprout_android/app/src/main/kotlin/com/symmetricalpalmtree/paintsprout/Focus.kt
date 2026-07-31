@@ -19,9 +19,9 @@ import com.symmetricalpalmtree.paintsprout.paint.Tool
  * when the drawing asks for it, and this file is the record of when each one
  * did.
  *
- * The current scope is a graphite drawing on paper: pencil and eraser, black,
- * with the pages and the undo stack that any sustained piece needs. No colour to
- * choose, no ground to choose, no second medium to be tempted by.
+ * The current scope is a drawing on paper: graphite, ink and an eraser, in a
+ * colour off the wheel, with the pages, the layers and the undo stack that any
+ * sustained piece needs. No ground to choose, and no palette to mix on.
  */
 object Focus {
 
@@ -32,18 +32,32 @@ object Focus {
      * scope: graphite is a medium you take back out again, and undo only ever
      * removes the stroke you just made — not the corner of one you made twenty
      * strokes ago.
+     *
+     * The pen came back when the layers did, because between them they are one
+     * technique rather than two features: graphite underneath, ink on a sheet of
+     * its own over it, and the pencil turned off or thrown away at the end
+     * without the ink losing a line.
+     *
+     * Then the brush, which is the first tool here that *reads* the page as well
+     * as marking it — it carries a finite load, runs dry, and picks up the paint
+     * it drags through. It lifts from the layer under it and no other: paint on a
+     * sheet below is not paint the bristles can reach, and carrying it up would
+     * put a second copy of it above the one still lying there.
      */
-    val TOOLS: List<Tool> = listOf(Tool.PENCIL, Tool.ERASER)
+    val TOOLS: List<Tool> = listOf(Tool.PENCIL, Tool.PEN, Tool.BRUSH, Tool.ERASER)
 
     /** What the rail falls back to when the selected tool is not on offer. */
     val DEFAULT_TOOL: Tool = Tool.PENCIL
 
     /**
-     * The one colour, while there is no way to choose one.
+     * Where the palette starts — and, while [SHOW_COLOR] is off, the only colour
+     * there is.
      *
-     * Enforced rather than merely defaulted: a page carries the brush load it
-     * was last painted with, and restoring one would otherwise reintroduce a
-     * colour through a door the rail has closed.
+     * Enforced rather than merely defaulted in that case: a page carries the
+     * brush load it was last painted with, so a page painted in colour would
+     * otherwise bring one back through a door the rail had closed. With the
+     * swatch on the rail that restore is wanted, and this is only the colour a
+     * first page opens on.
      */
     @Suppress("MagicNumber")
     val COLOR: Int = Color.BLACK
@@ -61,8 +75,14 @@ object Focus {
     //
     // Each flag is one control. `false` means built but never shown.
 
-    /** The stroke colour swatch. Off: everything is [COLOR]. */
-    const val SHOW_COLOR = false
+    /**
+     * The stroke colour swatch. Off: everything is [COLOR].
+     *
+     * The wheel, not the tray: a colour you pick is one decision, and mixing one
+     * out of pigments is a whole practice. The swatch also carries a page's
+     * colour back on open again, which it could not while the palette was locked.
+     */
+    const val SHOW_COLOR = true
 
     /** The mm size button. On: a pencil is a lead weight you change. */
     const val SHOW_SIZE = true
@@ -133,8 +153,20 @@ object Focus {
     /** Sending a page to another book. Nothing to send it to yet. */
     const val SHOW_SEND_PAGE = false
 
-    /** The mixing tray. A palette is for colour, and there is no colour. */
-    const val SHOW_TRAY = false
+    /**
+     * The mixing tray.
+     *
+     * Back with the brush, because the two are one object: a brush carries a load
+     * of paint, and the tray is where a load comes from and where the dirty one
+     * gets washed out. The swatch can charge the brush with a flat colour, but
+     * mixing green out of blue and yellow needs somewhere to put them.
+     *
+     * Opened from the colour swatch on the rail, which it grows out of; holding
+     * the well in its middle asks for a flat colour off the wheel instead. So
+     * [SHOW_COLOR] and this are two halves of one control, and the swatch is on
+     * the rail if *either* is on — see `MainActivity.buildRail`.
+     */
+    const val SHOW_TRAY = true
 
     /**
      * The layers panel.

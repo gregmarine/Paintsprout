@@ -32,13 +32,13 @@ physically rotate the tablet instead.
 - ✅ **Render styles:** solid, soft, grain, bristle, wash
 - ✅ **Surfaces (9):** Plain, Paper, Canvas, Watercolor, Wood, Stone, Concrete, Metal, Chalkboard — each with per-surface custom parameters + per-artwork seed, and a tooth field that breaks up strokes
 - ✅ **Pigment mixing:** spectral Kubelka-Munk (blue + yellow = green), on the GPU at stroke time and on the CPU (`Pigment.kt`) for the tray/brush
-- ✅ **Mixing tray:** a docked pull-out palette — named-pigment wells around the rim + a central mixing well, drag pigments in to mix them spectrally, tap to load the brush; add any wheel colour as a new well
+- ✅ **Mixing tray:** a palette that pops out of the colour swatch on the rail — named-pigment wells around the rim + a central mixing well, drag pigments in to mix them spectrally, tap the well to load the brush, hold it for the colour wheel; add any wheel colour as a new well
 - ✅ **Brush load:** the brush carries a finite load from the tray, spends it over the ground it covers (per real mm²) and fades as it runs dry, reload from the well
 - ✅ **Dirty brush:** dragging through paint on the canvas contaminates the load — a blue brush pulled across a yellow band comes out green and carries it forward
 - ✅ **Undo/redo:** unlimited, via replayable ops
 - ✅ **Magic-wand selection:** select, fill/erase, frisket-constrained painting, move/scale/rotate
 - ✅ **Watercolor interaction:** washes out existing paint
-- ✅ **Color:** HSV wheel + swatches
+- ✅ **Color:** HSV wheel + swatches + R/G/B sliders and typed fields + hex entry. One active colour, wherever it came from: mixing in the well, dialling the wheel and loading the brush all set the same value, and every tool that has a colour reads it
 - ✅ **Editable shape tools:** line, arc, polyline, polyarc (handle-edit before bake)
 - ✅ **Export:** PNG to device gallery
 - ✅ **True-size (1:1) output:** screen calibration to real PPI (physical-reference match), brush/tool sizes in millimetres, real-size canvas presets (drawn 1:1, centred in a mat), and DPI-stamped PNG that prints at the exact on-screen physical size — verified on paper. E-ink frame canvases are the deliberate exception: pixel-exact to the frame's grid rather than true-size to the glass
@@ -187,8 +187,8 @@ Biggest structural gap. Two layers today (surface, paint); paint layer is flat r
 | ⬜ | Palette from an image | Extract |
 | ⬜ | Recent colors history | |
 | ⬜ | Color harmony wheel | Complementary, triadic, analogous |
-| ⬜ | Numeric entry | Hex, RGB, HSL sliders |
-| ✅ | Physical mixing tray | Docked pull-out palette: named-pigment wells + a central mixing well, drag to mix spectrally *before* painting, tap to load the brush. Custom colours off the wheel become wells too |
+| 🚧 | Numeric entry | **Hex and RGB done** — each channel has a slider *and* a typed field, plus a hex field that takes `#RRGGBB`, `#RGB` or 8 digits with the alpha dropped. Every control syncs through one place and never rewrites the one being typed in (`ColorFields.kt`). HSL is the remainder |
+| ✅ | Physical mixing tray | A palette that pops out of the colour swatch on the rail: named-pigment wells + a central mixing well, drag to mix spectrally *before* painting, tap the well to load the brush, hold it for the colour wheel. Custom colours off the wheel become wells too |
 | 🚧 | Named real pigments | Ultramarine, Cadmium Yellow, Quinacridone Magenta, Phthalo Green, etc. shipped as the tray's wells — but curated **sRGB** with real names, NOT measured KM coefficients. Measured coefficients (truer mixing) remain the refinement |
 | ⬜ | Grayscale value preview | Check values |
 | ⬜ | Colorblind preview | |
