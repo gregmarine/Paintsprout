@@ -79,6 +79,7 @@ import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
 import com.symmetricalpalmtree.paintsprout.paint.resolveDensity
 import com.symmetricalpalmtree.paintsprout.paint.chiselNibWidth
 import com.symmetricalpalmtree.paintsprout.paint.resolveWidth
+import com.symmetricalpalmtree.paintsprout.paint.eraserWidth
 import com.symmetricalpalmtree.paintsprout.paint.strokeRegionPath
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -139,6 +140,24 @@ class PaintCanvasView @JvmOverloads constructor(
                 if (old == Tool.POLYARC && hasPendingPolyarc) commitPendingPolyarc()
             }
         }
+
+    /**
+     * Whether the mark being made is being made with the other end of the pen.
+     *
+     * A pencil with a rubber on it is one instrument, not two. Turning it over
+     * is something the hand does mid-sentence — it is not a mode the app is put
+     * into, and nothing on the rail moves while you do it. So this lasts exactly
+     * as long as the mark does: set as the eraser end comes down, cleared as it
+     * lifts, and read fresh at every pen-down.
+     */
+    private var eraserEnd = false
+
+    /**
+     * What the mark in progress is actually being made with: the tool in hand,
+     * unless the hand turned the pen over. Everything on the input path reads
+     * this; [tool] is only ever the tool that was *chosen*.
+     */
+    private val effectiveTool: Tool get() = if (eraserEnd) Tool.ERASER else tool
 
     /**
      * Watercolor's water mode: strokes carry clean water instead of pigment —
@@ -239,6 +258,14 @@ class PaintCanvasView @JvmOverloads constructor(
     /** Base size override; null uses the tool's default. */
     var baseSize: Float? = null
 
+    /**
+     * The width (px) the pen's eraser end rubs out at — the eraser's own size,
+     * not the size of whatever is in hand. Turning the pen over reaches for the
+     * eraser you last set; it does not hand you a pencil-thin rubber because a
+     * pencil happened to be selected. Null falls back to the eraser's default.
+     */
+    var eraserSize: Float? = null
+
     /** The surface being painted on. User changes go through [commitSurfaceChange]. */
     var surface: SurfaceKind = SurfaceKind.PAPER
         private set
@@ -315,7 +342,15 @@ class PaintCanvasView @JvmOverloads constructor(
     var wandEdgeSensitivity: Float = 0.5f
     var wandGap: Int = 3
 
-    private fun sizeFor(t: Tool): Float = baseSize ?: t.defaultSize
+    /**
+     * The width a tool marks at: the size pushed from the rail, which belongs to
+     * the tool that was chosen. The pen's eraser end is the one thing not on the
+     * rail, so it brings its own — and only for itself, so a pending line drawn
+     * over while the pen is flipped is still previewed at the line's width.
+     */
+    private fun sizeFor(t: Tool): Float =
+        if (eraserEnd && t == Tool.ERASER) eraserSize ?: t.defaultSize
+        else baseSize ?: t.defaultSize
 
     // --- Buffers ------------------------------------------------------------
     private var surfaceBmp: Bitmap? = null
@@ -552,6 +587,8 @@ class PaintCanvasView @JvmOverloads constructor(
     private fun predictedTailPoint(): StrokePoint? {
         if (active == null) return null
         val e = motionPredictor.predict() ?: return null
+        // Whatever the mark is being made with, right way up or not.
+        val tool = effectiveTool
         try {
             if (!insideCanvas(e.x, e.y)) return null
             val pressure = normPressure(e.pressure)
@@ -559,6 +596,11 @@ class PaintCanvasView @JvmOverloads constructor(
             val width = resolveWidth(tool, sizeFor(tool), pressure, tilt)
             val density = resolveDensity(tool, pressure)
             return when {
+                // The tail of an erase is sized the way the stroke is, or the
+                // preview runs ahead of the pen at the wrong width.
+                tool == Tool.ERASER -> StrokePoint(
+                    Vec2(e.x, e.y), eraserWidth(sizeFor(tool), pressure, tilt), density,
+                )
                 tool.usesLoad ->
                     StrokePoint(Vec2(e.x, e.y), width, density, color = brushLoad.color, load = brushLoad.fill)
                 // The preview tail carries the tip's current saturation and
@@ -2184,27 +2226,29 @@ class PaintCanvasView @JvmOverloads constructor(
                 // sample that crosses onto it; the rest of the batch follows.
                 val replayFrom = if (pendingEntryId == INVALID_POINTER) 0 else beginOnEntry(event)
                 if (replayFrom < 0) return true
-                if (tool == Tool.WAND) {
+                // Flipped over, none of these are what is in hand: the eraser end
+                // rubs out, and the half-built shape waits for the tip.
+                if (effectiveTool == Tool.WAND) {
                     handleWandMove(event)
                     return true
                 }
-                if (tool == Tool.LASSO) {
+                if (effectiveTool == Tool.LASSO) {
                     handleLassoMove(event)
                     return true
                 }
-                if (tool == Tool.LINE) {
+                if (effectiveTool == Tool.LINE) {
                     handleLineMove(event)
                     return true
                 }
-                if (tool == Tool.ARC) {
+                if (effectiveTool == Tool.ARC) {
                     handleArcMove(event)
                     return true
                 }
-                if (tool == Tool.POLYLINE) {
+                if (effectiveTool == Tool.POLYLINE) {
                     handlePolyMove(event)
                     return true
                 }
-                if (tool == Tool.POLYARC) {
+                if (effectiveTool == Tool.POLYARC) {
                     handlePolyarcMove(event)
                     return true
                 }
@@ -2236,31 +2280,37 @@ class PaintCanvasView @JvmOverloads constructor(
                 if (event.getPointerId(actionIndex) == pendingEntryId) {
                     pendingEntryId = INVALID_POINTER
                 }
-                if (tool == Tool.WAND) {
+                if (effectiveTool == Tool.WAND) {
                     handleWandUp(event, actionIndex)
                     return true
                 }
-                if (tool == Tool.LASSO) {
+                if (effectiveTool == Tool.LASSO) {
                     handleLassoUp(event, actionIndex)
                     return true
                 }
-                if (tool == Tool.LINE) {
+                if (effectiveTool == Tool.LINE) {
                     handleLineUp(event, actionIndex)
                     return true
                 }
-                if (tool == Tool.ARC) {
+                if (effectiveTool == Tool.ARC) {
                     handleArcUp(event, actionIndex)
                     return true
                 }
-                if (tool == Tool.POLYLINE) {
+                if (effectiveTool == Tool.POLYLINE) {
                     handlePolyUp(event, actionIndex)
                     return true
                 }
-                if (tool == Tool.POLYARC) {
+                if (effectiveTool == Tool.POLYARC) {
                     handlePolyarcUp(event, actionIndex)
                     return true
                 }
                 val stroke = active
+                // The pen is up. Which end the next mark is made with is read at
+                // the next pen-down and never carried over from this one — a
+                // stale flip would have the tip rubbing out.
+                if (stroke == null || event.getPointerId(actionIndex) == activePointerId) {
+                    eraserEnd = false
+                }
                 if (stroke != null && event.getPointerId(actionIndex) == activePointerId) {
                     if (stroke === wetStroke) {
                         // The wash stays live past pen-up: it keeps spreading and
@@ -2303,21 +2353,30 @@ class PaintCanvasView @JvmOverloads constructor(
      * [beginOnEntry].
      */
     private fun stylusDown(event: MotionEvent, actionIndex: Int) {
+        // Which end of the pen this is — the one place it is read, because this
+        // is the one place a mark starts. A mark that began off the sheet is set
+        // down here too, from a copy carrying the same pointer properties, so it
+        // arrives the right way up as well (see [entryDown]). A second pointer
+        // touching down mid-mark does not turn the mark already in flight over.
+        if (active == null) {
+            eraserEnd = event.getToolType(actionIndex) == MotionEvent.TOOL_TYPE_ERASER
+        }
+        val marking = effectiveTool
         // A new mark cuts a still-settling wash short (committed as shown).
         interruptWet()
-        if (tool == Tool.WAND) return handleWandDown(event, actionIndex)
-        if (tool == Tool.LASSO) return handleLassoDown(event, actionIndex)
-        if (tool == Tool.LINE) return handleLineDown(event, actionIndex)
-        if (tool == Tool.ARC) return handleArcDown(event, actionIndex)
-        if (tool == Tool.POLYLINE) return handlePolyDown(event, actionIndex)
-        if (tool == Tool.POLYARC) return handlePolyarcDown(event, actionIndex)
+        if (marking == Tool.WAND) return handleWandDown(event, actionIndex)
+        if (marking == Tool.LASSO) return handleLassoDown(event, actionIndex)
+        if (marking == Tool.LINE) return handleLineDown(event, actionIndex)
+        if (marking == Tool.ARC) return handleArcDown(event, actionIndex)
+        if (marking == Tool.POLYLINE) return handlePolyDown(event, actionIndex)
+        if (marking == Tool.POLYARC) return handlePolyarcDown(event, actionIndex)
         if (active != null) return
         activePointerId = event.getPointerId(actionIndex)
         pressureMax = event.device
             ?.getMotionRange(MotionEvent.AXIS_PRESSURE)
             ?.max
             ?.takeIf { it > 0f } ?: 1.0f
-        val color = if (tool == Tool.ERASER) Color.WHITE else strokeColor
+        val color = if (marking == Tool.ERASER) Color.WHITE else strokeColor
         // Capture the frisket this stroke is drawn under, if any.
         activeClip = selectionMask?.copy(Bitmap.Config.ARGB_8888, false)
         // And the sheet it is being drawn on, for the same reason.
@@ -2333,15 +2392,15 @@ class PaintCanvasView @JvmOverloads constructor(
             event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
         )
         val stroke = Stroke(
-            tool, color, seed = Random.nextInt(), baseWidth = sizeFor(tool),
-            water = tool == Tool.WATERCOLOR && waterMode,
+            marking, color, seed = Random.nextInt(), baseWidth = sizeFor(marking),
+            water = marking == Tool.WATERCOLOR && waterMode,
         )
         active = stroke
-        if (tool == Tool.SPRAY) {
+        if (marking == Tool.SPRAY) {
             removeCallbacks(sprayDwell)
             postDelayed(sprayDwell, SPRAY_DWELL_MS)
         }
-        if (tool == Tool.WATERCOLOR) {
+        if (marking == Tool.WATERCOLOR) {
             startWetSim(stroke)
             startDrying(stroke)
         }
@@ -2435,7 +2494,10 @@ class PaintCanvasView @JvmOverloads constructor(
             Tool.POLYARC -> !paFinished && paAnchors.isNotEmpty()
             else -> false
         }
-        if (!building || !isStylus(event.getToolType(event.actionIndex))) {
+        // The eraser end is not going to place the next anchor, so the rubber
+        // band does not follow it around.
+        val toolType = event.getToolType(event.actionIndex)
+        if (!building || toolType == MotionEvent.TOOL_TYPE_ERASER || !isStylus(toolType)) {
             if (polyHoverPt != null) { polyHoverPt = null; invalidate() }
             if (paHoverPt != null) { paHoverPt = null; invalidate() }
             return super.onHoverEvent(event)
@@ -3668,8 +3730,20 @@ class PaintCanvasView @JvmOverloads constructor(
      * brush drains.
      */
     private fun buildPoint(pos: Vec2, pressure: Float, tilt: Float, spacing: Float = 0f): StrokePoint {
+        // Whatever the mark is being made with, right way up or not. Shadowing
+        // the property deliberately: nothing below wants the tool that was
+        // *chosen*, it wants the end of the pen actually on the paper.
+        val tool = effectiveTool
         var width = resolveWidth(tool, sizeFor(tool), pressure, tilt)
         val density = resolveDensity(tool, pressure)
+
+        // The rubber is a body, not a point: how much of it is against the paper
+        // is the hand's to say, and it comes out as width. Pressure is spent
+        // twice over here — on how much is touching AND on how much it lifts —
+        // which is what a real eraser does.
+        if (tool == Tool.ERASER) {
+            return StrokePoint(pos, eraserWidth(sizeFor(tool), pressure, tilt), density)
+        }
 
         // A hurried pen lays a hair less ink per length: subtle speed→width
         // thinning from the EMA'd spacing between accepted points — seeded

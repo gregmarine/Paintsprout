@@ -120,6 +120,56 @@ fun resolveDensity(tool: Tool, pressureNorm: Float): Float {
 /** Scaled pressure at which the eraser reaches full lift. */
 const val ERASER_FULL_AT = 0.45f
 
+// --- How much eraser is touching --------------------------------------------
+// A pencil's tip is a point; the rubber on the other end is a flat-faced plug,
+// and how much of that face is against the paper is the hand's to say. Held
+// upright the whole face is down and it rubs at its full width. Tip it over and
+// only the rim touches — a far smaller patch, which is how one rubber takes the
+// corner out of a drawing without ever being swapped for a finer one. Bearing
+// down squashes whatever is touching and spreads it a little further.
+//
+// Both come out as SIZE. An oval footprint that leant with the pen was built
+// here first and rejected — and it was wrong twice over, because a flat face
+// tipped onto its rim meets the paper as a thin sliver and not as a fatter
+// oval. The eraser is round, at whatever size the way you are holding it earns.
+
+/**
+ * How far the rubber squashes with pressure, as a multiple of the size set on
+ * the rail.
+ *
+ * Set against the measured hand the rest of the feel work was tuned to (light
+ * 0.20-0.29, normal 0.60, hard 0.90-1.0), so a normal erasing pressure lands at
+ * about the size you asked for and the range opens either side of it.
+ */
+const val ERASER_SQUASH_MIN = 0.72f
+const val ERASER_SQUASH_MAX = 1.30f
+
+/**
+ * What a fully tipped-over eraser comes down to, as a fraction of the upright
+ * face. Set against the real thing: a 6 mm rubber up on its rim touches paper
+ * over something like a couple of millimetres, not over half its face.
+ */
+const val ERASER_TILT_MIN = 0.30f
+
+/**
+ * The width of the eraser's contact patch: the size it was set to, taken in by
+ * how the pen is being held.
+ *
+ * Shares [PRESSURE_GAMMA] and the measured tilt band with every other response
+ * in the app, so bearing down and leaning over mean the same thing here as they
+ * do everywhere else.
+ */
+fun eraserWidth(base: Float, pressureNorm: Float, tiltRadians: Float): Float {
+    val p = pressureNorm.coerceIn(0.0f, 1.0f).pow(PRESSURE_GAMMA)
+    val squash = lerp(ERASER_SQUASH_MIN, ERASER_SQUASH_MAX, p)
+
+    val rawTilt = ((tiltRadians - TILT_LO_RAD) / (TILT_HI_RAD - TILT_LO_RAD))
+        .coerceIn(0.0f, 1.0f)
+    val lean = lerp(1.0f, ERASER_TILT_MIN, rawTilt.pow(TILT_EASE))
+
+    return max(0.5f, base * squash * lean)
+}
+
 /** Pressure response gamma: >1 lightens light touches and keeps the top
  *  of the range differentiating instead of clamping flat. */
 const val PRESSURE_GAMMA = 1.25f

@@ -1834,6 +1834,11 @@ class MainActivity : AppCompatActivity() {
         val mm = sizes[tool] ?: tool.defaultSizeMm
         val ppi = Calibration.effectivePpi(this)
         binding.canvas.baseSize = Calibration.mmToPx(mm, ppi)
+        // The pen's eraser end is not on the rail and cannot be the chosen tool,
+        // but it still has a size — the eraser's own, whatever is in hand — so
+        // the canvas is given that one alongside.
+        val eraserMm = sizes[Tool.ERASER] ?: Tool.ERASER.defaultSizeMm
+        binding.canvas.eraserSize = Calibration.mmToPx(eraserMm, ppi)
         // The brush spends paint per real mm² covered, so it needs the same
         // physical scale the sizes use.
         binding.canvas.pxPerMm = Calibration.mmToPx(1f, ppi)

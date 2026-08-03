@@ -240,4 +240,55 @@ class StrokeGeometryTest {
         val graze = resolveDensity(Tool.ERASER, 0.15f)
         assertTrue("graze should lift partially, was $graze", graze in 0.2f..0.7f)
     }
+
+    // --- How much eraser is touching -----------------------------------------
+
+    @Test
+    fun eraserSquashesWithPressure() {
+        val base = 20f
+        val upright = 0f
+        // A graze rides on the crown of the rubber; bearing down flattens it.
+        assertTrue(eraserWidth(base, 0f, upright) < base)
+        assertTrue(eraserWidth(base, 1f, upright) > base)
+        // The size you set is the size an ordinary erasing hand gets: the
+        // measured normal pressure is ~0.6, and it must land within a few
+        // percent of nominal or the mm size on the rail stops meaning anything.
+        assertEquals(base, eraserWidth(base, 0.6f, upright), base * 0.08f)
+        // Monotonic — no dip anywhere in the range.
+        var prev = 0f
+        for (i in 0..20) {
+            val w = eraserWidth(base, i / 20f, upright)
+            assertTrue("width dipped at p=${i / 20f}", w >= prev)
+            prev = w
+        }
+    }
+
+    @Test
+    fun eraserNarrowsAsThePenGoesOver() {
+        val base = 20f
+        val p = 0.6f
+        // Upright is the full patch, and stays so up to where the band starts.
+        val flat = eraserWidth(base, p, 0f)
+        assertEquals(flat, eraserWidth(base, p, TILT_LO_RAD), eps)
+        // Leaning takes it in, down to ERASER_TILT_MIN of upright and no
+        // further however far past the band the pen goes.
+        val leaning = eraserWidth(base, p, TILT_HI_RAD)
+        assertEquals(flat * ERASER_TILT_MIN, leaning, 0.01f)
+        assertEquals(leaning, eraserWidth(base, p, 1.5f), eps) // clamped
+        assertTrue("leaning must narrow, not widen", leaning < flat)
+        // Monotonic the whole way over — no bulge mid-lean.
+        var prev = Float.MAX_VALUE
+        for (i in 0..20) {
+            val w = eraserWidth(base, p, i / 20f * TILT_HI_RAD)
+            assertTrue("width grew while leaning at step $i", w <= prev + eps)
+            prev = w
+        }
+    }
+
+    @Test
+    fun eraserNeverVanishes() {
+        // The lightest graze at the flattest hold on the smallest setting still
+        // has to leave something you can aim.
+        assertTrue(eraserWidth(0.1f, 0f, TILT_HI_RAD) >= 0.5f)
+    }
 }

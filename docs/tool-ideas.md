@@ -43,6 +43,7 @@ physically rotate the tablet instead.
 - ✅ **Export:** PNG to device gallery
 - ✅ **True-size (1:1) output:** screen calibration to real PPI (physical-reference match), brush/tool sizes in millimetres, real-size canvas presets (drawn 1:1, centred in a mat), and DPI-stamped PNG that prints at the exact on-screen physical size — verified on paper. E-ink frame canvases are the deliberate exception: pixel-exact to the frame's grid rather than true-size to the glass
 - ✅ **Input:** pressure + tilt, palm rejection, stylus-only; a pen arriving from off the sheet goes live the instant it crosses onto it, and the editor holds the screen so Android's own edge gestures stay out of a painting
+- ✅ **Both ends of the pen:** turn a stylus over and its eraser end rubs out at the eraser's own size, for that mark only, with nothing on the rail changing. How the rubber is held sets how much of it is touching — upright and bearing down is the full face, tipped over is the rim — so one eraser runs about six to one in width without going near a setting
 
 ---
 
@@ -81,7 +82,8 @@ physically rotate the tablet instead.
 | ⬜ | Dodge / Burn | |
 | ⬜ | Sponge (saturate/desaturate) | |
 | ⬜ | Kneaded eraser | Lifts partially rather than clearing to surface |
-| ⬜ | Pressure-sensitive eraser | |
+| ✅ | Pressure-sensitive eraser | Pressure is spent twice, as a real rubber spends it: on how much *lifts* (the ramp saturates at 0.45, so an ordinary pass removes fully and only a graze leaves a ghost) and on how much is *touching* — the rubber squashes, 0.72×–1.30× of the set size, landing at nominal for a measured normal hand. `eraserWidth` |
+| ✅ | Tilt-sensitive eraser | A pencil's rubber is a flat-faced plug: held upright the whole face is down and it rubs at full width; tipped over, only the rim touches. So leaning takes the patch down to 0.30× — about six to one across every hold, which is one rubber that both clears a passage and picks a corner out. An **oval** footprint that leant with the pen was built first and rejected: the shape of the mark is not what the hand is asking about, and it was wrong anyway, since a flat face on its rim meets paper as a thin sliver rather than a fatter oval |
 | ⬜ | Textured eraser | Respects current brush's texture |
 
 ### Brush engine
@@ -246,7 +248,7 @@ Where Paintsprout could be genuinely unlike anything else — the hard parts are
 | ✅ | The screen belongs to the painting | Hiding the system bars never stopped the gestures that summon them, and a hand at the edge of the paper is exactly where they live — the status bar drops or the app switcher appears mid-stroke. The editor takes lock task mode (Android's own app pinning) on the way in. Taken **once and kept** — across the library, across page turns — because every request is a system dialog that cannot be suppressed: only a device-owner-allowlisted app skips it, and a tablet with accounts on it cannot be given a device owner. Given back only at the few doors that lead outside the app (import, share, backup folder pickers), which pinning otherwise refuses to open, silently. `ScreenLock.kt`. Separately, the back gesture is pushed off the left and right edges with `systemGestureExclusionRects`; the status-bar pull and the home/app-switch swipes are *mandatory* system gestures no app may exclude, which is why pinning is needed for those at all. Unpinning by hand drops the tablet to the lock screen unless `settings put secure lock_to_app_exit_locked 0` says otherwise — a device setting, not ours |
 | ✅ | The pen is live where it crosses onto the sheet | A press landing in the mat — or arriving already moving from off the panel — used to be thrown away, so a hand coming in from the side had to lift and start again over the paper. The press is now kept, and the mark begins at the first sample on paper, dispatched as a real pen-down built from *that* sample's own pressure and tilt rather than the end of whatever batch it arrived in. `PaintCanvasView.beginOnEntry` |
 | ⬜ | Stylus barrel-button mapping | Movink has buttons we're not using |
-| ⬜ | Eraser end of stylus | Flips to eraser tool automatically |
+| ✅ | Eraser end of stylus | Turn the pen over and it rubs out, whatever is in hand — including the wand, the lasso and a half-built shape, which simply wait for the tip. Scoped to the mark, not to a mode: set when the eraser end comes down (`TOOL_TYPE_ERASER`, which the Movink digitizer raises as `BTN_TOOL_RUBBER`), cleared when it lifts, and **nothing on the rail moves** — turning a pencil over is something the hand does mid-sentence, not a mode the app is put into. It erases at the eraser's *own* size rather than the size of the tool that happens to be selected, so the canvas carries that size alongside the chosen one. `PaintCanvasView.eraserEnd` / `effectiveTool` |
 | ⬜ | Speed → width tapering | For ink strokes |
 | ⬜ | Radial quick menu | Long-press or button |
 | ⬜ | Keyboard shortcuts | |
