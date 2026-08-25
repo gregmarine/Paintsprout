@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The type scale and the widget set. Every text style names its colour rather
+  than inheriting one, because the failure this guards against is silent: a
+  widget that picks up a themed secondary text colour looks fine in the layout
+  preview and washes out entirely on the panel.
+
+  stateListAnimator is null everywhere a button appears. Those animators exist to
+  raise and lower elevation, and elevation on e-ink is a grey smear that costs a
+  refresh.
+-->
+<resources>
+
+    <style name="TextAppearance.Paintsprout" parent="@android:style/TextAppearance">
+        <item name="android:textColor">@color/inkBlack</item>
+    </style>
+
+    <style name="TextAppearance.Paintsprout.HeadlineLarge">
+        <item name="android:textSize">32sp</item>
+        <item name="android:textStyle">normal</item>
+        <item name="android:textColor">@color/inkBlack</item>
+    </style>
+
+    <style name="TextAppearance.Paintsprout.TitleLarge">
+        <item name="android:textSize">22sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">@color/inkBlack</item>
+    </style>
+
+    <style name="TextAppearance.Paintsprout.TitleMedium">
+        <item name="android:textSize">16sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">@color/inkBlack</item>
+    </style>
+
+    <style name="TextAppearance.Paintsprout.BodyLarge">
+        <item name="android:textSize">16sp</item>
+        <item name="android:textStyle">normal</item>
+        <item name="android:textColor">@color/inkBlack</item>
+    </style>
+
+    <style name="TextAppearance.Paintsprout.BodyMedium">
+        <item name="android:textSize">14sp</item>
+        <item name="android:textStyle">normal</item>
+        <item name="android:textColor">@color/inkBlack</item>
+    </style>
+
+    <!-- The one style that takes inkLight, and it is named for what it is: text
+         the reader is meant to skip. A caption that carries meaning takes
+         BodyMedium and gets smaller, not greyer. -->
+    <style name="TextAppearance.Paintsprout.Hint">
+        <item name="android:textSize">12sp</item>
+        <item name="android:textStyle">normal</item>
+        <item name="android:textColor">@color/inkLight</item>
+    </style>
+
+    <!-- Filled black: the one affirmative action on a screen. White-on-black is
+         the strongest thing the panel can draw, so it is spent once per screen
+         or it stops meaning anything. -->
+    <style name="Widget.Paintsprout.FilledButton" parent="Widget.AppCompat.Button">
+        <item name="android:background">@drawable/shape_filled</item>
+        <item name="android:textColor">@color/paperWhite</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:stateListAnimator">@null</item>
+        <item name="android:paddingStart">16dp</item>
+        <item name="android:paddingEnd">16dp</item>
+        <item name="android:paddingTop">8dp</item>
+        <item name="android:paddingBottom">8dp</item>
+    </style>
+
+    <style name="Widget.Paintsprout.OutlinedButton" parent="Widget.AppCompat.Button">
+        <item name="android:background">@drawable/shape_bordered</item>
+        <item name="android:textColor">@color/inkBlack</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:stateListAnimator">@null</item>
+        <item name="android:paddingStart">16dp</item>
+        <item name="android:paddingEnd">16dp</item>
+        <item name="android:paddingTop">8dp</item>
+        <item name="android:paddingBottom">8dp</item>
+    </style>
+
+    <style name="Widget.Paintsprout.TextButton" parent="Widget.AppCompat.Button">
+        <item name="android:background">@android:color/transparent</item>
+        <item name="android:textColor">@color/inkBlack</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:stateListAnimator">@null</item>
+        <item name="android:paddingStart">8dp</item>
+        <item name="android:paddingEnd">8dp</item>
+        <item name="android:paddingTop">8dp</item>
+        <item name="android:paddingBottom">8dp</item>
+    </style>
+
+    <!-- Selected state is a heavier border, never a fill and never a tint. A
+         filled selected state would have to be grey to stay legible, and grey is
+         the one thing this panel cannot hold steady. -->
+    <style name="Widget.Paintsprout.ToolbarButton" parent="">
+        <item name="android:layout_width">@dimen/toolbar_button_size</item>
+        <item name="android:layout_height">@dimen/toolbar_button_size</item>
+        <item name="android:background">@drawable/bg_toolbar_button</item>
+        <item name="android:padding">@dimen/toolbar_button_padding</item>
+        <item name="android:scaleType">fitCenter</item>
+        <item name="android:stateListAnimator">@null</item>
+    </style>
+
+    <style name="Widget.Paintsprout.DialogButton" parent="Widget.AppCompat.Button.ButtonBar.AlertDialog">
+        <item name="android:textColor">@color/inkBlack</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:stateListAnimator">@null</item>
+        <item name="android:background">@android:color/transparent</item>
+    </style>
+
+    <style name="Widget.Paintsprout.RadioButton" parent="Widget.AppCompat.CompoundButton.RadioButton">
+        <item name="android:textColor">@color/inkBlack</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:button">@drawable/radio_selector</item>
+        <item name="android:stateListAnimator">@null</item>
+        <item name="android:padding">8dp</item>
+    </style>
+
+</resources>

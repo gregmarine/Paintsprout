@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The whole palette. Four values, and three of them are black, white and a grey
+  that only says "don't read this".
+
+  E-ink has no backlight and very few stable levels, so a mid-grey that looks
+  like restrained hierarchy on an LCD arrives on the panel as text the reader
+  has to work at. The rule that follows: anything carrying information is
+  inkBlack, however secondary it is. Make it smaller to make it quieter — never
+  greyer.
+
+  There is no colour here at all. Arc 1 draws greyscale graphite because the
+  NA5C's Kaleido filter costs resolution and contrast on anything that uses it,
+  and chrome that spent colour it doesn't need would be paying that price for
+  decoration.
+-->
+<resources>
+    <color name="inkBlack">#000000</color>
+    <color name="paperWhite">#FFFFFF</color>
+
+    <!-- Text the user is meant NOT to read: a hint that vanishes at the first
+         keystroke, a disabled control. Never a caption, never a subtitle. -->
+    <color name="inkLight">#888888</color>
+
+    <!-- Subtle dividers only, and honestly: this is invisible on the panel. Any
+         border that must actually be seen takes inkBlack. -->
+    <color name="borderGray">#CCCCCC</color>
+</resources>

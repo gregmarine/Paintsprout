@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launcher icon. paperWhite behind the sprout rather than a colour field —
+  the reasoning is in drawable/ic_launcher_foreground.xml, which is where the
+  mark itself lives.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/paperWhite" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

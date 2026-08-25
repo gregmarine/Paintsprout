@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A copy of mipmap-anydpi-v26/ic_launcher.xml, and on this device it is never the
+  one chosen: minSdk is 29, and from API 26 the anydpi-v26 tier always wins.
+
+  It is kept anyway, honestly labelled rather than quietly deleted, because the
+  launcher here is not stock Android. BOOX ships its own, and an OEM launcher
+  that reaches for a density bucket directly — for a shortcut, a recents card —
+  finds an icon rather than nothing. Six small files is a cheap price for not
+  having to diagnose a blank icon on a panel that takes a second to redraw.
+
+  If it ever needs to differ from the canonical one, this is the file to change.
+  Until then it tracks it.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/paperWhite" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

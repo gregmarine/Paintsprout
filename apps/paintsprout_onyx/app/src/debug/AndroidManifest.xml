@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The debug build wears a different name on the launcher because it is a
+  different app: its own id, its own library, and from G1 its own recovery key.
+  Two icons that looked identical on the shelf would be an invitation to draw
+  something real into the throwaway one.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:label="Paintsprout Onyx Dev"
+        tools:replace="android:label" />
+
+</manifest>

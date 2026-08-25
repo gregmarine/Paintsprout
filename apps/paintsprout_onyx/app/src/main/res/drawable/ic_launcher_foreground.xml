@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Paintsprout's sprout, redrawn for a panel that has no colour to lend it.
+
+  The Wacom app's icon is a white sprout on sproutGreen. That mark relies on a
+  mid-green field to hold it, and a mid-green field is exactly what an EPD
+  launcher cannot give: it dithers to a restless grey, and the thin white stem
+  standing on it loses its edges entirely. So the same shape is drawn the other
+  way round — graphite on bare paper, which is also what the app itself is about.
+
+  Geometry is the original mark, scaled 1.5× about the 108 viewport's centre so
+  it fills the adaptive icon's 66dp safe zone rather than floating in it, and the
+  stem scales with it to an effective 6 units. Below about that weight a stroke
+  starts dropping pixels when the launcher dithers it down to icon size.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="1.5"
+        android:scaleY="1.5">
+
+        <!-- Stem -->
+        <path
+            android:strokeColor="#000000"
+            android:strokeWidth="4"
+            android:strokeLineCap="round"
+            android:pathData="M54,74 L54,50" />
+
+        <!-- Left leaf -->
+        <path
+            android:fillColor="#000000"
+            android:pathData="M54,54 C46,54 38,48 36,40 C46,40 52,46 54,54 Z" />
+
+        <!-- Right leaf -->
+        <path
+            android:fillColor="#000000"
+            android:pathData="M54,50 C62,50 70,44 72,36 C62,36 56,42 54,50 Z" />
+
+    </group>
+
+</vector>

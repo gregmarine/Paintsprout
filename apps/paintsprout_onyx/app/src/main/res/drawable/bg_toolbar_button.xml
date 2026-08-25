@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Pressed, selected and activated all draw the same ring. That is not laziness:
+  the panel has one legible way to say "this one", and spending it three
+  different ways would mean inventing two states it cannot show. Pressed
+  borrowing the selected ring also gives back the tap feedback the missing ripple
+  took away.
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_selected="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/paperWhite" />
+            <stroke android:width="1.5dp" android:color="@color/inkBlack" />
+            <corners android:radius="4dp" />
+        </shape>
+    </item>
+    <item android:state_activated="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/paperWhite" />
+            <stroke android:width="1.5dp" android:color="@color/inkBlack" />
+            <corners android:radius="4dp" />
+        </shape>
+    </item>
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/paperWhite" />
+            <stroke android:width="1.5dp" android:color="@color/inkBlack" />
+            <corners android:radius="4dp" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/paperWhite" />
+            <corners android:radius="4dp" />
+        </shape>
+    </item>
+</selector>

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AppCompat, not Material. Material's components arrive wanting elevation,
+  ripples and tonal surfaces — three things an EPD panel renders as smeared grey
+  or as a full-screen refresh, and all three would have to be switched off one
+  widget at a time. Starting from AppCompat means never switching them on.
+
+  Window animations are null for the same reason: a cross-fade the panel cannot
+  draw becomes a stutter, and the honest version of a screen transition here is
+  the new screen simply being there.
+-->
+<resources>
+    <style name="Theme.Paintsprout" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorPrimary">@color/inkBlack</item>
+        <item name="colorPrimaryDark">@color/inkBlack</item>
+        <item name="colorAccent">@color/inkBlack</item>
+        <item name="android:colorControlHighlight">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/paperWhite</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+
+        <!-- Dark system icons, because every screen behind them is paperWhite.
+             BOOX draws its own e-ink system UI and appears to ignore this, so on
+             the one device that matters it changes nothing — which is exactly why
+             it is worth stating. Left off, a correct-looking screen would be
+             correct by the panel's accident, and the first time this app met a
+             stock launcher the clock would be white on white. -->
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="alertDialogTheme">@style/Theme.Paintsprout.AlertDialog</item>
+        <item name="android:alertDialogTheme">@style/Theme.Paintsprout.AlertDialog</item>
+    </style>
+
+    <!-- A dialog on e-ink cannot rely on a shadow to lift off the page — the
+         panel has no shadow to give. A 2 dp black border is what separates it
+         from what is behind it. -->
+    <style name="Theme.Paintsprout.AlertDialog" parent="Theme.AppCompat.Light.Dialog.Alert">
+        <item name="colorPrimary">@color/inkBlack</item>
+        <item name="colorAccent">@color/inkBlack</item>
+        <item name="android:windowBackground">@drawable/shape_dialog_bordered</item>
+        <item name="android:windowElevation">0dp</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:colorControlHighlight">@android:color/transparent</item>
+        <item name="android:textColorPrimary">@color/inkBlack</item>
+        <item name="android:textColorSecondary">@color/inkBlack</item>
+        <item name="android:buttonBarPositiveButtonStyle">@style/Widget.Paintsprout.DialogButton</item>
+        <item name="android:buttonBarNegativeButtonStyle">@style/Widget.Paintsprout.DialogButton</item>
+    </style>
+</resources>

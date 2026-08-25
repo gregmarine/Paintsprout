@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sized for a finger on a panel with no hover feedback and no ripple: a tap that
+  lands slightly off gives no hint that it missed, so targets run large. The
+  sw720dp tier beside this one is where the NA5C actually lands.
+
+  toolbar_top_guard is the BOOX tax. The status bar overlays the window top here
+  (Supernote has none), and a control against that edge pulls the shade down
+  instead of firing. Chrome starts below this.
+-->
+<resources>
+    <dimen name="toolbar_button_size">44dp</dimen>
+    <dimen name="toolbar_button_padding">10dp</dimen>
+    <dimen name="toolbar_bar_thickness">56dp</dimen>
+    <dimen name="toolbar_top_guard">8dp</dimen>
+    <dimen name="screen_margin">16dp</dimen>
+</resources>

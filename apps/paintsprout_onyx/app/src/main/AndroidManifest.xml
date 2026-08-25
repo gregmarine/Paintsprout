@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      tools:replace on the label is not tidying — the Onyx SDK's AAR manifests
+      declare an application label of their own, and without this the merge fails
+      outright rather than picking ours.
+    -->
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@style/Theme.Paintsprout"
+        tools:replace="android:label">
+
+        <!--
+          Portrait-locked, here and on every screen that follows. One layout per
+          screen and a page size that never changes is a decision, not an
+          omission: "turn the tablet" is a later arc, and a page whose proportions
+          move underneath it is not paper.
+        -->
+        <activity
+            android:name=".PlaceholderActivity"
+            android:exported="true"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>

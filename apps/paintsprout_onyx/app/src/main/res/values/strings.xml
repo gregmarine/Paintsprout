@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Paintsprout Onyx</string>
+
+    <!-- Placeholder screen. Everything here goes away in G1, when Bootstrap →
+         RecoveryKey → Unlock becomes the real launcher path. -->
+    <string name="placeholder_title">Paintsprout Onyx</string>
+    <string name="placeholder_body">The scaffold stands. Nothing draws yet.</string>
+    <string name="placeholder_panel">Panel: %1$d × %2$d px · %3$d dpi · density %4$s</string>
+</resources>

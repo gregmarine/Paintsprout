@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A filled centre inside the same ring. The checked state has to be readable
+     at a glance from arm's length, which rules out a subtle thickening. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="oval">
+            <size android:width="20dp" android:height="20dp" />
+            <solid android:color="@color/paperWhite" />
+            <stroke android:width="1.5dp" android:color="@color/inkBlack" />
+        </shape>
+    </item>
+    <item android:top="5dp" android:bottom="5dp" android:left="5dp" android:right="5dp">
+        <shape android:shape="oval">
+            <solid android:color="@color/inkBlack" />
+        </shape>
+    </item>
+</layer-list>

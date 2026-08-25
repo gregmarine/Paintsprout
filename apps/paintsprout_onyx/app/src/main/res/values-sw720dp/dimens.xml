@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The tier the NA5C lands in — 1860 × 2480 px at density 1.875 is 992 dp across,
+  so this is the tier that actually applies and the base values/ one is a
+  fallback no target device reaches.
+
+  A 10-inch e-ink tablet held at reading distance is not a phone with more room —
+  it is a sheet of paper, and chrome scaled from phone sizes reads as fussy on it.
+  So the touch targets grow.
+
+  toolbar_top_guard deliberately does NOT, and is absent here for that reason: it
+  is the height of BOOX's status bar, which is a fixed tax in dp rather than
+  chrome being sized for a hand. Growing it would push every screen down for no
+  reason anyone could name later.
+-->
+<resources>
+    <dimen name="toolbar_button_size">62dp</dimen>
+    <dimen name="toolbar_button_padding">14dp</dimen>
+    <dimen name="toolbar_bar_thickness">70dp</dimen>
+    <dimen name="screen_margin">24dp</dimen>
+</resources>

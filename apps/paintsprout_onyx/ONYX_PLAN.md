@@ -186,7 +186,10 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
   below load-bearing rather than cosmetic.
 - **The NA5C is a Kaleido colour panel.** The colour filter layer sits over the mono layer and
   costs both effective resolution and contrast. Greyscale graphite renders on the crisp layer —
-  which is exactly why arc 1 is greyscale. Record the panel's real resolution and density in G0.
+  which is exactly why arc 1 is greyscale. **Measured in G0: 1860 × 2480 px, densityDpi 300
+  (density 1.875), physical ≈ 304.8 × 304.3 dpi, ≈ 10.2 in diagonal.** That works out to
+  smallestWidth **992 dp**, so `values-sw720dp` is the resource tier that actually applies and
+  the base `values/` tier is a fallback no target device will ever use.
 
 **Paintsprout house rules that still bind** (repo-root `CLAUDE.md`):
 
@@ -227,7 +230,7 @@ protocol, and it publishes **0.1.7**. Summary of what it owes us:
 ## Phases — Arc 1 "Graphite"
 
 ### G0 — Scaffold & identity
-**Status:** ⬜ Not started
+**Status:** 🔄 In progress
 
 Gradle root at `apps/paintsprout_onyx/` (wrapper copied — boilerplate exemption) + a single `:app`;
 `gradle.properties` (Temurin-17 home, AndroidX, **jetifier ON**); `settings.gradle.kts` (mavenLocal,
@@ -250,6 +253,46 @@ launcher screen (temporary, replaced in G1); JVM test harness with one smoke tes
    wholesale, or derive a Paintsprout-flavoured one?
 2. **The app icon.** A variant of Paintsprout's existing icon, or a fresh e-ink-native mark?
 3. Confirm the version string `0.1.0-onyx`.
+
+**Answers:** 1. Notesprout's e-ink system **wholesale** — mono palette, no Material, no
+elevation or ripple, 1 dp inkBlack borders, Tabler outline vocabulary — written fresh rather
+than copied. It is the proven answer for this panel, arc 1 is greyscale anyway, and diverging
+later costs nothing. 2. A **fresh e-ink-native mark**: Paintsprout's own sprout geometry
+redrawn graphite-on-white with heavier strokes, rather than the white-on-sproutGreen original
+whose green field dithers to a restless grey. 3. **Confirmed**, `0.1.0-onyx`, versionCode 1,
+debug `0.1.0-onyx-dev`.
+
+**Outcome:** The scaffold stands and the gate is green — `assembleDebug`, `assembleRelease` and
+`test` all pass, the release hand-signs with the debug keystore and verifies, and the debug build
+installs and launches on the NA5C with a clean crash buffer.
+
+- **The panel, measured:** 1860 × 2480 px, densityDpi 300, density 1.875, physical ≈ 304.8 × 304.3
+  dpi, ≈ 10.18 in diagonal. That is **992 dp** across, so `values-sw720dp` is the tier that actually
+  applies and base `values/` is a fallback no target device will reach. Recorded up in the standing
+  traps too, next to the Kaleido note it belongs to.
+- **g-paper is pinned at 0.1.6**, the newest published build, rather than left out until 0.1.7. The
+  point is that the Onyx build baggage then has a real dependency to prove itself against:
+  `libmmkv.so`, `libneopen_jni.so` and `libonyx_pen_touch_reader.so` are in the packaged APK, which
+  means the insecure BOOX repo resolved, jetifier ran, the label `tools:replace` merged and the
+  `libc++_shared.so` pickFirsts fired. Baggage that is never exercised is baggage nobody knows is
+  broken. It re-pins to 0.1.7 when g-paper Phase 10 lands. `OnyxEngine.register` is **not** called
+  yet — that belongs to G3, with the view it exists to serve.
+- **`PlaceholderActivity` is deliberately throwaway** and G1 deletes it. It earns one phase by being
+  the proof: theme resolves, type scale renders, viewBinding is wired, and it prints the panel
+  numbers above.
+- **Fable's review found four things**, all addressed before commit. The one that mattered: the
+  window-inset handler *replaced* the layout's own padding instead of adding to it, on the very
+  screen whose comment declares it the pattern later screens copy — harmless where it sits, and a
+  toolbar shoved against the status bar everywhere it would have been pasted. Also: the status bar's
+  icon colour was the panel's accident rather than a decision (`windowLightStatusBar` now stated),
+  the `sw720dp` comment claimed everything grows when the BOOX top guard deliberately does not, and
+  the six mipmap density copies are inert at minSdk 29 and now say so rather than posing as a
+  fallback.
+- **Not done, on purpose:** no `docs/` yet (G6 owns the subsystem docs), no data or crypto
+  dependencies (G1), no engine registration (G3). The KSP and serialization plugins are applied and
+  unused, which is what "scaffold" means here.
+- **Left for the user's eye:** how the sprout icon reads on the BOOX launcher shelf at real size.
+  Everything else in this phase was adb-visible.
 
 ---
 

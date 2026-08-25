@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Temporary — G1 replaces this with the Bootstrap gate. It earns its place for
+  one phase by being the thing that proves the scaffold: the theme resolves, the
+  type scale renders, and the panel line below reports the resolution and density
+  G0 owes the plan.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:background="@color/paperWhite"
+    android:padding="@dimen/screen_margin">
+
+    <ImageView
+        android:layout_width="96dp"
+        android:layout_height="96dp"
+        android:src="@drawable/ic_launcher_foreground"
+        android:contentDescription="@string/app_name" />
+
+    <TextView
+        android:id="@+id/title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="@string/placeholder_title"
+        android:textAppearance="@style/TextAppearance.Paintsprout.HeadlineLarge" />
+
+    <TextView
+        android:id="@+id/body"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/placeholder_body"
+        android:textAppearance="@style/TextAppearance.Paintsprout.BodyLarge" />
+
+    <TextView
+        android:id="@+id/panel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:textAppearance="@style/TextAppearance.Paintsprout.BodyMedium" />
+
+</LinearLayout>
