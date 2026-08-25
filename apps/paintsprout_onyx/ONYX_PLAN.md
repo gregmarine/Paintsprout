@@ -383,7 +383,7 @@ library from a cold first run and back again through the lock.
   as G0 said they would be.
 
 ### G2 — The shelf
-**Status:** 🧪 Awaiting device verification
+**Status:** ✅ Complete (commit 13460b2)
 
 `LibraryActivity`: breadcrumb folders, a paginated **non-scrolling** card grid, empty state,
 long-press action sheet, sort; `NewSketchbookActivity`; `FolderPickerActivity`; create, rename,
