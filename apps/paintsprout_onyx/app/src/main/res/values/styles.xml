@@ -117,11 +117,31 @@
         <item name="android:stateListAnimator">@null</item>
     </style>
 
+    <!-- A dialog's buttons need room around them, and this is the one place the
+         panel's own rules work against the widget we inherited. AppCompat's
+         button-bar button is transparent, unbordered and almost unpadded — on a
+         display with no ripple, no shadow and no colour, "Cancel" and "Create"
+         then sit against each other as one unbroken run of black text, and read
+         as a single button with two words in it rather than a choice between
+         two things. The last thing anyone reads before agreeing to something
+         they cannot undo should not be ambiguous about where it ends.
+
+         So: real padding either side, a gap between them, and the same
+         pressed/selected ring every other control in the app draws. The ring
+         costs nothing at rest — the resting state is plain white — and it hands
+         back the tap feedback the missing ripple took away, which matters more
+         here than anywhere, because a dialog button that has already been
+         tapped and is waiting on a database read looks exactly like one that
+         was missed. -->
     <style name="Widget.Paintsprout.DialogButton" parent="Widget.AppCompat.Button.ButtonBar.AlertDialog">
         <item name="android:textColor">@color/inkBlack</item>
         <item name="android:textAllCaps">false</item>
         <item name="android:stateListAnimator">@null</item>
-        <item name="android:background">@android:color/transparent</item>
+        <item name="android:background">@drawable/bg_toolbar_button</item>
+        <item name="android:paddingStart">20dp</item>
+        <item name="android:paddingEnd">20dp</item>
+        <item name="android:layout_marginStart">12dp</item>
+        <item name="android:minWidth">0dp</item>
     </style>
 
     <style name="Widget.Paintsprout.RadioButton" parent="Widget.AppCompat.CompoundButton.RadioButton">
