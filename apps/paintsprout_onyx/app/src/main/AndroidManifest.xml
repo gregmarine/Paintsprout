@@ -3,16 +3,38 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!--
-      tools:replace on the label is not tidying — the Onyx SDK's AAR manifests
-      declare an application label of their own, and without this the merge fails
-      outright rather than picking ours.
+      tools:replace covers two attributes, and both are the Onyx SDK asserting
+      things about our application that are not ours to inherit. Its AAR
+      manifests declare a label of their own, and onyxsdk-pen declares
+      android:allowBackup="true" — so without the second name here, a merge would
+      quietly hand this app the cloud backup the comment below explains it must
+      not have. Neither is tidying; without them the merge either fails outright
+      or succeeds with somebody else's answer.
+    -->
+    <!--
+      Auto Backup is off, and that is a decision about what this app can honestly
+      promise rather than a precaution.
+
+      Every database here is encrypted with a key that lives in this device's
+      Keystore, bound to this package, and cannot be copied anywhere. Android's
+      cloud backup would happily carry the ciphertext to a new device — and leave
+      the key behind. What arrives is a library that cannot be opened and an
+      EncryptedSharedPreferences blob that throws the moment it is read, which
+      lands before the unlock screen can even be offered. The artist would meet a
+      restored install that looks complete, holds their sketchbooks, and has no
+      way in except wiping the data that was just restored.
+
+      Arc 1 has no backup story at all, on purpose. Saying so here is more honest
+      than shipping one that only appears to work.
     -->
     <application
+        android:name=".PaintsproutApplication"
+        android:allowBackup="false"
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/Theme.Paintsprout"
-        tools:replace="android:label">
+        tools:replace="android:label,android:allowBackup">
 
         <!--
           Portrait-locked, here and on every screen that follows. One layout per
@@ -20,15 +42,50 @@
           omission: "turn the tablet" is a later arc, and a page whose proportions
           move underneath it is not paper.
         -->
+
+        <!--
+          The launcher is the boot gate, not the library. Opening an encrypted
+          library can mean a key mint, a derivation, an unlock prompt or a file
+          that is not ours, and all of that resolves here so no other screen has
+          to know it can happen.
+
+          noHistory is the load-bearing part. This screen finishes itself the
+          moment it forwards, and it must not come back on the way out: backing
+          out of the library should leave the app, not land on a boot screen with
+          nothing left to do and nowhere to go but forward again.
+        -->
         <activity
-            android:name=".PlaceholderActivity"
+            android:name=".bootstrap.BootstrapActivity"
             android:exported="true"
+            android:noHistory="true"
             android:screenOrientation="portrait">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".bootstrap.RecoveryKeyActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <!--
+          adjustResize rather than adjustPan: the key field is the only text
+          entry in the app, and a panned window on e-ink redraws the whole
+          screen to move it. Resizing lets the inset handler add the keyboard's
+          height to the padding instead, which damages only what actually moved.
+        -->
+        <activity
+            android:name=".bootstrap.UnlockActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".library.LibraryActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
 
     </application>
 

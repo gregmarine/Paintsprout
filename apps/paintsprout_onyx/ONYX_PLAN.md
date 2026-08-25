@@ -297,7 +297,7 @@ installs and launches on the NA5C with a clean crash buffer.
 ---
 
 ### G1 — Crypto + data core
-**Status:** ⬜ Not started
+**Status:** 🧪 Awaiting the commit hash
 
 The `crypto/` stack (GlobalKey with the `PSPT-` prefix, SecurePrefs, PassphraseStore, AttemptLimiter,
 DerivedKeyStore, RawKeyDerivation, KeyMaterial, KeySession, KeyOpener, SoilCrypto) and
@@ -322,6 +322,65 @@ index and list-id constants.
 3. Debug tools: carry over Paper's "Show recovery key" / "Forget cached key" overflow items?
 
 ---
+
+**Outcome:** The crypto spine and the data core stand, and the whole gate is green — **78 JVM
+tests**, `assembleDebug` and `assembleRelease`, and a device walk on the NA5C that reaches the
+library from a cold first run and back again through the lock.
+
+- **The family-compatibility claim is proved, not asserted.** Paper's real `StrokeCodec.kt` was
+  compiled and run to generate fixture blobs across every flag combination; `MarkCodecTest` decodes
+  those and re-encodes to Paper's exact bytes. Independently, the two codecs were compared over 16
+  point-sets — byte-identical every time, in both directions. Format B genuinely holds, so the two
+  apps are one family at the layer where a drawing actually lives.
+- **Room's schema export is on and pinned by a test.** The `room.schemaLocation` arg was inert
+  (both `@Database`s had `exportSchema = false`), so the committed-schema trail it argued for did
+  not exist. Export is on, `app/schemas/` is committed, and `SchemaParityTest` compares Room's
+  generated DDL against `SoilSchema`'s hand-written DDL column for column, plus the primary key,
+  the index and both versions. That failure would otherwise land on a device as an identity-hash
+  error, which reads like a corrupt file and invites deleting a perfectly good one.
+- **`PaintsproutApplication` arrived a phase early**, holding nothing but `System.loadLibrary("sqlcipher")`.
+  Every database here is encrypted and the launcher opens one, so there is no ordering in which a
+  screen could load it in time for itself. `OnyxEngine.register` joins it in G3, and the file says so.
+- **Auto Backup is off, and the Onyx SDK fights it.** A restored install would get ciphertext
+  without the Keystore key and an `EncryptedSharedPreferences` blob that throws before the unlock
+  screen could be offered — a library that looks complete and cannot be opened. `onyxsdk-pen`
+  declares `allowBackup="true"` in its own manifest, so `tools:replace` now covers that attribute
+  as well as the label. One more piece of mandatory BOOX build baggage.
+- **The review found two real things.** `AttemptLimiter.check` returned an epoch deadline while the
+  contract promised remaining milliseconds — harmless today because the caller compensated, and a
+  trap for the first G2 caller who believed the contract. And `ensureReady`'s first-launch branch
+  cached a raw key without invalidating a stale one first, so an index deleted out of band could
+  re-bless the old file's key against a new salt. Both fixed. Paper carries the same wrinkle in
+  `PaperIndex.kt:76`.
+- **An `auto_vacuum = INCREMENTAL` was removed for doing nothing.** SQLite only accepts that pragma
+  while a file has no tables, and Room runs its `onCreate` callback after creating them, so it was
+  ignored on every file ever made. Carried over faithfully from Paper, which has the same latent
+  bug. Choosing it properly means setting it at creation before Room opens the file, which belongs
+  with the new-sketchbook flow in **G2**. Left out rather than left in and inert.
+- **The device walk, on the NA5C, in full:** first run mints a `PSPT-` key in the Crockford
+  alphabet; Continue is genuinely gated by the tick; the index file is encrypted from its first
+  bytes; the acknowledgement survives a relaunch; the debug menu shows the same key it minted;
+  forgetting the key clears both secure-pref files and the next launch lands on Unlock; **attempts
+  1–2 are free, the third hides the entry row and counts down from 30 s, and the field returns when
+  it expires**; the correct key opens the library; a further relaunch goes straight there. No
+  crashes in the buffer at any point. The BOOX status-bar guard measurably works — the library top
+  bar lays out at y=77, below the bar rather than under it.
+- **A wrong key leaves the file untouched**, verified the way Paper verified it: md5 identical
+  across an isolated failed attempt. An earlier delta in the same session spanned a `killProcess`
+  and a relaunch as well as the attempts, and is attributable to WAL state settling after the kill,
+  not to the attempts themselves.
+- **The first device walk reported a critical defect that did not exist** — it concluded the forget
+  flow left the app in the library and named a class the app does not contain. Re-run by hand, the
+  flow routes to `UnlockActivity` correctly. Worth recording as a working note: a device agent's
+  *failures* need reproducing before they are believed, exactly like its passes.
+- **Left for G2:** `IndexRepository.deleteSketchbook`/`deleteFolderRecursive` deliberately do not
+  remove files or call `KeyMaterial.invalidate` — that duty belongs to the caller that does not
+  exist yet, and Paper's own audit flags forgetting the RAM half of that invalidation as a real
+  past bug. `ancestry` does not filter `deletedAt`. `SoilCrypto.createRaw` is written and uncalled,
+  waiting for the new-sketchbook flow. And the library screen is a shell on purpose.
+- **Not done, on purpose:** no `docs/` (G6 owns the subsystem docs), no engine registration (G3),
+  no sketchbook creation or listing (G2). `PlaceholderActivity` and its layout and strings are gone,
+  as G0 said they would be.
 
 ### G2 — The shelf
 **Status:** ⬜ Not started

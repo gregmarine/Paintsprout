@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A device that already knows this library asks once for the key it wasn't
+  handed a cached copy of — a fresh install, or a .dev build meeting a library
+  it never minted. `entryRow` wraps the field, the button and the wrong-key
+  message as one group because AttemptLimiter's lockout is a state the field
+  itself cannot represent: there is nothing useful left to type, so the Kotlin
+  swaps the whole row out for `lockoutText` rather than merely disabling a
+  button the reader would have no way to tell apart from "broken".
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/paperWhite"
+    android:scrollbars="none"
+    android:padding="@dimen/screen_margin">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/unlock_title"
+            android:textAppearance="@style/TextAppearance.Paintsprout.TitleLarge" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:lineSpacingMultiplier="1.2"
+            android:text="@string/unlock_body"
+            android:textAppearance="@style/TextAppearance.Paintsprout.BodyLarge" />
+
+        <LinearLayout
+            android:id="@+id/entryRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <!-- textCapCharacters rather than a real caps-lock: GlobalKey.normalize
+                 upper-cases whatever lands here regardless, but a field that shows
+                 lower-case while the key it is building is upper-case reads as a
+                 mismatch the reader has no way to resolve on their own. -->
+            <androidx.appcompat.widget.AppCompatEditText
+                android:id="@+id/keyField"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:background="@drawable/shape_bordered"
+                android:padding="18dp"
+                android:fontFamily="monospace"
+                android:hint="@string/unlock_hint"
+                android:textColorHint="@color/inkLight"
+                android:textColor="@color/inkBlack"
+                android:textSize="18sp"
+                android:inputType="textVisiblePassword|textNoSuggestions|textCapCharacters"
+                android:imeOptions="actionGo"
+                android:maxLines="2" />
+
+            <androidx.appcompat.widget.AppCompatButton
+                android:id="@+id/unlockButton"
+                style="@style/Widget.Paintsprout.FilledButton"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/toolbar_bar_thickness"
+                android:layout_marginTop="16dp"
+                android:text="@string/unlock_button"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/errorText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/unlock_wrong"
+                android:textAppearance="@style/TextAppearance.Paintsprout.BodyLarge"
+                android:visibility="gone" />
+
+        </LinearLayout>
+
+        <!-- Owns the countdown text itself (the Kotlin formats the remaining time
+             into %1$s) rather than a bare label beside a timer view, since a
+             lockout on e-ink has no ticking-clock affordance to lean on — the
+             sentence has to carry all of it on its own each time it redraws. -->
+        <TextView
+            android:id="@+id/lockoutText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:textAppearance="@style/TextAppearance.Paintsprout.BodyLarge"
+            android:visibility="gone" />
+
+    </LinearLayout>
+
+</ScrollView>

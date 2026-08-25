@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DELIBERATE SHELL. G1 only needs somewhere for BootstrapActivity to land once
+  the index is open — this is not the shelf. G2 replaces the body with the
+  actual pinned/recents/folder browsing UI (and everything that goes with it:
+  sort, new sketchbook, new folder, the debug menu behind `overflowButton`);
+  what stays fixed across that rewrite is the top bar's shape, because it is
+  the one piece of chrome guaranteed to sit below the BOOX status-bar guard on
+  every screen this app ever shows. `emptyState` is what a reader with no
+  sketchbooks yet sees today and is expected to disappear once G2 gives them
+  something to look at instead.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/paperWhite"
+    android:paddingTop="@dimen/toolbar_top_guard">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/toolbar_bar_thickness"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="@dimen/screen_margin"
+        android:paddingEnd="@dimen/screen_margin">
+
+        <TextView
+            android:id="@+id/libraryTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/app_name"
+            android:textAppearance="@style/TextAppearance.Paintsprout.TitleMedium" />
+
+        <!-- Text, not an icon — there are no icon assets on this screen, and a
+             glyph the font already knows how to draw is one less asset to keep
+             legible at every density this panel could be. bg_toolbar_button gives
+             it the same pressed/selected ring every other toolbar control uses,
+             so it does not read as a different kind of thing. -->
+        <androidx.appcompat.widget.AppCompatButton
+            android:id="@+id/overflowButton"
+            style="@style/Widget.Paintsprout.TextButton"
+            android:layout_width="@dimen/toolbar_button_size"
+            android:layout_height="@dimen/toolbar_button_size"
+            android:background="@drawable/bg_toolbar_button"
+            android:padding="0dp"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:gravity="center"
+            android:text="@string/library_overflow"
+            android:textSize="20sp"
+            android:contentDescription="@string/cd_library_overflow" />
+
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/emptyState"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:padding="@dimen/screen_margin"
+        android:text="@string/library_empty"
+        android:textAppearance="@style/TextAppearance.Paintsprout.BodyLarge" />
+
+</LinearLayout>

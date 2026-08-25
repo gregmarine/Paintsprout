@@ -77,6 +77,17 @@ android {
     }
 }
 
+// Room writes every version of the generated schema here as JSON, one file per
+// version bump. It is the trail a future schema-parity test would walk to catch
+// the ORM and the hand-written DDL in the G1 contract disagreeing about a
+// column — the same failure mode the Wacom app's SchemaSql.kt test guards
+// against, and the reason it is worth paying for here even though Paper, which
+// has no pinned-DDL contract to hold itself to, turns exportSchema off and
+// keeps no history at all.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
@@ -93,6 +104,43 @@ dependencies {
     // textured PENCIL renderer, which is what G3 waits on.
     implementation("com.symmetricalpalmtree.gpaper:gpaper-core:0.1.6")
     implementation("com.symmetricalpalmtree.gpaper:gpaper-onyx:0.1.6")
+
+    // Room — the ORM over both SQLCipher databases, paintsprout.db and every
+    // .soil. ktx is here because index and soil access are coroutine-first from
+    // G1 on; without it every DAO call needs a hand-wrapped suspend shim to get
+    // off the UI thread, which is exactly the kind of boilerplate a dependency
+    // exists to remove. The compiler runs through KSP, not kapt, because this
+    // build is already KSP-only for serialization below, and a second
+    // annotation-processing backend in one module would double the tax for no
+    // second opinion worth having.
+    implementation("androidx.room:room-runtime:2.7.0")
+    implementation("androidx.room:room-ktx:2.7.0")
+    ksp("androidx.room:room-compiler:2.7.0")
+
+    // SQLCipher for every .soil and paintsprout.db open — always through
+    // crypto/SoilCrypto, never straight through the platform's SQLite. The
+    // artifact id is sqlcipher-android; net.zetetic's older
+    // android-database-sqlcipher name stopped publishing before 4.6 and 4.6.1
+    // does not exist under it, so sqlcipher-android is the one that actually
+    // resolves — the same one Paper is already pinned to. androidx.sqlite:sqlite
+    // supplies the SupportSQLiteOpenHelper contract that
+    // NonDestructiveOpenHelperFactory wraps; sqlite-ktx was folded into that
+    // same artifact upstream and was never split out as its own coordinate.
+    implementation("net.zetetic:sqlcipher-android:4.6.1")
+    implementation("androidx.sqlite:sqlite:2.4.0")
+
+    // EncryptedSharedPreferences, for the two SecurePrefs files
+    // (paintsprout_secure, paintsprout_dkeys) that hold the cached passphrase and
+    // the derived raw keys — nowhere else is allowed to hold either. Pinned to
+    // the same alpha Paper runs: the stable 1.x line of this artifact still has
+    // not shipped.
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // kotlinx.serialization is the only JSON path this codebase allows
+    // (org.json is a standing no) — SketchbookMeta and the .soil format's other
+    // JSON columns go through it. Same version Paper already has proven against
+    // this Kotlin/KSP toolchain, so this is not the first mile it has run.
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
     testImplementation("junit:junit:4.13.2")
 }

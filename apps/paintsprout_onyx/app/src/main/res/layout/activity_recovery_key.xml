@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Onboarding's one screen: mint a key, show it once, and get an honest
+  acknowledgement that the reader looked at it before the app moves on. There is
+  no server copy and no cloud fallback — SoilCrypto's stock SQLCipher defaults
+  are the whole portability story, and the one thing that makes an encrypted
+  library recoverable at all is the reader's own copy of this key. `savedIt`
+  gates `continueButton` in the Kotlin rather than here, because a checkbox that
+  merely exists but does not block anything is a courtesy the reader will
+  skip past exactly once, on the one sketchbook that mattered.
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/paperWhite"
+    android:scrollbars="none"
+    android:padding="@dimen/screen_margin">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/recovery_title"
+            android:textAppearance="@style/TextAppearance.Paintsprout.TitleLarge" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:lineSpacingMultiplier="1.2"
+            android:text="@string/recovery_body"
+            android:textAppearance="@style/TextAppearance.Paintsprout.BodyLarge" />
+
+        <!-- shape_bordered rather than a plain background: this is the one string
+             in the whole app the reader might transcribe by hand, and a border is
+             what tells them where it starts and ends without relying on colour. -->
+        <TextView
+            android:id="@+id/recoveryKey"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:background="@drawable/shape_bordered"
+            android:padding="18dp"
+            android:fontFamily="monospace"
+            android:letterSpacing="0.02"
+            android:textIsSelectable="true"
+            android:textColor="@color/inkBlack"
+            android:textSize="18sp" />
+
+        <androidx.appcompat.widget.AppCompatButton
+            android:id="@+id/copyButton"
+            style="@style/Widget.Paintsprout.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/toolbar_button_size"
+            android:layout_marginTop="16dp"
+            android:text="@string/recovery_copy" />
+
+        <androidx.appcompat.widget.AppCompatCheckBox
+            android:id="@+id/savedIt"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:minHeight="@dimen/toolbar_button_size"
+            android:text="@string/recovery_saved"
+            android:textAppearance="@style/TextAppearance.Paintsprout.BodyLarge" />
+
+        <androidx.appcompat.widget.AppCompatButton
+            android:id="@+id/continueButton"
+            style="@style/Widget.Paintsprout.FilledButton"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/toolbar_bar_thickness"
+            android:layout_marginTop="12dp"
+            android:text="@string/recovery_continue"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+    </LinearLayout>
+
+</ScrollView>

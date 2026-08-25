@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launcher gate has almost nothing to say. On a warm launch the index is
+  already keyed and ensureReady returns before a frame would even be missed —
+  showing anything here at all would be the app announcing work it finished
+  before the reader could read the announcement. `preparing` starts GONE for
+  exactly that reason; the Kotlin only reveals it once a real wait is underway
+  (first-run key derivation, an unlock prompt, a repair), on a short delay so a
+  fast open never flashes text. A flash read as a stutter on the panel before
+  this screen even had a name.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/paperWhite"
+    android:padding="@dimen/screen_margin">
+
+    <TextView
+        android:id="@+id/preparing"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:text="@string/boot_preparing"
+        android:textAppearance="@style/TextAppearance.Paintsprout.BodyMedium"
+        android:visibility="gone" />
+
+</FrameLayout>

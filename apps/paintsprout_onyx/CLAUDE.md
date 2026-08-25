@@ -88,6 +88,14 @@ not apply here. Plus:
   `/data/local/tmp/`, then `adb shell cp` into place, then `rm` the temp.
 - **The NA5C is a Kaleido colour panel** — its colour layer costs resolution and contrast, which is
   why arc 1 is greyscale.
+- **The Onyx SDK asserts `android:allowBackup="true"` in its own manifest.** Auto Backup must stay
+  off here — the Keystore key cannot travel, so a restored install holds ciphertext it can never
+  open and an `EncryptedSharedPreferences` blob that throws before unlock can be offered. That is
+  why `tools:replace` covers `android:allowBackup` as well as `android:label`; both source sets
+  need it. Add to the mandatory-baggage list, not to the tidying list.
+- **A device agent's failures need reproducing before they are believed**, exactly like its passes.
+  G1's first walk reported a critical defect in a flow that works, and diagnosed it in a class this
+  app does not contain. Reproduce by hand before changing code.
 
 ## Build & install
 

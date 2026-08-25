@@ -2,9 +2,71 @@
 <resources>
     <string name="app_name">Paintsprout Onyx</string>
 
-    <!-- Placeholder screen. Everything here goes away in G1, when Bootstrap →
-         RecoveryKey → Unlock becomes the real launcher path. -->
-    <string name="placeholder_title">Paintsprout Onyx</string>
-    <string name="placeholder_body">The scaffold stands. Nothing draws yet.</string>
-    <string name="placeholder_panel">Panel: %1$d × %2$d px · %3$d dpi · density %4$s</string>
+    <!-- Bootstrap. "Preparing…" says nothing about what is actually happening
+         (a first-run key mint, a repair, an unlock prompt already covers
+         itself) because the one thing every one of those states has in common
+         is that the reader should not act on this screen yet — that is the
+         whole message, and naming the specific cause would be a fact this
+         screen cannot promise stays true frame to frame. -->
+    <string name="boot_preparing">Preparing…</string>
+
+    <!-- A boot that failed. This is the launcher, so the alternative to a
+         dialog is a crash the moment the icon is tapped, and an app that dies
+         on launch reads as an app that ate the drawings. Retry is offered
+         first because the failures we know about here are transient — a
+         Keystore that is not awake yet after a reboot, a file still being
+         written back by a restore — and closing loses nothing. -->
+    <string name="boot_error_title">Couldn\'t open your library</string>
+    <string name="boot_error_body">%1$s</string>
+    <string name="boot_error_foreign">This library file isn\'t encrypted, so it didn\'t come from Paintsprout. It has been left exactly as it is.</string>
+    <string name="retry">Retry</string>
+    <string name="close_app">Close</string>
+
+    <!-- Recovery key. Carried over from Paper v0's onboarding screen with the
+         vocabulary substituted (notebook → sketchbook, the app's own name
+         where Paper named itself, NSPT- → PSPT-) rather than rewritten, since
+         the whole point of matching it is that this key behaves exactly like
+         Paper's and deserves exactly as much weight put on reading it. -->
+    <string name="recovery_title">Save your recovery key</string>
+    <string name="recovery_body">Your sketchbooks are encrypted. This recovery key is the only way back into your library on a new device or after a reinstall. It is the only copy — write it down or save it in a password manager. Nobody can recover it for you.</string>
+    <string name="recovery_copy">Copy</string>
+    <string name="recovery_saved">I\'ve saved it</string>
+    <string name="recovery_continue">Continue</string>
+    <string name="recovery_copied">Recovery key copied</string>
+    <string name="recovery_tick_first">Tick “I\'ve saved it” to continue</string>
+    <string name="recovery_clip_label">Paintsprout recovery key</string>
+
+    <!-- Unlock. Same carry-over as above; "Unlock Paintsprout" stands in for
+         Paper's "Unlock Paper" the same way the app's own short name always
+         will next to a screen that only has room for one word before the
+         explanation. -->
+    <string name="unlock_title">Unlock Paintsprout</string>
+    <string name="unlock_body">Enter your recovery key to open your library on this device.</string>
+    <string name="unlock_hint">PSPT-…</string>
+    <string name="unlock_button">Unlock</string>
+    <string name="unlock_wrong">That key didn\'t open your library. Try again.</string>
+    <string name="unlock_checking">Checking…</string>
+    <string name="unlock_locked_out">Too many attempts. Try again in %1$s.</string>
+
+    <!-- Library shell (G1). Only what the shell itself draws — G2's real shelf
+         earns its own group when it replaces this screen. -->
+    <string name="library_overflow">⋯</string>
+    <string name="cd_library_overflow">More</string>
+    <string name="library_empty">No sketchbooks yet</string>
+
+    <!-- Debug menu, behind the library's overflow control. Release builds carry
+         a no-op twin of the menu that never shows these — see
+         src/release/…/library/DebugMenu.kt — so the strings still need to live
+         here rather than in the debug source set alone, or the release build
+         would fail to resolve them. -->
+    <string name="debug_show_recovery_key">Show recovery key</string>
+    <string name="debug_forget_cached_key">Forget cached key</string>
+    <string name="debug_tools">Debug tools</string>
+    <string name="debug_no_key_cached">(no key cached)</string>
+    <string name="debug_forget_title">Forget the cached key?</string>
+    <string name="debug_forget_body">Clears the cached recovery key and closes the app. The next launch will ask for the key. Your sketchbooks are untouched — but have the key to hand before you do this.</string>
+    <string name="debug_forget_confirm">Forget and close</string>
+    <string name="debug_forgotten">Forgotten — launch again</string>
+    <string name="close">Close</string>
+    <string name="cancel">Cancel</string>
 </resources>
