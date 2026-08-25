@@ -64,6 +64,13 @@ not apply here. Plus:
   stylus eraser end at hardware level and g-paper's Onyx engine erases with it whichever tool is
   armed (`onBeginRawErasing`). Worth knowing precisely because someone will go looking for the host
   code that does it.
+- **The pencil is three fixed widths and pressure, and nothing else.** No tilt anywhere — not in the
+  bake, and not in the live ink either: the live style is g-paper's `STROKE_STYLE_PENCIL` (0), a plain
+  even line, *not* the firmware's textured charcoal (4). Charcoal is a stamp pen whose width BOOX
+  multiplies by 5 before rendering, so it previewed a 6.5 px lead at ~32 px and committed 8 — the
+  mark collapsing to a fifth of itself at pen-up, which reads as the bake being broken rather than
+  the preview. Fixed in g-paper 0.1.8. **A preview that lies about width is far worse than one that
+  lies about texture.**
 - **Graphite lives in g-paper, and its grain is seeded from the stroke id.** `StrokeStyle.PENCIL`
   (0.1.7) draws flecks on the paper's tooth — pressure fills in more of the tooth and darkens what
   lands, the width never moves, tilt is unread. A mark's apparent width is about `width + 2 px`, the

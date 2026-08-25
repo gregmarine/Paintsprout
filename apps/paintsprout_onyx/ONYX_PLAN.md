@@ -203,8 +203,8 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
 
 ## Dependency — g-paper Phase 10 "Graphite"
 
-**Status:** 🧪 Built and published as **0.1.7**, commit `7239366` in `~/git/g-paper`, awaiting the
-same device pass as G3 · **Tracked in that repo's `PLAN.md`.**
+**Status:** 🧪 Published as **0.1.8** (`7239366` then `8002efa` in `~/git/g-paper`) — 0.1.8 is the
+first device finding folded back in · **Tracked in that repo's `PLAN.md`.**
 
 Arc 1 cannot start drawing until this lands. It is a g-paper phase, run under g-paper's own
 protocol, and it publishes **0.1.7**. Summary of what it owes us:
@@ -609,6 +609,22 @@ resolution. Empty crash buffer throughout.
 - **Not done, on purpose:** no undo/redo and no page turning (G4 — the page indicator reads `1 / 1`
   and means it); no covers, pins or recents (G5); no `SoilDao.restore`/`setOrder`/`liveChildIds`
   callers yet, and `incremental_vacuum` is still owed by G4 as G2 recorded.
+**First device finding, fixed: the live preview was lying about width, and it read as the bake being
+broken.** Drawing on the panel showed marks collapsing dramatically at pen-up, worst when the pen was
+laid over. The cause was not tilt. `PENCIL` armed the firmware's textured charcoal
+(`STROKE_STYLE_CHARCOAL`, 4), which is a **stamp** pen: BOOX multiplies its nominal width by
+`CHARCOAL_STROKE_WIDTH_EXTRA_SCALE = 5.0` before rendering, because the grain bitmap is scaled to the
+stroke and below roughly 20 px no texture can exist at all. So a 6.5 px lead previewed about 32 px
+wide and committed 8 — a fifth of itself, the instant the pen lifted.
+
+g-paper **0.1.8** arms the plain even line (`STROKE_STYLE_PENCIL`, 0) instead. Live and baked now
+agree on the mark's *size* and differ only in grain, so a stroke **gains its tooth** at pen-up rather
+than shrinking. Greg's call alongside it: **three widths, no tilt, a stroke and variable pressure** —
+which is what the bake already did, so the whole change is the one-line remap in the engine, exactly
+where the standing rule says an engine gap gets fixed. The general lesson is bigger than the fix: **a
+preview that lies about width is far worse than one that lies about texture**, because width is what
+the hand aims with.
+
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are
   invisible to `screencap`, so how graphite reads on this Kaleido panel, whether pressure spans
