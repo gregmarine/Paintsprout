@@ -87,6 +87,24 @@
             android:exported="false"
             android:screenOrientation="portrait" />
 
+        <!--
+          adjustResize, for the same reason the unlock screen has it: naming a
+          sketchbook is the one other place a keyboard comes up, and a panned
+          window on e-ink redraws the whole screen to move it. Resizing lets the
+          inset handler add the keyboard's height to the padding, so only what
+          actually moved is damaged.
+        -->
+        <activity
+            android:name=".library.NewSketchbookActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".library.FolderPickerActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
     </application>
 
 </manifest>

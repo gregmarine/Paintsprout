@@ -158,27 +158,55 @@ class IndexRepository(private val dao: ObjectDao = PaintsproutIndex.dao()) {
      * Take a folder and everything inside it off the shelf, and hand back the ids of the sketchbooks
      * that were in there so the caller can deal with their files and their cached keys.
      *
-     * The walk is explicit rather than recursive and carries a `seen` set, because `parentId` is a
-     * plain column with nothing stopping a folder from being its own ancestor — a bad move, a
-     * half-applied restore, a hand-edited file. A cycle here would be an infinite delete, so the guard
-     * is the difference between a corrupt row and a hung app.
+     * **The order of the stamping is the safety property, and it is deepest-first for that reason.**
+     * The tree is walked once to find out what is in it, and only then is anything marked — children
+     * before their parents, every time. This is not tidiness. Each stamp is its own statement, and
+     * this device kills background processes as a matter of routine, so the sweep has to be correct
+     * if it stops halfway through. Stamped parent-first, a kill in the middle would leave a deleted
+     * folder holding folders and sketchbooks that are still alive — and since every listing walks
+     * *down* from the root, nothing would ever show them again. The files would still be there, the
+     * rows would still be there, and the drawings would be gone as far as anyone could tell.
+     *
+     * Deepest-first, the set marked at any instant is always a bottom-up prefix: anything still alive
+     * still has a living parent all the way to the root, so it is still on the shelf. The worst a kill
+     * can do is leave a folder standing with some of its contents already taken out of it, which is a
+     * partly-finished delete the artist can simply do again.
+     *
+     * The walk carries a `seen` set because `parentId` is a plain column with nothing stopping a
+     * folder from being its own ancestor — a bad move, a half-applied restore, a hand-edited file. A
+     * cycle here would be an infinite delete, so the guard is the difference between a corrupt row and
+     * a hung app.
      */
     suspend fun deleteFolderRecursive(id: String, now: Long = System.currentTimeMillis()): List<String> {
+        val folderIds = folderTree(id)
         val sketchbookIds = mutableListOf<String>()
-        val seen = HashSet<String>()
-        val stack = ArrayDeque<String>().apply { add(id) }
-        while (stack.isNotEmpty()) {
-            val folderId = stack.removeLast()
-            if (!seen.add(folderId)) continue
+        // Reversed, so the last folder found — the deepest — is the first one emptied and stamped.
+        for (folderId in folderIds.asReversed()) {
             for (book in dao.childrenOfType(folderId, ObjectType.SKETCHBOOK)) {
                 dao.deleteEdgesTo(book.id)
                 dao.softDelete(book.id, now)
                 sketchbookIds += book.id
             }
-            for (sub in dao.childrenOfType(folderId, ObjectType.FOLDER)) stack.add(sub.id)
             dao.softDelete(folderId, now)
         }
         return sketchbookIds
+    }
+
+    /**
+     * Every folder at or under [rootId], shallowest first. Breadth-first, so "shallowest first" is
+     * simply the order they come out in and the caller can reverse it to get deepest-first.
+     */
+    private suspend fun folderTree(rootId: String): List<String> {
+        val found = mutableListOf<String>()
+        val seen = HashSet<String>()
+        val queue = ArrayDeque<String>().apply { add(rootId) }
+        while (queue.isNotEmpty()) {
+            val folderId = queue.removeFirst()
+            if (!seen.add(folderId)) continue
+            found += folderId
+            for (sub in dao.childrenOfType(folderId, ObjectType.FOLDER)) queue.add(sub.id)
+        }
+        return found
     }
 
     // ── Where am I ───────────────────────────────────────────────────────────
@@ -190,6 +218,14 @@ class IndexRepository(private val dao: ObjectDao = PaintsproutIndex.dao()) {
      * is the direction the rows actually point. Cycle-guarded for the same reason the delete sweep is,
      * and hop-capped besides: a breadcrumb fifty folders deep is already unusable, so the cap costs
      * nothing real and turns a pathological file into a truncated trail rather than a frozen screen.
+     *
+     * **Deleted folders stop the walk.** The trail is a row of things the artist can tap, and a crumb
+     * pointing at a folder that is off the shelf would navigate to a screen that cannot explain
+     * itself. A deleted folder with a living child is not something this app can produce — the delete
+     * sweep stamps children before parents precisely so that it cannot, even if it is killed halfway
+     * — so in practice this only guards against a file edited from outside or restored in halves. It
+     * truncates rather than throws: a short trail is still a trail, and refusing to draw one at all
+     * would take the library down with it.
      */
     suspend fun ancestry(folderId: String?): List<FolderRef> {
         val chain = ArrayList<FolderRef>()
@@ -197,7 +233,7 @@ class IndexRepository(private val dao: ObjectDao = PaintsproutIndex.dao()) {
         var cur = folderId
         var hops = 0
         while (cur != null && hops < MAX_ANCESTRY_HOPS && seen.add(cur)) {
-            val row = dao.summaryById(cur) ?: break
+            val row = dao.aliveSummaryById(cur) ?: break
             if (row.type != ObjectType.FOLDER) break
             chain.add(FolderRef(row.id, row.name, row.parentId))
             cur = row.parentId
@@ -216,6 +252,30 @@ class IndexRepository(private val dao: ObjectDao = PaintsproutIndex.dao()) {
      */
     suspend fun isSelfOrDescendant(folderId: String?, candidateAncestorId: String): Boolean =
         ancestry(folderId).any { it.id == candidateAncestorId }
+
+    /**
+     * Everything under a folder, at any depth, for the sentence that asks whether it should really go.
+     *
+     * **Counted all the way down, not one level.** The tempting cheap version counts direct children,
+     * matches what is visible on the screen behind the dialog, and would tell someone deleting a
+     * folder holding one folder holding thirty drawn-in sketchbooks that "1 folder" goes with it.
+     * Thirty sketchbooks would then be destroyed by a tap that named none of them. The number in that
+     * sentence is the only warning there is, so it has to be the number of things that actually go.
+     *
+     * It is the same walk the delete does, run twice — once to ask and once to act — which is a
+     * second pass over a handful of rows in exchange for a confirmation that is true.
+     */
+    suspend fun countWithin(folderId: String): FolderContents {
+        val folderIds = folderTree(folderId)
+        var sketchbooks = 0
+        for (id in folderIds) sketchbooks += dao.countChildrenOfType(id, ObjectType.SKETCHBOOK)
+        // The folder being asked about is in the walk and is not "inside" itself.
+        return FolderContents(sketchbooks = sketchbooks, folders = folderIds.size - 1)
+    }
+
+    data class FolderContents(val sketchbooks: Int, val folders: Int) {
+        val isEmpty: Boolean get() = sketchbooks == 0 && folders == 0
+    }
 
     // ── The pinned shelf ─────────────────────────────────────────────────────
 

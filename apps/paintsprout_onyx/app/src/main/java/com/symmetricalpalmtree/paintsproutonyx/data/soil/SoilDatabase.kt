@@ -39,6 +39,12 @@ abstract class SoilDatabase : RoomDatabase() {
     companion object {
         private const val TAG = "SoilDatabase"
 
+        /** Made and dropped in the same breath so the header can be written. See [stampAutoVacuum]. */
+        private const val VACUUM_SEED = "__vacuum_seed"
+
+        /** What `PRAGMA auto_vacuum` answers when INCREMENTAL took. 0 is NONE, 1 is FULL. */
+        private const val AUTO_VACUUM_INCREMENTAL = 2
+
         /**
          * Open a sketchbook that exists. Throws `SoilLockedException` if it does not.
          *
@@ -68,12 +74,65 @@ abstract class SoilDatabase : RoomDatabase() {
                 "refusing to create a sketchbook over a file that already exists: ${file.name}"
             }
             file.parentFile?.mkdirs()
+            stampAutoVacuum(file, passphrase)
             val db = build(context, file, SoilCrypto.roomFactory(passphrase))
             forceOpen(db)
             // The file has a salt now, so the raw key can be cached and every later open of this
             // sketchbook skips the derivation.
             KeyOpener.warm(context, sketchbookId, file, passphrase)
             return db
+        }
+
+        /**
+         * Decide, once and for all, that this sketchbook *can* reclaim its own space — before Room has
+         * ever seen the file.
+         *
+         * `auto_vacuum` is not a setting, it is a fact about the file's very first page. SQLite
+         * accepts the pragma only while the database has no tables in it; after that it is silently
+         * ignored, and the only way to change the answer is a full VACUUM, which on a sketchbook full
+         * of drawings means rewriting the whole encrypted file. So the moment a sketchbook is made is
+         * the only moment this can be chosen at all, and that moment is here.
+         *
+         * The seed table is the awkward part and it earns its place. The pragma alone changes nothing
+         * on disk, because an empty database has no page one to record it on; it is the first table
+         * that fixes the header. So one is made and immediately dropped, leaving a file that is still
+         * empty, still at `user_version` 0 — so Room takes its ordinary create path and builds the
+         * real schema — and now carries the flag for the rest of its life.
+         *
+         * What it buys is the *possibility* of shrinking, and only that — INCREMENTAL reclaims nothing
+         * on its own, it keeps a free-page list so that a later `PRAGMA incremental_vacuum` can hand
+         * pages back cheaply instead of rewriting the whole encrypted file. Nothing runs that yet,
+         * because nothing yet frees pages: **G4 is the first phase that tears a page out of a
+         * sketchbook, and it owes the `incremental_vacuum` step.** The stamp has to be here anyway,
+         * a phase early, because by the time G4 needs it the file is long past the only moment it
+         * could have been chosen — a sketchbook made today and drawn in for a month cannot be given
+         * this later without a full VACUUM.
+         *
+         * The earlier version of this app put the pragma in Room's `onCreate` callback, which runs
+         * *after* Room has created the tables — so it was ignored on every file ever made, and read as
+         * a solved problem for as long as nobody checked. That is why it is spelled out at length here
+         * rather than being a line somebody could move back.
+         */
+        private fun stampAutoVacuum(file: File, passphrase: String) {
+            val raw = SoilCrypto.createRaw(file, passphrase)
+            try {
+                raw.execSQL("PRAGMA auto_vacuum = INCREMENTAL")
+                raw.execSQL("CREATE TABLE $VACUUM_SEED (x)")
+                raw.execSQL("DROP TABLE $VACUUM_SEED")
+                // Read it straight back. The whole trap this replaces was a pragma that ran, returned
+                // no error, and did nothing — so the only honest way to know it worked is to ask the
+                // file what it thinks it is. A warning rather than a throw: a sketchbook that does not
+                // reclaim its own space is a sketchbook, and refusing to make one over a housekeeping
+                // setting would be losing the drawing to save the file.
+                val mode = raw.rawQuery("PRAGMA auto_vacuum", null).use {
+                    if (it.moveToFirst()) it.getInt(0) else -1
+                }
+                if (mode != AUTO_VACUUM_INCREMENTAL) {
+                    Log.w(TAG, "${file.name} was made with auto_vacuum=$mode, not INCREMENTAL")
+                }
+            } finally {
+                runCatching { raw.close() }
+            }
         }
 
         private fun build(
@@ -99,21 +158,11 @@ abstract class SoilDatabase : RoomDatabase() {
         private fun openCallback(): Callback = object : Callback() {
             override fun onCreate(db: SupportSQLiteDatabase) {
                 db.execSQL(SoilSchema.CREATE_META)
-                // There was an `auto_vacuum = INCREMENTAL` here, and it was doing nothing at all.
-                //
-                // SQLite will only accept that pragma while the file has no tables yet; afterwards
-                // it is silently ignored unless a full VACUUM follows. Room runs this callback
-                // *after* it has created the tables, so the pragma arrived too late every single
-                // time and the file stayed at auto_vacuum = NONE. It read as a solved problem for
-                // as long as nobody checked, which is the worst state for a line of code to be in.
-                //
-                // The consequence is real but not urgent: a sketchbook that has had pages torn out
-                // of it keeps those pages' bytes until something vacuums the file. Nothing in arc 1
-                // deletes at that scale — G4 is the first phase that removes a page at all — and
-                // choosing it properly means setting it on the file at creation, before Room opens
-                // it, which belongs with the new-sketchbook flow in G2 rather than here. Left out
-                // rather than left in and inert, so the next reader is not told a lie by a line
-                // that runs.
+                // `auto_vacuum` deliberately does NOT live here. It was here once and did nothing at
+                // all, because SQLite accepts that pragma only while the file has no tables and Room
+                // runs this callback after making them. It now happens in [stampAutoVacuum], before
+                // Room ever opens the file, which is the only moment it can work — see the argument
+                // there before moving it back.
             }
 
             override fun onOpen(db: SupportSQLiteDatabase) {

@@ -48,11 +48,134 @@
     <string name="unlock_checking">Checking…</string>
     <string name="unlock_locked_out">Too many attempts. Try again in %1$s.</string>
 
-    <!-- Library shell (G1). Only what the shell itself draws — G2's real shelf
-         earns its own group when it replaces this screen. -->
+    <!-- The shelf (G2). The library screen itself: the breadcrumb trail
+         standing in for a folder path, the grid of folder and sketchbook
+         cards, the pager, and the actions that create, rename, move and
+         delete both kinds of thing. library_empty is worded as an instruction
+         now rather than a plain observation, because G2 is the phase where
+         there is finally something the reader can do about it. -->
     <string name="library_overflow">⋯</string>
     <string name="cd_library_overflow">More</string>
-    <string name="library_empty">No sketchbooks yet</string>
+    <string name="library_empty">Nothing here yet. Tap New sketchbook to start one.</string>
+    <string name="library_up">↑</string>
+    <string name="cd_library_up">Up one folder</string>
+    <string name="library_sort">Sort</string>
+    <string name="cd_library_sort">Sort</string>
+    <string name="library_new_folder">New folder</string>
+    <string name="library_new_sketchbook">New sketchbook</string>
+    <string name="library_root">Library</string>
+
+    <!-- U+25C4 and U+25BA, and specifically not the transport glyphs (⏮ ◀ ▶ ⏭)
+         these started out as. Those four all carry emoji presentation in
+         Unicode, and Android will happily satisfy them from the colour emoji
+         font — which on this panel would be accidental colour in the chrome of
+         an app whose whole palette is black and white, arriving through a
+         string nobody would think to look at. These two pointers have no emoji
+         mapping at all, so there is only ever one thing they can be drawn as.
+         Doubling them for first and last reads as rewind and fast-forward,
+         which is what they are. -->
+    <string name="pager_first">◄◄</string>
+    <string name="pager_prev">◄</string>
+    <string name="pager_next">►</string>
+    <string name="pager_last">►►</string>
+    <string name="cd_pager_first">First page</string>
+    <string name="cd_pager_prev">Previous page</string>
+    <string name="cd_pager_next">Next page</string>
+    <string name="cd_pager_last">Last page</string>
+
+    <string name="nav_back">←</string>
+    <string name="cd_nav_back">Back</string>
+    <string name="nav_up">↑</string>
+    <string name="cd_nav_up">Up one folder</string>
+
+    <string name="sort_title">Sort by</string>
+    <string name="sort_name_asc">Name A–Z</string>
+    <string name="sort_name_desc">Name Z–A</string>
+    <string name="sort_modified_desc">Last worked on</string>
+    <string name="sort_modified_asc">Least recently worked on</string>
+
+    <string name="action_rename">Rename</string>
+    <string name="action_move">Move</string>
+    <string name="action_delete">Delete</string>
+
+    <string name="new_sketchbook_title">New sketchbook</string>
+    <string name="new_sketchbook_name_label">Name</string>
+    <string name="new_sketchbook_name_hint">Sketchbook name</string>
+    <string name="new_sketchbook_name_rule">Letters, numbers, spaces, hyphens, underscores and dots.</string>
+    <string name="new_sketchbook_create">Create</string>
+    <string name="new_sketchbook_creating">Creating…</string>
+    <string name="new_sketchbook_duplicate">There\'s already a sketchbook called “%1$s” here.</string>
+    <string name="new_sketchbook_failed_title">Couldn\'t make the sketchbook</string>
+    <string name="new_sketchbook_failed">Nothing was added to your library. Try again.</string>
+    <!-- The five specific answers to "why did nothing happen when I tapped
+         Create". They are string resources rather than sentences inside
+         NameRules because they are screen text like any other and belong where
+         the rest of it can be read as a whole; NameRules hands back the id so
+         it stays a pure function with no Context. The character rule is
+         narrower than the storage needs on purpose — a name has to be readable
+         off this panel and typeable again, or a library cannot be searched by
+         the person who filled it. The 64 is spelled out here as well as in
+         NameRules.MAX_CHARS; if one moves, move the other. -->
+    <string name="name_problem_empty">The name can\'t be empty.</string>
+    <string name="name_problem_padded">The name can\'t start or end with a space.</string>
+    <string name="name_problem_reserved">That name is reserved.</string>
+    <string name="name_problem_long">That name is too long — 64 characters at most.</string>
+    <string name="name_problem_characters">Use letters, numbers, spaces, hyphens, underscores and dots.</string>
+    <string name="name_problem_title">That name won\'t work</string>
+
+    <string name="new_folder_title">New folder</string>
+    <string name="new_folder_hint">Folder name</string>
+    <string name="new_folder_create">Create</string>
+    <string name="new_folder_duplicate">There\'s already a folder called “%1$s” here.</string>
+
+    <string name="rename_title">Rename</string>
+    <string name="rename_hint">Name</string>
+    <string name="rename_duplicate_sketchbook">There\'s already a sketchbook called “%1$s” here.</string>
+    <string name="rename_duplicate_folder">There\'s already a folder called “%1$s” here.</string>
+
+    <string name="delete_sketchbook_title">Delete “%1$s”?</string>
+    <string name="delete_sketchbook_body">The sketchbook and everything drawn in it go for good. This can\'t be undone.</string>
+    <string name="delete_folder_title">Delete “%1$s”?</string>
+    <string name="delete_folder_body_empty">The folder is empty, so nothing drawn goes with it.</string>
+    <!-- The Kotlin builds the "3 sketchbooks and 1 folder" phrase and passes
+         it in as %1$s — kept out of this string because the pluralisation
+         (one thing, one kind, two kinds, and every count of each) is not
+         something a single format string can carry honestly. -->
+    <string name="delete_folder_body">%1$s inside will go with it, for good. This can\'t be undone.</string>
+    <string name="delete_confirm">Delete</string>
+
+    <!-- The pieces the delete-folder question is assembled from. Counting
+         phrases are separate strings rather than one clever format because
+         "1 sketchbook" and "3 sketchbooks" differ in more languages than
+         English by more than an s, and a confirmation that garbles what it is
+         about to destroy is worse than no count at all. -->
+    <string name="count_sketchbook_one">1 sketchbook</string>
+    <string name="count_sketchbooks">%1$d sketchbooks</string>
+    <string name="count_folder_one">1 folder</string>
+    <string name="count_folders">%1$d folders</string>
+    <string name="count_joined">%1$s and %2$s</string>
+
+    <string name="picker_move_here">Move here</string>
+    <string name="picker_empty">No folders here</string>
+    <string name="picker_title">Move “%1$s” to…</string>
+    <string name="picker_collision_sketchbook">There\'s already a sketchbook called “%1$s” in that folder.</string>
+    <string name="picker_collision_folder">There\'s already a folder called “%1$s” in that folder.</string>
+    <string name="picker_into_self">A folder can\'t be moved inside itself.</string>
+    <string name="move_problem_title">Couldn\'t move it</string>
+
+    <string name="ok">OK</string>
+    <string name="card_meta_pages_one">1 page</string>
+    <string name="card_meta_pages">%1$d pages</string>
+    <!-- The Kotlin picks between card_meta_pages_one and card_meta_pages
+         itself rather than a <plurals> resource, so this stays a plain
+         format string: pages · date. -->
+    <string name="card_meta">%1$s · %2$s</string>
+
+    <!-- "2 / 5". Spelled out as a resource rather than built in code so the
+         separator is one decision in one place — the folder picker's pager
+         reads exactly the same as the shelf's, and nothing about being on a
+         different screen makes being on page two of five a different fact. -->
+    <string name="pager_label">%1$d / %2$d</string>
 
     <!-- Debug menu, behind the library's overflow control. Release builds carry
          a no-op twin of the menu that never shows these — see

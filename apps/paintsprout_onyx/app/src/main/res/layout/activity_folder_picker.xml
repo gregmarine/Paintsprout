@@ -1,24 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The shelf. G1's version of this file was a deliberate placeholder — nothing
-  here but a title bar and an empty-state message — because the index needed
-  somewhere to land before there was anything to browse. This is the real
-  screen: a breadcrumb trail standing in for a folder path (there is no
-  filesystem to browse; SoilFile.kt is the only path constructor and folders
-  live exclusively in the index), a grid of folder and sketchbook cards, and a
-  bottom bar that never disappears even when the grid does — "New sketchbook"
-  has to be reachable from an empty folder as much as a full one.
-
-  The grid itself is not built here, because how many cards fit is not known
-  until the grid area has been measured — see GridGeometry. gridContainer holds
-  the grid as a runtime child beside emptyState, so emptyState survives being
-  shown and hidden without the FrameLayout ever losing the one child it always
-  keeps.
-
-  The pager in the bottom bar is what a shelf has instead of scrolling. Every
-  scroll on this panel is a full-screen repaint chasing a finger and settles
-  somewhere nobody aimed for; a page of cards that replaces the last page costs
-  one refresh and lands exactly where it was going.
+  A second walk of the same shelf a move is leaving. It shares the library's
+  shape on purpose — breadcrumb trail, card grid, pager — because a picker
+  that looked like a different kind of screen would make the reader relearn
+  navigation for one dialog's worth of use; this way, browsing to move
+  something is exactly like browsing to open it, minus a New sketchbook button
+  that has no reason to exist here. movingLabel stays visible the whole time
+  because a picker that has scrolled away from its own question ("move what,
+  again?") is a picker the reader has stopped trusting.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/root"
@@ -36,13 +25,17 @@
         android:paddingStart="@dimen/screen_margin"
         android:paddingEnd="@dimen/screen_margin">
 
-        <!-- The Kotlin builds the crumb buttons at runtime, one per folder from
-             the library root down to the current one — a fixed set of views
-             here would have to be padded out to some maximum nesting depth
-             nobody could name a correct value for. HorizontalScrollView is the
-             overflow answer instead of ellipsizing a crumb: a folder path is
-             navigation, and a truncated crumb the reader can't tap back to
-             would be a dead end with no visible way out. -->
+        <androidx.appcompat.widget.AppCompatButton
+            android:id="@+id/btnBack"
+            style="@style/Widget.Paintsprout.TextButton"
+            android:layout_width="@dimen/toolbar_button_size"
+            android:layout_height="@dimen/toolbar_button_size"
+            android:background="@drawable/bg_toolbar_button"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:text="@string/nav_up"
+            android:contentDescription="@string/cd_nav_up" />
+
         <HorizontalScrollView
             android:id="@+id/breadcrumbScroll"
             android:layout_width="0dp"
@@ -60,48 +53,18 @@
 
         </HorizontalScrollView>
 
-        <androidx.appcompat.widget.AppCompatButton
-            android:id="@+id/btnUp"
-            style="@style/Widget.Paintsprout.TextButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/bg_toolbar_button"
-            android:minWidth="0dp"
-            android:minHeight="0dp"
-            android:text="@string/library_up"
-            android:contentDescription="@string/cd_library_up" />
-
-        <androidx.appcompat.widget.AppCompatButton
-            android:id="@+id/btnSort"
-            style="@style/Widget.Paintsprout.TextButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/bg_toolbar_button"
-            android:minWidth="0dp"
-            android:minHeight="0dp"
-            android:text="@string/library_sort"
-            android:contentDescription="@string/cd_library_sort" />
-
-        <!-- Text, not an icon — there are no icon assets on this screen, and a
-             glyph the font already knows how to draw is one less asset to keep
-             legible at every density this panel could be. bg_toolbar_button gives
-             it the same pressed/selected ring every other toolbar control uses,
-             so it does not read as a different kind of thing. -->
-        <androidx.appcompat.widget.AppCompatButton
-            android:id="@+id/overflowButton"
-            style="@style/Widget.Paintsprout.TextButton"
-            android:layout_width="@dimen/toolbar_button_size"
-            android:layout_height="@dimen/toolbar_button_size"
-            android:background="@drawable/bg_toolbar_button"
-            android:padding="0dp"
-            android:minWidth="0dp"
-            android:minHeight="0dp"
-            android:gravity="center"
-            android:text="@string/library_overflow"
-            android:textSize="20sp"
-            android:contentDescription="@string/cd_library_overflow" />
-
     </LinearLayout>
+
+    <TextView
+        android:id="@+id/movingLabel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="@dimen/screen_margin"
+        android:paddingEnd="@dimen/screen_margin"
+        android:paddingBottom="8dp"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textAppearance="@style/TextAppearance.Paintsprout.BodyLarge" />
 
     <FrameLayout
         android:id="@+id/gridContainer"
@@ -118,7 +81,7 @@
             android:layout_gravity="center"
             android:gravity="center"
             android:padding="@dimen/screen_margin"
-            android:text="@string/library_empty"
+            android:text="@string/picker_empty"
             android:textAppearance="@style/TextAppearance.Paintsprout.BodyLarge" />
 
     </FrameLayout>
@@ -132,23 +95,11 @@
         android:paddingEnd="@dimen/screen_margin">
 
         <androidx.appcompat.widget.AppCompatButton
-            android:id="@+id/btnNewFolder"
+            android:id="@+id/btnCancel"
             style="@style/Widget.Paintsprout.OutlinedButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="@string/library_new_folder" />
-
-        <!-- The one filled black control on this screen — the house rule is
-             that white-on-black is spent once per screen or it stops meaning
-             anything, and making a sketchbook is the one action here worth
-             spending it on. -->
-        <androidx.appcompat.widget.AppCompatButton
-            android:id="@+id/btnNewSketchbook"
-            style="@style/Widget.Paintsprout.FilledButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
-            android:text="@string/library_new_sketchbook" />
+            android:text="@string/cancel" />
 
         <Space
             android:layout_width="0dp"
@@ -219,6 +170,18 @@
                 android:contentDescription="@string/cd_pager_last" />
 
         </LinearLayout>
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1" />
+
+        <androidx.appcompat.widget.AppCompatButton
+            android:id="@+id/btnMoveHere"
+            style="@style/Widget.Paintsprout.FilledButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/picker_move_here" />
 
     </LinearLayout>
 

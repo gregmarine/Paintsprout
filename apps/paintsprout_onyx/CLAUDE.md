@@ -93,6 +93,17 @@ not apply here. Plus:
   open and an `EncryptedSharedPreferences` blob that throws before unlock can be offered. That is
   why `tools:replace` covers `android:allowBackup` as well as `android:label`; both source sets
   need it. Add to the mandatory-baggage list, not to the tidying list.
+- **An injected `KEYCODE_BACK` does not reach apps on this device at all** — not this app, and not
+  the system settings either. Back gestures are the user's thumb, never an agent's. Anything that
+  depends on back is unverifiable from a desk and belongs on the user's checklist.
+- **`Activity.onBackPressed` is dead code here.** The NA5C runs Android 15 and this app targets SDK
+  35, so predictive back is on by default and the framework never calls it. Back handling goes
+  through `onBackPressedDispatcher.addCallback` with the callback enabled only while there is
+  somewhere to go — an override compiles, reads correctly and silently never runs, which combined
+  with the trap above is a defect no amount of adb will find.
+- **A view's `width` includes its own padding.** Measuring a grid against it on a screen with a
+  screen margin overflows the last column off the panel, and it reads as a card that is merely too
+  big — the wrong thing to go and fix. Subtract the padding where the measurement is taken.
 - **A device agent's failures need reproducing before they are believed**, exactly like its passes.
   G1's first walk reported a critical defect in a flow that works, and diagnosed it in a class this
   app does not contain. Reproduce by hand before changing code.

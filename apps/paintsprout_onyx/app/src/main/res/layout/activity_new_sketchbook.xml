@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  One field, because a sketchbook needs exactly one thing from the reader
+  before it can exist: a name. Page size and surface are arc-1 non-goals (no
+  millimetres, no calibration, no surfaces), so there is nothing else this
+  screen could ask for without asking a question the app doesn't have an
+  answer to yet. nameRule sits under the field rather than only surfacing as a
+  rejected-input error, because the reader should know the boundary before
+  they hit it — a rule discovered by violation reads as the app being
+  difficult rather than the field being honest about what it accepts.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/paperWhite"
+    android:paddingTop="@dimen/toolbar_top_guard">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/toolbar_bar_thickness"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="@dimen/screen_margin"
+        android:paddingEnd="@dimen/screen_margin">
+
+        <androidx.appcompat.widget.AppCompatButton
+            android:id="@+id/btnBack"
+            style="@style/Widget.Paintsprout.TextButton"
+            android:layout_width="@dimen/toolbar_button_size"
+            android:layout_height="@dimen/toolbar_button_size"
+            android:background="@drawable/bg_toolbar_button"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:text="@string/nav_back"
+            android:contentDescription="@string/cd_nav_back" />
+
+        <TextView
+            android:id="@+id/screenTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="12dp"
+            android:text="@string/new_sketchbook_title"
+            android:textAppearance="@style/TextAppearance.Paintsprout.TitleLarge" />
+
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:padding="@dimen/screen_margin">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/new_sketchbook_name_label"
+            android:textAppearance="@style/TextAppearance.Paintsprout.BodyLarge" />
+
+        <androidx.appcompat.widget.AppCompatEditText
+            android:id="@+id/nameField"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/shape_bordered"
+            android:padding="@dimen/dialog_field_padding"
+            android:textSize="16sp"
+            android:textColor="@color/inkBlack"
+            android:textColorHint="@color/inkLight"
+            android:inputType="text"
+            android:maxLines="1"
+            android:imeOptions="actionDone"
+            android:hint="@string/new_sketchbook_name_hint" />
+
+        <TextView
+            android:id="@+id/nameRule"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/new_sketchbook_name_rule"
+            android:textAppearance="@style/TextAppearance.Paintsprout.Hint" />
+
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/toolbar_bar_thickness"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="@dimen/screen_margin"
+        android:paddingEnd="@dimen/screen_margin">
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1" />
+
+        <androidx.appcompat.widget.AppCompatButton
+            android:id="@+id/btnCancel"
+            style="@style/Widget.Paintsprout.OutlinedButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/cancel" />
+
+        <androidx.appcompat.widget.AppCompatButton
+            android:id="@+id/btnCreate"
+            style="@style/Widget.Paintsprout.FilledButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:text="@string/new_sketchbook_create" />
+
+    </LinearLayout>
+
+</LinearLayout>

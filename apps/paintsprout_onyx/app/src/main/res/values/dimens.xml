@@ -14,4 +14,18 @@
     <dimen name="toolbar_bar_thickness">56dp</dimen>
     <dimen name="toolbar_top_guard">8dp</dimen>
     <dimen name="screen_margin">16dp</dimen>
+
+    <!-- The gutter between cards in the shelf grid, and the padding inside a
+         card's own label — kept as two separate names even though they start
+         at the same value, because sw720dp grows them by different amounts:
+         a hand needs more room between cards than a card needs around its own
+         type. -->
+    <dimen name="card_gap">8dp</dimen>
+    <dimen name="card_label_padding">8dp</dimen>
+
+    <!-- Padding inside a bordered text field (the sketchbook/folder name
+         entry). shape_bordered's 1dp stroke is not a target-size affordance by
+         itself; the padding is what keeps a fingertip from landing on the
+         border instead of the text. -->
+    <dimen name="dialog_field_padding">12dp</dimen>
 </resources>

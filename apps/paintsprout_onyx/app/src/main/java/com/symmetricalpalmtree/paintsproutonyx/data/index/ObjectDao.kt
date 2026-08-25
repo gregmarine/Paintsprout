@@ -40,6 +40,25 @@ interface ObjectDao {
     suspend fun summaryById(id: String): ObjectSummary?
 
     /**
+     * The same row, but only while it is still on the shelf.
+     *
+     * The breadcrumb walks parents with this rather than [summaryById]. A deleted row is still
+     * perfectly readable by id, so the plain read would happily draw a trail through a folder that is
+     * no longer in the library and offer it as somewhere to tap — a crumb that navigates to an empty
+     * screen with no way to explain itself.
+     */
+    @Query("SELECT $SUMMARY_COLS FROM objects WHERE id = :id AND deletedAt IS NULL")
+    suspend fun aliveSummaryById(id: String): ObjectSummary?
+
+    /** How many alive children of [type] sit directly under [parentId]. Same null-parent arm as above. */
+    @Query(
+        "SELECT count(*) FROM objects " +
+            "WHERE type = :type AND deletedAt IS NULL AND " +
+            "((:parentId IS NULL AND parentId IS NULL) OR parentId = :parentId)"
+    )
+    suspend fun countChildrenOfType(parentId: String?, type: String): Int
+
+    /**
      * The alive children of [parentId] of one [type], cover-free.
      *
      * `parentId` being null means the root shelf rather than "any parent", and SQL will not compare a
@@ -58,9 +77,16 @@ interface ObjectDao {
      *
      * [excludeId] is what makes renaming a sketchbook to the name it already has succeed instead of
      * reporting a clash with itself.
+     *
+     * **`COLLATE NOCASE`, because the shelf itself does not care about case.** The cards are ordered
+     * case-insensitively, so "Studies" and "studies" would sit next to each other, identical to read
+     * and impossible to tell apart — which is the exact confusion this check exists to prevent. Names
+     * here are restricted to ASCII by `NameRules`, which is the range NOCASE actually covers, so the
+     * collation is doing the whole job rather than most of it.
      */
     @Query(
-        "SELECT count(*) FROM objects WHERE type = :type AND deletedAt IS NULL AND name = :name AND " +
+        "SELECT count(*) FROM objects WHERE type = :type AND deletedAt IS NULL AND " +
+            "name = :name COLLATE NOCASE AND " +
             "((:parentId IS NULL AND parentId IS NULL) OR parentId = :parentId) AND id <> :excludeId"
     )
     suspend fun countSiblingsNamed(parentId: String?, type: String, name: String, excludeId: String): Int

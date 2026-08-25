@@ -383,7 +383,7 @@ library from a cold first run and back again through the lock.
   as G0 said they would be.
 
 ### G2 — The shelf
-**Status:** ⬜ Not started
+**Status:** 🧪 Awaiting device verification
 
 `LibraryActivity`: breadcrumb folders, a paginated **non-scrolling** card grid, empty state,
 long-press action sheet, sort; `NewSketchbookActivity`; `FolderPickerActivity`; create, rename,
@@ -400,6 +400,84 @@ Supernote), so agents can type.
 **Questions to resolve at phase start:**
 1. Grid geometry — cards per page at the NA5C's measured size, portrait only.
 2. Does deleting a folder delete the sketchbooks inside it, or orphan them to the root?
+
+**Answers:** 1. **Three columns by two rows — six large cards a page.** Cards keep a page's
+proportions (1.4, a 3:4 cover over a two-line label), which on the measured grid area works out
+at 590 × 826 px each, about 1.9 × 2.7 inches of real panel. Four columns would have fitted twelve
+and filled the height exactly; six was chosen anyway, because a sketchbook is found by looking at
+it and from G5 that cover is a photograph of a real page. **The grid anchors to the top and the
+leftover height stays at the foot** — centring the block was tried on the panel and reads wrong:
+a shelf fills from the top down, and sharing the slack out top and bottom makes the first row sit
+lower on a half-full page than on a full one, so the shelf appears to move as it is paged through. 2. **The contents go too**, and the
+confirmation names how much — see the outcome below for why that count is taken all the way down
+rather than one level.
+
+**Outcome:** The shelf stands and the gate is green — **98 JVM tests** (79 after G1),
+`assembleDebug` and `assembleRelease`, and a full walk on the NA5C: create, nest, breadcrumb,
+rename, move, sort, paginate, delete, and back again after a force-stop, with the `Garden/`
+file count matching the shelf at every step and an empty crash buffer throughout.
+
+- **G1's two loose ends are tied off, both of them here because this is the phase that first has a
+  caller.** `auto_vacuum = INCREMENTAL` is stamped on a `.soil` before Room ever opens it, which is
+  the only moment SQLite will accept it — a seed table is made and dropped so the header gets
+  written, leaving `user_version` at 0 so Room still takes its own create path. It reads the pragma
+  straight back afterwards and warns if it did not take, because the trap it replaces was a pragma
+  that ran, returned no error and did nothing. Verified on the device: no warning. Note the debt it
+  leaves — INCREMENTAL only makes reclaiming *possible*; **G4 owes the actual `incremental_vacuum`**,
+  since G4 is the first phase that frees a page. And `ancestry` now stops at deleted rows, so a
+  breadcrumb can never offer a crumb that leads off the shelf.
+- **The folder-delete sweep is crash-safe by ordering, not by luck.** It walks the tree first and
+  then stamps **children before parents**. Each stamp is its own statement and this device kills
+  background processes routinely; stamped parent-first, a kill halfway through would leave a deleted
+  folder holding live sketchbooks that no listing walks down to again — the rows and the files all
+  still there, and the drawings gone as far as anyone could tell. Deepest-first, whatever is still
+  alive at any instant still has a living parent all the way to the root.
+- **The delete confirmation counts all the way down.** The cheap version counts direct children and
+  would tell someone deleting a folder holding one folder holding thirty sketchbooks that "1 folder"
+  goes with it. On the device the real sentence read *"2 sketchbooks and 1 folder inside will go with
+  it, for good"* for a folder whose second sketchbook was two levels down — which a one-level count
+  would have destroyed without naming.
+- **Three defects the device found that no test could have.** The last grid column was drawn half off
+  the panel, because a view's `width` includes its own padding and the grid was measured against the
+  whole 1860 px rather than the 1770 left inside the screen margin — it looks like a card that is
+  merely too big, which is the wrong thing to go and fix. The new-sketchbook field opened unfocused,
+  so `selectAll` did nothing and the first tap put a caret at the end of a timestamp the artist then
+  had to delete by hand. And every `AlertDialog` shipped with SHOUTING BUTTONS: an AppCompat dialog
+  builds its buttons from `buttonBarPositiveButtonStyle`, not the `android:`-prefixed one the theme
+  had been setting since G0, so the style was resolved by nobody.
+- **`Activity.onBackPressed` was dead code and nothing on this device could have shown it.** Android
+  15 plus targetSdk 35 means predictive back is on by default and the framework never calls it — back
+  from three folders deep would have left the app. Back now goes through `onBackPressedDispatcher`
+  with the callback armed only while there is somewhere to go up to. It cannot be verified from a
+  desk either: an injected `KEYCODE_BACK` reaches nothing on this device, not even the system
+  settings, so **this one is on the user's checklist**. logcat does at least confirm the app
+  registers an `OnBackInvokedCallback`, which is the same thing seen from the other side.
+- **Fable's review found six things and was right about five.** The two that mattered are the delete
+  ordering and the recursive count, both above. It also caught that the create path's cleanup did not
+  cover the whole create — the file was made outside the `try` — and that a comment claimed otherwise;
+  that a slow refresh could land after a newer one and bind a shelf assembled out of two folders,
+  now fenced with a generation counter; and that the pager's ⏮ ◀ ▶ ⏭ carry emoji presentation and
+  would have arrived as accidental colour on a Kaleido panel, now U+25C4/25BA which have no emoji
+  mapping at all. Two smaller things came out of it: name rules moved from hardcoded English into
+  `strings.xml` (returning a resource id keeps them testable without a Context), and the duplicate
+  check is `COLLATE NOCASE`, since the shelf already sorts case-insensitively and "Studies" beside
+  "studies" is the exact confusion that check exists to prevent.
+- **The Haiku device walk was not usable and the walk was redone by hand.** It spent its budget on
+  adb text-entry mechanics and stopped after two of eighteen steps, then reported two "critical
+  findings" that were neither: the disabled package is the documented `install -r` race, and the text
+  field behaviour was the focus bug seen through an agent that could not tell it from an adb quirk.
+  The standing rule earned its place again — a device agent's failures need reproducing before they
+  are believed. **The corollary for later phases: a walk this long does not fit in one Haiku, so cut
+  it into a few short ones or drive it directly.**
+- **Not done, on purpose:** no covers, pins or recents (G5, once there is a page to snapshot); no
+  opening a sketchbook — tapping a card does nothing at all yet, and G3 is what it is waiting for;
+  no `docs/` (G6). `IndexRepository.setCover`/`cover`/`pin`/`unpin`/`pinnedSketchbookIds` stay
+  written and uncalled, as G1 left them.
+
+**Checked by the user on the panel:** the back gesture walks up a folder at a time and leaves the app
+only at the root; the long-press to open a card's action sheet is right as it is. The cards were
+**centred vertically and that read wrong** — reversed to top-anchored, which is the last change in
+the phase and the one thing here that was settled by looking at the panel rather than by argument.
 
 ---
 

@@ -18,4 +18,11 @@
     <dimen name="toolbar_button_padding">14dp</dimen>
     <dimen name="toolbar_bar_thickness">70dp</dimen>
     <dimen name="screen_margin">24dp</dimen>
+
+    <!-- Grow with everything else sized for a hand rather than a cursor: a
+         gutter and a label pad that read as generous on a phone preview read
+         as cramped on the sheet the NA5C actually is. -->
+    <dimen name="card_gap">12dp</dimen>
+    <dimen name="card_label_padding">12dp</dimen>
+    <dimen name="dialog_field_padding">16dp</dimen>
 </resources>

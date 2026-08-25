@@ -54,6 +54,18 @@
         <item name="android:textColor">@color/inkLight</item>
     </style>
 
+    <!-- Same size as Hint, and that is the point rather than a coincidence: this
+         is the card's "6 pages · 25 Aug 2026" line, and it carries information a
+         reader browsing the shelf actually wants. The palette's rule is that
+         anything informative gets smaller, never greyer, so where Hint spends
+         inkLight to say "skip me", Caption stays full inkBlack at the same small
+         size to say "read me, just not first". -->
+    <style name="TextAppearance.Paintsprout.Caption">
+        <item name="android:textSize">12sp</item>
+        <item name="android:textStyle">normal</item>
+        <item name="android:textColor">@color/inkBlack</item>
+    </style>
+
     <!-- Filled black: the one affirmative action on a screen. White-on-black is
          the strongest thing the panel can draw, so it is spent once per screen
          or it stops meaning anything. -->

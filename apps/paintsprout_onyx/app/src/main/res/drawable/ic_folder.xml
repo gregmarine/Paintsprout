@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The only icon asset in this app, and that is deliberate rather than an
+  oversight waiting to be filled in. Everywhere else in the chrome a word or a
+  typographic glyph does the job ("Sort" is already the clearest possible label
+  for sorting), and an icon vocabulary invented mid-phase would be one more
+  thing to keep legible at every size this panel draws — one glyph, kept
+  simple enough to survive a bad refresh, beats a set nobody agreed the shapes
+  of. A folder earns the exception because there is no word short enough to sit
+  under a card without competing with the sketchbook name beside it.
+
+  Outline rather than filled: this app has no greys to shade a filled shape
+  with, so weight has to come from stroke width alone. The stroke is 1.5 of the
+  24-unit viewport rather than 1.5 dp — it scales with the glyph, so it is about
+  4 dp of real ink at the 64 dp a folder card draws it at. That reads clean
+  there and does not fill in to a blob at the smallest size the panel might ask
+  for.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="@color/inkBlack">
+
+    <path
+        android:pathData="M3.5,6.5 C3.5,5.67 4.17,5 5,5 L9.5,5 L11.5,7.5 L19,7.5 C19.83,7.5 20.5,8.17 20.5,9 L20.5,17.5 C20.5,18.33 19.83,19 19,19 L5,19 C4.17,19 3.5,18.33 3.5,17.5 Z"
+        android:strokeColor="#000000"
+        android:strokeWidth="1.5"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineJoin="round"
+        android:strokeLineCap="round" />
+
+</vector>

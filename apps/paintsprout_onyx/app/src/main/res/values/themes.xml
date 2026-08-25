@@ -44,6 +44,15 @@
         <item name="android:colorControlHighlight">@android:color/transparent</item>
         <item name="android:textColorPrimary">@color/inkBlack</item>
         <item name="android:textColorSecondary">@color/inkBlack</item>
+        <!-- Both spellings, and the un-prefixed pair is the one that actually
+             does the work: an AppCompat AlertDialog builds its buttons from its
+             own `buttonBarPositiveButtonStyle`, not the framework's, so with
+             only the android: names here the style was resolved by nobody and
+             the dialogs shipped with SHOUTING BUTTONS while every other button
+             in the app was sentence case. The android: pair stays for a
+             framework dialog that never comes through AppCompat. -->
+        <item name="buttonBarPositiveButtonStyle">@style/Widget.Paintsprout.DialogButton</item>
+        <item name="buttonBarNegativeButtonStyle">@style/Widget.Paintsprout.DialogButton</item>
         <item name="android:buttonBarPositiveButtonStyle">@style/Widget.Paintsprout.DialogButton</item>
         <item name="android:buttonBarNegativeButtonStyle">@style/Widget.Paintsprout.DialogButton</item>
     </style>

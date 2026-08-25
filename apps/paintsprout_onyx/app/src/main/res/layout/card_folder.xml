@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  One card, one folder. Width and height are both match_parent because the
+  Kotlin sizes every card the same through the GridLayout's own LayoutParams —
+  a card that sized itself would drift out of the grid's columns the first
+  time a name wrapped to a second line.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/shape_bordered"
+    android:gravity="center"
+    android:padding="@dimen/card_label_padding">
+
+    <ImageView
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:src="@drawable/ic_folder"
+        android:scaleType="fitCenter"
+        android:importantForAccessibility="no" />
+
+    <TextView
+        android:id="@+id/folderName"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
+        android:maxLines="2"
+        android:ellipsize="end"
+        android:textAppearance="@style/TextAppearance.Paintsprout.TitleMedium" />
+
+</LinearLayout>

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A blank page over a two-line label. The Kotlin sizes the whole card through
+  the grid's own LayoutParams, same as card_folder — nothing here sizes itself.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/shape_bordered">
+
+    <!-- Empty in G2 — covers are G5. This is not a placeholder standing in for
+         a picture; it is the honest picture of a sketchbook nobody has drawn
+         in yet, and the frame is built now so that the day a cover arrives
+         nothing about the card's shape has to move. -->
+    <FrameLayout
+        android:id="@+id/coverFrame"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginStart="@dimen/card_label_padding"
+        android:layout_marginEnd="@dimen/card_label_padding"
+        android:layout_marginTop="@dimen/card_label_padding"
+        android:background="@color/paperWhite">
+
+        <ImageView
+            android:id="@+id/coverImage"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="fitCenter"
+            android:importantForAccessibility="no" />
+
+    </FrameLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="@dimen/card_label_padding">
+
+        <TextView
+            android:id="@+id/cardName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:textAppearance="@style/TextAppearance.Paintsprout.TitleMedium" />
+
+        <TextView
+            android:id="@+id/cardMeta"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:textAppearance="@style/TextAppearance.Paintsprout.Caption" />
+
+    </LinearLayout>
+
+</LinearLayout>
