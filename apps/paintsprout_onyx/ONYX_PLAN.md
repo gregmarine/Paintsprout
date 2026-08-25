@@ -493,6 +493,15 @@ one line and the tick is the thing that stands out.
 `Widget.Paintsprout.ToolbarButton` and `bg_toolbar_button` needed no change at all — G0 had written
 them to match, and the shelf simply had not been using them.
 
+**And one more thing the panel showed:** a dialog's Cancel and Create read as a single button with two
+words in it. AppCompat's button-bar button is transparent, unbordered and barely padded, which on a
+display with no ripple, no shadow and no colour leaves two bare runs of black text touching. They now
+carry padding, a gap and the app's own pressed ring — which also gives back the tap feedback the
+missing ripple took away, and that matters most on a dialog button waiting on a database read, since
+one already tapped looked exactly like one that was missed. **Paper carries this style character for
+character and has the same defect**; it was found here first, and fixing it there is a change in that
+repo, not this one.
+
 **Checked by the user on the panel:** the back gesture walks up a folder at a time and leaves the app
 only at the root; the long-press to open a card's action sheet is right as it is. The cards were
 **centred vertically and that read wrong** — reversed to top-anchored, which is the last change in
