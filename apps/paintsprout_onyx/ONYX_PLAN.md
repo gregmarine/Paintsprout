@@ -230,7 +230,7 @@ protocol, and it publishes **0.1.7**. Summary of what it owes us:
 ## Phases — Arc 1 "Graphite"
 
 ### G0 — Scaffold & identity
-**Status:** 🔄 In progress
+**Status:** ✅ Complete (commit 2d23edf)
 
 Gradle root at `apps/paintsprout_onyx/` (wrapper copied — boilerplate exemption) + a single `:app`;
 `gradle.properties` (Temurin-17 home, AndroidX, **jetifier ON**); `settings.gradle.kts` (mavenLocal,
