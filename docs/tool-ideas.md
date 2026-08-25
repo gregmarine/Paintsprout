@@ -35,9 +35,12 @@ physically rotate the tablet instead.
 - ✅ **Mixing tray:** a palette that pops out of the colour swatch on the rail — named-pigment wells around the rim + a central mixing well, drag pigments in to mix them spectrally, tap the well to load the brush, hold it for the colour wheel; add any wheel colour as a new well
 - ✅ **Brush load:** the brush carries a finite load from the tray, spends it over the ground it covers (per real mm²) and fades as it runs dry, reload from the well
 - ✅ **Dirty brush:** dragging through paint on the canvas contaminates the load — a blue brush pulled across a yellow band comes out green and carries it forward
-- ✅ **Undo/redo:** unlimited, via replayable ops
-- ✅ **Magic-wand selection:** select, fill/erase, frisket-constrained painting, move/scale/rotate
+- ✅ **Undo/redo:** unlimited, via replayable ops — and it outlives the session: a page reopened days later still steps backwards through the marks that made it. Everything the sketchbook remembers is on that one timeline, so a renamed layer or a folder pulled shut undoes like a stroke does
+- ✅ **Selection:** magic wand and freehand lasso, both feeding the same actions — fill/erase, frisket-constrained painting, move/scale/rotate, copy and paste
 - ✅ **Watercolor interaction:** washes out existing paint
+- ✅ **Sketchbooks:** artwork is kept in `.soil` files on a shelf you can put in folders, pin, search and reopen where you left it. Multi-page books with thumbnails you can turn, add, duplicate, reorder and delete; a scratchpad off to the side to try something on; a clipboard that carries marks between pages and books; a whole sketchbook exported to hand to someone, or imported back. Encrypted from the first byte, with a per-sketchbook passphrase available on top
+- ✅ **Layers and folders:** up to eight paintable layers a page, nested freely in folders that pass their contents through rather than flattening them. Make, choose, name, reorder, hide, dial down; a deleted layer goes on a shelf, not in the bin
+- ✅ **Backup:** manual, incremental by what actually changed, to a local folder or to Google Drive — the copy is ciphertext, and it needs this install's recovery key to be read back
 - ✅ **Color:** HSV wheel + swatches + R/G/B sliders and typed fields + hex entry. One active colour, wherever it came from: mixing in the well, dialling the wheel and loading the brush all set the same value, and every tool that has a colour reads it
 - ✅ **Editable shape tools:** line, arc, polyline, polyarc (handle-edit before bake)
 - ✅ **Export:** PNG to device gallery
@@ -125,27 +128,28 @@ physically rotate the tablet instead.
 ---
 
 ## Selection
-The wand is the only selection today.
+Two selectors today, the magic wand and the freehand lasso, feeding one set of actions.
 | Status | Item | Notes |
 |--------|------|-------|
 | ⬜ | Rectangular / elliptical marquee | |
-| ⬜ | Freehand lasso | |
+| ✅ | Freehand lasso | Draw a loop around it and the loop closes itself; from there it does everything the wand's selection does |
 | ⬜ | Polygonal lasso | |
 | ⬜ | Boolean modes | Add, subtract, intersect |
 | ⬜ | Select all, invert | |
 | ⬜ | Edge ops | Feather, grow, shrink, smooth |
 | ⬜ | Select by color range | Global, non-contiguous — the wand's opposite |
-| ⬜ | Copy / cut / paste | No clipboard at all right now |
+| 🚧 | Copy / cut / paste | **Copy and paste ship.** The clipboard takes whole marks that lie inside the selection — so they stay editable and re-tooth to the surface they land on, and so a stroke crossing the boundary is left behind rather than sliced. It lives in the index, not the page, which is what lets it outlive the page, the book and the process. **Cut is the remainder** |
 | ⬜ | Richer transforms | Skew, distort, perspective, warp/liquify mesh, flip, numeric entry |
 | ⬜ | Save / restore a selection | |
 
 ---
 
 ## Layers
-Biggest structural gap. Two layers today (surface, paint); paint layer is flat raster.
+Up to eight paintable layers a page, nested in folders. What is left here is the
+compositing-and-masking half: how layers combine, not whether they exist.
 | Status | Item | Notes |
 |--------|------|-------|
-| ⬜ | Arbitrary layers | Reorder, rename, lock, hide, per-layer opacity |
+| 🚧 | Arbitrary layers | Make, choose, name, reorder, hide and dial down, eight to a page; a deleted layer goes to a shelf it can be taken back from, and every one of those edits is a step on the undo timeline. **Lock is the remainder** |
 | ⬜ | Blend modes | Multiply, screen, overlay, add, … |
 | ⬜ | Clipping masks | |
 | ⬜ | Alpha lock | Paint only where pixels already exist |

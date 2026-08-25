@@ -1,15 +1,19 @@
 # Paintsprout File Format & Library — Multi-Phase Plan
 
-> **Status:** planning complete, implementation not started.
-> **Started:** 2026-07-24
+> **Status:** finished. All 25 phases shipped, the last on 2026-07-25; the work merged
+> to `main` on 2026-08-24 along with everything the sketchbook effort grew into.
+> This document is now the record of *why* the format is shaped the way it is —
+> [`soil-format.md`](soil-format.md) is what is actually on disk, and is the one to
+> read first when touching storage.
+> **Started:** 2026-07-24 · **Last phase:** 2026-07-25
 > **Reference specs:** `~/git/Notesprout/docs/soil-file-format.md`, `~/git/Notesprout/docs/global-index-format.md`
 > **Tracking:** update the [Phase ledger](#phase-ledger) as each phase lands. One commit per phase.
 
-Paintsprout currently persists **nothing**. Artwork lives in `PaintCanvasView`'s in-memory
-`PaintOp` history and dies with the process; the only outputs are PNG exports to the gallery and a
-`SharedPreferences` entry for screen calibration. This plan builds the whole storage half of the
-app: a `.soil` document container, a global index, a library, multi-page sketchbooks, a scratchpad,
-a clipboard, and import/export — following the Sprout family container contract.
+When this was written Paintsprout persisted **nothing**. Artwork lived in `PaintCanvasView`'s
+in-memory `PaintOp` history and died with the process; the only outputs were PNG exports to the
+gallery and a `SharedPreferences` entry for screen calibration. This plan built the whole storage
+half of the app: a `.soil` document container, a global index, a library, multi-page sketchbooks,
+a scratchpad, a clipboard, and import/export — following the Sprout family container contract.
 
 ---
 
@@ -636,6 +640,10 @@ Legend: ⬜ not started · 🚧 in progress · ✅ done · 🧪 needs device tes
   (serial `5HL21V5007384` — prompt before installing, ignore every other connected device).
 - After a phase is verified: tick it here, then commit and push that phase's work.
 - Commits go to `main` directly, one per phase (matching the line/arc/polyline/polyarc phases).
+  > **As it went.** Phase 1 opened a branch, `sketchbook`, and the whole effort stayed on it —
+  > one commit per phase as planned, but merged to `main` in one piece on 2026-08-24, by which
+  > time the branch also carried layers, folders, backup, calibration, page space, orientation
+  > and the dev/stable split. A storage rewrite is not a thing to leave half-landed on `main`.
 
 ---
 
@@ -1995,6 +2003,11 @@ in order of preference: crop the cache to painted bounds; keep caches only for t
 opened pages and replay the rest; measure raw+zlib against PNG (Phase 25). **This is why Phase 25
 exists as a real phase and not a cleanup task.**
 
+> **Answered by Phase 25.** Sealing drops every cache but the few most recently opened, and a
+> 13-page book fell 245,760 → 126,976 B on one open-and-seal — 48%, nothing lost but rebuildable
+> pixels. Growth across a session of painting is **bounded, not cumulative**. Cropping to painted
+> bounds was never needed and remains available if a fully painted book ever says otherwise.
+
 ## Clipboard whole-object copy will surprise
 Decision 10 was made deliberately, and it is the right call for keeping pasted content editable and
 re-toothable on the destination surface. But in a *paint* app the mismatch is real: a stroke crossing
@@ -2014,9 +2027,15 @@ Every `sqlcipher_export` round-trip in Phases 6, 23 and 24 must copy `user_versi
 bricked real Notesprout files. Put it in the one shared export helper and nowhere else.
 
 ## Deliberately deferred
-- **Backup and restore** (user decision 8) — its own plan later. The `flags` bit and the per-destination
+- ~~**Backup and restore**~~ (user decision 8) — its own plan later. The `flags` bit and the per-destination
   timestamp columns are *not* reserved in this schema; they will be an additive migration.
-- **Layer UI** — columns exist (`opacity`, `blendMode`, `flags`), compositing does not.
+  > **Shipped 2026-07-27**, exactly that way: index schema v1 → v2, additive, adding `params`,
+  > `lastBackedUpLocal` and `lastBackedUpDrive`, with exclusion as bit 1 of `flags`. See
+  > [`backup.md`](backup.md).
+- ~~**Layer UI**~~ — columns exist (`opacity`, `blendMode`, `flags`), compositing does not.
+  > **Shipped 2026-07-26/27.** Eight paintable layers a page, nested in pass-through folders,
+  > every layer edit an op on the same undo timeline as the marks. `blendMode` is still unused —
+  > blend modes are a backlog item, not a shipped column. See `soil-format.md` §Hierarchy.
 - **Raster / tiled pixel objects** — reserved type, no implementation. Needed if a photo-import or
   smudge-bake feature ever lands.
 - **Cross-app import semantics.** Settled by what shipped: a file is a Paintsprout sketchbook if it
