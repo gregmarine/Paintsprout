@@ -3,15 +3,16 @@ package com.symmetricalpalmtree.paintsprout.paint
 /**
  * The drawing tools. Ported from the Flutter reference `tools.dart`.
  *
- * [wand] is not a drawing tool — it's the magic-wand selection tool. It never
- * creates a stroke; a tap flood-fills a selection instead.
+ * [WAND] and [LASSO] are not drawing tools — they select. Neither ever creates a
+ * stroke: the wand flood-fills a region from a tap, the lasso encloses one with a
+ * freehand loop. Both hand the same mask to the same selection machinery.
  *
  * Note: the per-tool `IconData` from the Flutter enum is intentionally omitted
  * here — icons map to Android drawable resources and belong to the UI shell, not
  * the pure paint model.
  */
 enum class Tool {
-    PENCIL, PEN, LINE, ARC, POLYLINE, POLYARC, BRUSH, WATERCOLOR, MARKER, SPRAY, ERASER, WAND;
+    PENCIL, PEN, LINE, ARC, POLYLINE, POLYARC, BRUSH, WATERCOLOR, MARKER, SPRAY, ERASER, WAND, LASSO;
 
     val label: String
         get() = when (this) {
@@ -27,10 +28,14 @@ enum class Tool {
             SPRAY -> "Spray"
             ERASER -> "Eraser"
             WAND -> "Magic Wand"
+            LASSO -> "Lasso"
         }
 
-    /** Whether this tool paints strokes at all. The wand only selects. */
-    val isDrawing: Boolean get() = this != WAND
+    /** Whether this tool paints strokes at all. The selectors don't. */
+    val isDrawing: Boolean get() = this !in SELECTORS
+
+    /** Whether this tool produces a selection rather than a mark. */
+    val isSelector: Boolean get() = this in SELECTORS
 
     /**
      * Whether the tool's stroke width reacts to stylus pressure and tilt.
@@ -64,6 +69,7 @@ enum class Tool {
             SPRAY -> 28f
             ERASER -> 24f
             WAND -> 1f
+            LASSO -> 1f
         }
 
     /**
@@ -85,7 +91,13 @@ enum class Tool {
             SPRAY -> 8f
             ERASER -> 6f
             WAND -> 1f
+            LASSO -> 1f
         }
+
+    companion object {
+        /** The tools that select instead of marking. Neither carries a size or a colour. */
+        val SELECTORS = setOf(WAND, LASSO)
+    }
 }
 
 /** How a stroke is rendered. */
@@ -355,7 +367,9 @@ data class ToolProfile(
             Tool.MARKER -> MARKER
             Tool.SPRAY -> SPRAY
             Tool.ERASER -> ERASER
-            Tool.WAND -> PEN // unused: the wand never draws
+            // Unused: the selectors never draw.
+            Tool.WAND -> PEN
+            Tool.LASSO -> PEN
         }
     }
 }

@@ -1,4 +1,226 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Paintsprout</string>
+
+    <!-- Bootstrap: opening the library -->
+    <string name="bootstrap_opening">Opening your library…</string>
+
+    <string name="bootstrap_recovery_title">Your recovery key</string>
+    <string name="bootstrap_recovery_body">Your work is encrypted. This key is the only way to open your library on another device, or after reinstalling. Write it down somewhere safe — nobody can recover it for you.</string>
+    <string name="bootstrap_recovery_written">I\'ve written it down</string>
+    <string name="bootstrap_recovery_copy">Copy</string>
+    <string name="bootstrap_recovery_copied">Copied</string>
+
+    <string name="bootstrap_unlock_title">Unlock Paintsprout</string>
+    <string name="bootstrap_unlock_body">Enter your recovery key or passphrase to open your library.</string>
+    <string name="bootstrap_unlock_wrong">That didn\'t open the library. Try again.</string>
+    <string name="bootstrap_unlock_hint">Recovery key or passphrase</string>
+    <string name="bootstrap_unlock_action">Unlock</string>
+    <string name="bootstrap_locked">Too many attempts. Try again in %1$s.</string>
+
+    <string name="bootstrap_failed_title">Couldn\'t open your library</string>
+    <string name="bootstrap_retry">Try again</string>
+
+    <!-- Library -->
+    <string name="library_title">Sketchbooks</string>
+    <string name="library_new">New</string>
+    <string name="library_new_sketchbook">New sketchbook</string>
+    <string name="library_new_folder">New folder</string>
+    <string name="library_folder">Folder</string>
+    <string name="library_root">Sketchbooks</string>
+    <string name="library_up">Up</string>
+    <string name="library_move">Move</string>
+    <string name="library_pin">Pin</string>
+    <string name="library_unpin">Unpin</string>
+    <string name="library_pinned">Pinned</string>
+    <string name="library_recent">Recent</string>
+    <string name="library_move_refused">A folder can\'t be moved inside itself</string>
+    <string name="library_folder_empty">This folder is empty.</string>
+    <string name="library_folder_not_empty">Move or delete what\'s inside first.</string>
+    <string name="library_search_hint">Search by name</string>
+    <string name="library_results">%1$d found</string>
+    <string name="library_no_results">Nothing matches that name.</string>
+    <string name="library_sort">Sort</string>
+    <string name="library_sort_name">Name</string>
+    <string name="library_sort_created">Recently created</string>
+    <string name="library_sort_updated">Recently updated</string>
+    <string name="library_create">Create</string>
+    <string name="library_empty">No sketchbooks yet. Make one and start painting.</string>
+    <string name="library_name_hint">Name</string>
+    <string name="library_size">Size</string>
+    <string name="library_size_custom">Custom…</string>
+    <string name="layers_title">Layers</string>
+    <string name="layers_add">Add layer</string>
+    <string name="layers_show">Layers</string>
+    <string name="layers_delete">Delete layer</string>
+    <string name="layers_full">That is as many layers as a page will hold.</string>
+    <string name="layers_last">A page needs somewhere to paint.</string>
+    <string name="layers_default_name">Layer %1$d</string>
+    <string name="layers_hide">Hide layer</string>
+    <string name="layers_reveal">Show layer</string>
+    <string name="layers_reorder">Reorder layer</string>
+    <string name="layers_opacity">Opacity</string>
+    <string name="layers_hidden">Show a layer before drawing on it.</string>
+    <string name="layers_drawing">Finish the mark first.</string>
+    <string name="layers_floating">Set the selection down first.</string>
+    <string name="layers_delete_title">Delete “%1$s”?</string>
+    <string name="layers_delete_warning">Everything drawn on this layer goes with it. Undo brings it back.</string>
+    <string name="layers_delete_confirm">Delete</string>
+
+    <string name="stack_rename">Rename</string>
+    <string name="stack_name">Name</string>
+    <string name="folders_add">New folder</string>
+    <string name="folders_default_name">Folder %1$d</string>
+    <string name="folders_delete">Delete folder</string>
+    <string name="folders_hide">Hide folder</string>
+    <string name="folders_reveal">Show folder</string>
+    <string name="folders_reorder">Move folder</string>
+    <string name="folders_expand">Open folder</string>
+    <string name="folders_collapse">Close folder</string>
+    <string name="folders_deep">Folders do not go deeper than this.</string>
+    <string name="library_size_use">Use</string>
+    <string name="library_size_width">Width</string>
+    <string name="library_size_height">Height</string>
+    <string name="library_size_capped">Capped to what fits the screen (%1$s).</string>
+    <string name="library_default_name">Sketchbook</string>
+    <string name="library_rename">Rename</string>
+    <string name="library_duplicate">Duplicate</string>
+    <string name="library_export">Export</string>
+    <string name="library_delete">Delete</string>
+    <string name="library_copy_of">%1$s copy</string>
+    <string name="library_delete_title">Delete “%1$s”?</string>
+    <string name="library_delete_body">The sketchbook and everything in it will be removed from this device.</string>
+    <string name="library_failed">That didn\'t work</string>
+    <string name="library_open">Library</string>
+    <string name="library_scratchpad">Scratchpad</string>
+
+    <plurals name="library_pages">
+        <item quantity="one">%d page</item>
+        <item quantity="other">%d pages</item>
+    </plurals>
+    <string name="editor_copied_nothing">Nothing was wholly inside the selection</string>
+    <plurals name="editor_copied">
+        <item quantity="one">Copied %1$d mark</item>
+        <item quantity="other">Copied %1$d marks</item>
+    </plurals>
+    <plurals name="editor_pasted">
+        <item quantity="one">Pasted %1$d mark</item>
+        <item quantity="other">Pasted %1$d marks</item>
+    </plurals>
+    <string name="send_title">Send this page</string>
+    <string name="send_to_scratchpad">To the scratchpad</string>
+    <string name="send_to_sketchbook">To a sketchbook…</string>
+    <string name="send_to_new_sketchbook">To a new sketchbook…</string>
+    <string name="send_done">Sent to %1$s</string>
+    <string name="send_failed">That didn\'t send</string>
+    <string name="send_no_books">There\'s no other sketchbook to send it to</string>
+    <string name="library_import">Import a sketchbook…</string>
+    <string name="import_title">Import</string>
+    <string name="import_unlock_title">This sketchbook is locked</string>
+    <string name="import_unlock_body">Enter the passphrase it was encrypted with.</string>
+    <string name="import_unlock">Unlock</string>
+    <string name="import_wrong_key">That didn\'t open it</string>
+    <string name="import_locked">Too many attempts. Try again in %1$d minutes.</string>
+    <string name="import_not_a_sketchbook">That file isn\'t a Paintsprout sketchbook</string>
+    <string name="import_bad_id">That file names something that isn\'t a valid id. It has not been imported.</string>
+    <string name="import_exists_title">You already have this sketchbook</string>
+    <string name="import_exists_body">“%1$s” is already in your library. Replacing it overwrites what\'s there.</string>
+    <string name="import_replace">Replace</string>
+    <string name="import_keep_both">Keep both</string>
+    <string name="import_open_elsewhere">That sketchbook is open. Close it first.</string>
+    <string name="import_done">Imported “%1$s”</string>
+    <string name="import_failed">That didn\'t import</string>
+    <string name="library_keying">Encryption…</string>
+    <string name="keying_device">This device\'s key</string>
+    <string name="keying_private">Its own passphrase</string>
+    <string name="keying_none">No encryption</string>
+    <string name="keying_none_warning">The file will be readable by anything that can open a database. Only do this to hand it to another program.</string>
+    <string name="keying_none_confirm">Remove encryption</string>
+    <string name="keying_current_title">Its current passphrase</string>
+    <string name="keying_new_title">A passphrase for this sketchbook</string>
+    <string name="keying_unlock_body">This sketchbook has its own passphrase.</string>
+    <string name="keying_done">Done</string>
+    <string name="keying_failed">That didn\'t work</string>
+    <string name="rotate_title">Change this device\'s key</string>
+    <string name="rotate_body">Every sketchbook using this device\'s key is re-encrypted. The new passphrase replaces your recovery key — write it down.</string>
+    <string name="rotate_action">Change it</string>
+    <string name="rotate_running">Re-encrypting…</string>
+    <string name="rotate_done">%1$d sketchbooks re-encrypted</string>
+    <string name="rotate_done_partial">%1$d re-encrypted, %2$d set aside</string>
+
+    <string name="library_calibrate">Calibrate…</string>
+    <string name="library_calibrated">Screen calibrated: %1$d PPI</string>
+
+    <!-- Backup -->
+    <string name="library_backup">Backup…</string>
+    <string name="backup_title">Backup</string>
+    <string name="backup_back">Back</string>
+    <string name="backup_enabled">On</string>
+    <string name="backup_not_set">Not set up</string>
+    <string name="backup_local">Local folder</string>
+    <string name="backup_drive">Google Drive</string>
+
+    <string name="backup_device_name">This device\'s folder name</string>
+    <string name="backup_device_name_hint">The subfolder your backups go in, so several devices can share one place.</string>
+    <string name="backup_device_name_save">Save name</string>
+    <string name="backup_device_name_saved">Saved</string>
+    <string name="backup_device_name_invalid">That name has nothing usable in it</string>
+
+    <string name="backup_local_title">Local backup</string>
+    <string name="backup_local_hint">Any folder this device can write to — internal storage, an SD card, a USB drive.</string>
+    <string name="backup_choose_folder">Choose folder…</string>
+
+    <string name="backup_drive_title">Google Drive backup</string>
+    <string name="backup_drive_hint">Copies into a “Paintsprout Backups” folder in your Drive, in this device\'s subfolder.</string>
+    <string name="backup_drive_connect">Connect Google Drive</string>
+    <string name="backup_drive_disconnect">Disconnect</string>
+    <string name="backup_drive_connected">Connected as %1$s</string>
+    <string name="backup_drive_connected_generic">Google Drive (connected)</string>
+    <string name="backup_drive_not_connected">Not connected</string>
+    <string name="backup_drive_unavailable">Google Drive isn\'t connected: %1$s</string>
+    <string name="backup_drive_unconfigured">This build has no Drive credentials — see docs/backup.md.</string>
+    <string name="backup_drive_auth_failed">That didn\'t connect. %1$s</string>
+    <string name="backup_drive_no_refresh">Connected, but Drive didn\'t issue a lasting token — you may have to reconnect later.</string>
+
+    <string name="backup_now">Back up now</string>
+    <string name="backup_running_title">Backing up</string>
+    <string name="backup_preparing">Getting ready…</string>
+    <string name="backup_progress">%1$d of %2$d\n%3$s</string>
+    <string name="backup_last_run">Last backup: %1$s</string>
+    <string name="backup_last_run_never">Last backup: never</string>
+    <string name="backup_done_title">Backup finished</string>
+    <string name="backup_failed">That didn\'t back up. %1$s</string>
+    <string name="backup_no_destinations">Nothing is switched on to back up to.</string>
+    <string name="backup_summary_line">%1$s: %2$d copied</string>
+    <string name="backup_summary_failed">, %1$d failed</string>
+    <string name="backup_summary_skipped">, %1$d skipped</string>
+    <string name="backup_summary_index_ok">, library index copied</string>
+    <string name="backup_summary_index_failed">, LIBRARY INDEX FAILED</string>
+
+    <string name="backup_exclude">Leave out of backups</string>
+    <string name="backup_include">Include in backups</string>
+    <string name="backup_excluded_toast">“%1$s” will be left out of backups</string>
+    <string name="backup_included_toast">“%1$s” will be backed up again</string>
+
+    <string name="backup_restore_heading">Restore</string>
+    <string name="backup_restore_hint">Replace this device\'s library with a backup. You\'ll need that backup\'s recovery key to open it.</string>
+    <string name="backup_restore_action_long">Restore from a backup…</string>
+    <string name="backup_restore_action">Restore</string>
+    <string name="backup_restore_title">Restore from</string>
+    <string name="backup_scanning">Looking for backups…</string>
+    <string name="backup_none_found">No backups found in %1$s.</string>
+    <string name="backup_choose">Choose a backup</string>
+    <string name="backup_restore_confirm_title">Replace your library?</string>
+    <string name="backup_restore_confirm_body">Restore “%1$s” (%2$s)?\n\nThis replaces everything on this device — every sketchbook here now is removed. You\'ll need that backup\'s recovery key to open it, and this can\'t be undone.</string>
+    <string name="backup_restoring_title">Restoring</string>
+    <string name="backup_restore_progress">%1$d of %2$d…</string>
+    <string name="backup_restore_done_title">Restored</string>
+    <string name="backup_restore_done_body">%1$s restored. Paintsprout will restart so you can unlock the library.</string>
+    <string name="backup_restore_failed">That didn\'t restore. %1$s</string>
+    <string name="backup_restart">Restart</string>
+
+    <plurals name="backup_sketchbook_count">
+        <item quantity="one">%d sketchbook</item>
+        <item quantity="other">%d sketchbooks</item>
+    </plurals>
 </resources>

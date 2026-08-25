@@ -292,6 +292,24 @@ class Tray(pots: List<Pot> = STANDARD_POTS) {
 
     fun removePot(pot: Pot): Boolean = _pots.remove(pot)
 
+    /**
+     * Replaces the rim wholesale — a saved palette coming back.
+     *
+     * An empty list is ignored rather than obeyed: a document written before the
+     * tray was persisted has no pots, and wiping the standard palette because a
+     * file is silent about it would be the wrong reading of silence.
+     */
+    fun restorePots(pots: List<Pot>) {
+        if (pots.isEmpty()) return
+        _pots.clear()
+        _pots.addAll(pots)
+    }
+
+    /** Puts a saved mixing well back. */
+    fun restoreMixture(recipe: Recipe) {
+        mixture = recipe
+    }
+
     companion object {
         /**
          * A conventional artist's palette. Names are real pigments; the sRGB

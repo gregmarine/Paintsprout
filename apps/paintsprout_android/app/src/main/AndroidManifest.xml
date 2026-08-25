@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!--
+        Backup's Google Drive destination, and nothing else. The app draws, files
+        and encrypts entirely offline; this is the one feature that leaves the
+        device, and it does so only when the user presses "Back up now".
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <application
         android:name=".PaintsproutApplication"
         android:allowBackup="true"
@@ -9,11 +17,17 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Paintsprout">
 
+        <!--
+            The launcher entry is the bootstrap gate, not the editor: the index can
+            need a key derivation, an unlock prompt or a first-run mint before
+            anything is allowed to read it.
+        -->
         <activity
-            android:name=".MainActivity"
+            android:name=".BootstrapActivity"
             android:exported="true"
+            android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density"
-            android:screenOrientation="sensorLandscape"
+            android:screenOrientation="fullUser"
             android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -22,10 +36,57 @@
         </activity>
 
         <activity
+            android:name=".LibraryActivity"
+            android:exported="false"
+            android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density"
+            android:screenOrientation="fullUser"
+            android:launchMode="singleTop" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density"
+            android:screenOrientation="fullUser"
+            android:launchMode="singleTop" />
+
+        <activity
             android:name=".CalibrationActivity"
             android:exported="false"
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density"
-            android:screenOrientation="sensorLandscape" />
+            android:screenOrientation="fullUser" />
+
+        <!-- Backup destinations, "Back up now", and restore. -->
+        <activity
+            android:name=".BackupSettingsActivity"
+            android:exported="false"
+            android:screenOrientation="fullUser"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
+            Google's OAuth consent page in a WebView. adjustResize because the
+            sign-in form has text fields, and no configChanges: this screen holds
+            nothing a rotation could lose.
+        -->
+        <activity
+            android:name=".DriveAuthActivity"
+            android:exported="false"
+            android:screenOrientation="fullUser"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
+            Staged export copies are shared by content URI rather than by path:
+            a file:// URI to another app is a FileUriExposedException, and a
+            world-readable copy of somebody's artwork is not the alternative.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
     </application>
 

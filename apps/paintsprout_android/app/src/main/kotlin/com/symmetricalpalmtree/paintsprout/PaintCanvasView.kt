@@ -30,10 +30,31 @@ import com.symmetricalpalmtree.paintsprout.paint.Calibration
 import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.EraseOp
 import com.symmetricalpalmtree.paintsprout.paint.FillOp
+import com.symmetricalpalmtree.paintsprout.paint.Folder
+import com.symmetricalpalmtree.paintsprout.paint.FolderAddOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderDeleteOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderOpacityOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderVisibilityOp
+import com.symmetricalpalmtree.paintsprout.paint.FolderCollapseOp
+import com.symmetricalpalmtree.paintsprout.paint.NameOp
+import com.symmetricalpalmtree.paintsprout.paint.Layer
+import com.symmetricalpalmtree.paintsprout.paint.LayerAddOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerDeleteOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerOpacityOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerOrderOp
+import com.symmetricalpalmtree.paintsprout.paint.LayerStack
+import com.symmetricalpalmtree.paintsprout.paint.LayerVisibilityOp
+import com.symmetricalpalmtree.paintsprout.paint.StackEntry
+import com.symmetricalpalmtree.paintsprout.paint.StackSpot
 import com.symmetricalpalmtree.paintsprout.paint.GalleryExport
 import com.symmetricalpalmtree.paintsprout.paint.GpuRender
+import com.symmetricalpalmtree.paintsprout.paint.LassoLoop
 import com.symmetricalpalmtree.paintsprout.paint.MoveOp
+import com.symmetricalpalmtree.paintsprout.paint.PageTurn
+import com.symmetricalpalmtree.paintsprout.paint.PageRemap
+import com.symmetricalpalmtree.paintsprout.paint.PageSpace
 import com.symmetricalpalmtree.paintsprout.paint.PaintOp
+import com.symmetricalpalmtree.paintsprout.paint.PasteOp
 import com.symmetricalpalmtree.paintsprout.paint.PigmentMixer
 import com.symmetricalpalmtree.paintsprout.paint.SelectionRender
 import com.symmetricalpalmtree.paintsprout.paint.Stroke
@@ -58,6 +79,7 @@ import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
 import com.symmetricalpalmtree.paintsprout.paint.resolveDensity
 import com.symmetricalpalmtree.paintsprout.paint.chiselNibWidth
 import com.symmetricalpalmtree.paintsprout.paint.resolveWidth
+import com.symmetricalpalmtree.paintsprout.paint.eraserWidth
 import com.symmetricalpalmtree.paintsprout.paint.strokeRegionPath
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -97,21 +119,45 @@ class PaintCanvasView @JvmOverloads constructor(
 ) : View(context, attrs, defStyleAttr) {
 
     /**
-     * The active drawing tool. Leaving the wand while a move is floating bakes it;
-     * leaving the line tool while a line is still being edited bakes that line.
+     * The active drawing tool. Leaving a selector while a move is floating bakes
+     * it; leaving the line tool while a line is still being edited bakes that line.
      */
     var tool: Tool = Tool.PEN
         set(value) {
             val old = field
             field = value
             if (old != value) {
-                if (old == Tool.WAND && isFloating) scope.launch { commitFloating() }
+                if (old.isSelector && isFloating) scope.launch { commitFloating() }
+                if (old == Tool.LASSO) {
+                    // A half-drawn loop is not a selection and must not become one
+                    // the next time the lasso is picked up.
+                    lassoPts.clear()
+                    lassoPointerId = INVALID_POINTER
+                }
                 if (old == Tool.LINE && hasPendingLine) commitPendingLine()
                 if (old == Tool.ARC && hasPendingArc) commitPendingArc()
                 if (old == Tool.POLYLINE && hasPendingPolyline) commitPendingPolyline()
                 if (old == Tool.POLYARC && hasPendingPolyarc) commitPendingPolyarc()
             }
         }
+
+    /**
+     * Whether the mark being made is being made with the other end of the pen.
+     *
+     * A pencil with a rubber on it is one instrument, not two. Turning it over
+     * is something the hand does mid-sentence — it is not a mode the app is put
+     * into, and nothing on the rail moves while you do it. So this lasts exactly
+     * as long as the mark does: set as the eraser end comes down, cleared as it
+     * lifts, and read fresh at every pen-down.
+     */
+    private var eraserEnd = false
+
+    /**
+     * What the mark in progress is actually being made with: the tool in hand,
+     * unless the hand turned the pen over. Everything on the input path reads
+     * this; [tool] is only ever the tool that was *chosen*.
+     */
+    private val effectiveTool: Tool get() = if (eraserEnd) Tool.ERASER else tool
 
     /**
      * Watercolor's water mode: strokes carry clean water instead of pigment —
@@ -121,22 +167,30 @@ class PaintCanvasView @JvmOverloads constructor(
     var waterMode = false
 
     /**
-     * Deposit color (ARGB). Ignored by the eraser.
+     * **The colour being painted with.** One value, and the only one — every tool
+     * that has a colour takes it from here.
      *
-     * Setting it recharges the brush with that colour, so picking a colour off
-     * the wheel behaves the way it always has — you don't have to visit the tray
-     * to paint. Mixing on the tray goes through [loadBrush] instead.
+     * There are two ways of *using* it, which is not the same as there being two
+     * of it. A pencil or a pen simply marks in it and never runs out. A brush has
+     * to be charged with it first ([loadBrush]) and then spends what it was given,
+     * which is why the brush is the only tool that has to go back to the palette.
+     *
+     * What the brush is carrying can therefore drift away from this — it drains,
+     * and it picks up whatever it is dragged through — and that drift belongs to
+     * the brush, not to the colour. The swatch on the rail goes on showing the
+     * paint that was chosen rather than the mud presently on the bristles, and a
+     * pencil picked up mid-brushstroke draws the colour you chose.
+     *
+     * Setting this does *not* charge the brush. Choosing a colour and picking up
+     * a loaded brush are two acts, and one property that quietly did both is what
+     * made the tray and the rail disagree about what colour it was.
      */
     @ColorInt
     private var _strokeColor: Int = Color.BLACK
 
     var strokeColor: Int
         @ColorInt get() = _strokeColor
-        set(@ColorInt value) {
-            _strokeColor = value
-            brushLoad = BrushLoad.of(value)
-            onBrushLoadChanged?.invoke(brushLoad)
-        }
+        set(@ColorInt value) { _strokeColor = value }
 
     /**
      * What the brush is currently carrying: a mixture and how much of it is
@@ -150,11 +204,11 @@ class PaintCanvasView @JvmOverloads constructor(
     var onBrushLoadChanged: ((BrushLoad) -> Unit)? = null
 
     /**
-     * Charges the brush from the tray's well, keeping the mixture intact.
+     * Charges the brush, keeping the mixture intact so it can be contaminated
+     * meaningfully — a flat recharge would throw away the recipe just mixed.
      *
-     * Deliberately not routed through [strokeColor]: that setter recharges with
-     * a single flat pigment, which would throw away the recipe you just mixed
-     * and leave a brush that can't be contaminated meaningfully.
+     * A charge is also a statement of what is being painted with, so it sets
+     * [strokeColor] too. The reverse does not hold: see there.
      */
     fun loadBrush(load: BrushLoad) {
         brushLoad = load
@@ -204,6 +258,14 @@ class PaintCanvasView @JvmOverloads constructor(
     /** Base size override; null uses the tool's default. */
     var baseSize: Float? = null
 
+    /**
+     * The width (px) the pen's eraser end rubs out at — the eraser's own size,
+     * not the size of whatever is in hand. Turning the pen over reaches for the
+     * eraser you last set; it does not hand you a pencil-thin rubber because a
+     * pencil happened to be selected. Null falls back to the eraser's default.
+     */
+    var eraserSize: Float? = null
+
     /** The surface being painted on. User changes go through [commitSurfaceChange]. */
     var surface: SurfaceKind = SurfaceKind.PAPER
         private set
@@ -251,6 +313,17 @@ class PaintCanvasView @JvmOverloads constructor(
         private set
 
     /**
+     * Puts a saved page's seed back.
+     *
+     * A named entry point rather than a public setter, because this is a
+     * load-time operation and nothing else should be able to re-roll a piece's
+     * paper out from under it.
+     */
+    fun restoreSurfaceSeed(seed: Long) {
+        surfaceSeed = seed
+    }
+
+    /**
      * The surface/background at the base of the undo timeline — the state restored
      * when every [SurfaceOp] has been undone. Re-based on [clear].
      */
@@ -269,11 +342,86 @@ class PaintCanvasView @JvmOverloads constructor(
     var wandEdgeSensitivity: Float = 0.5f
     var wandGap: Int = 3
 
-    private fun sizeFor(t: Tool): Float = baseSize ?: t.defaultSize
+    /**
+     * The width a tool marks at: the size pushed from the rail, which belongs to
+     * the tool that was chosen. The pen's eraser end is the one thing not on the
+     * rail, so it brings its own — and only for itself, so a pending line drawn
+     * over while the pen is flipped is still previewed at the line's width.
+     */
+    private fun sizeFor(t: Tool): Float =
+        if (eraserEnd && t == Tool.ERASER) eraserSize ?: t.defaultSize
+        else baseSize ?: t.defaultSize
 
     // --- Buffers ------------------------------------------------------------
     private var surfaceBmp: Bitmap? = null
-    private var paintBmp: Bitmap? = null
+
+    /**
+     * The shape of the stack: what is in it, in what order, and inside which
+     * folder. Structure only — it knows ids and nothing about paint.
+     */
+    private val stack = LayerStack(listOf(StackEntry(java.util.UUID.randomUUID().toString())))
+
+    /** Everything in the stack that holds paint, and everything that holds those. */
+    private val layersById = linkedMapOf(
+        stack.entries.first().id to Layer(stack.entries.first().id, Layer.DEFAULT_NAME),
+    )
+    private val foldersById = linkedMapOf<String, Folder>()
+
+    /**
+     * The layers bottom-first — the order they are painted in. Never empty: a
+     * page always has somewhere to paint.
+     *
+     * Derived from [stack] and rebuilt by [reflow] whenever its shape changes,
+     * which is what let folders arrive without reopening anything that draws.
+     * Everything below this line works from a flat list of layers exactly as it
+     * did before there was anything to file them in — because a folder passes
+     * its contents through rather than compositing them, so nesting changes
+     * nothing about what goes down when.
+     */
+    private val layers = mutableListOf(layersById.values.first())
+
+    /** Index into [layers] of the one the pen is currently working on. */
+    private var activeIndex = 0
+
+    val layerCount: Int get() = layers.size
+    val activeLayerIndex: Int get() = activeIndex
+    fun layerNameAt(i: Int): String = layers[i].name
+    fun layerIdAt(i: Int): String = layers[i].id
+
+    /**
+     * Puts [layers] back in step with [stack].
+     *
+     * The pen keeps hold of the same sheet across it: the active layer is
+     * followed by identity, not by the index it happened to be at, because a
+     * move or a deletion elsewhere in the stack shifts indices and does not
+     * change what you were drawing on.
+     */
+    private fun reflow() {
+        val holding = layers.getOrNull(activeIndex)
+        layers.clear()
+        stack.drawOrder().mapNotNullTo(layers) { layersById[it] }
+        if (layers.isEmpty()) layersById.values.firstOrNull()?.let { layers += it }
+        activeIndex = layers.indexOf(holding).takeIf { it >= 0 } ?: activeIndex
+        activeIndex = activeIndex.coerceIn(0, layers.lastIndex.coerceAtLeast(0))
+    }
+
+    /** Rebuilt-on-demand callback for the panel: the stack changed shape. */
+    var onLayersChanged: (() -> Unit)? = null
+
+    private val activeLayer: Layer get() = layers[activeIndex.coerceIn(0, layers.lastIndex)]
+
+    /**
+     * The paint being worked on — which is to say, the active layer's pixels.
+     *
+     * Everything that draws, bakes, smears, picks up colour or rebuilds history
+     * goes through this one property, and none of it knows there is a stack at
+     * all. Selecting a different layer swaps what it points at, and the whole
+     * pipeline carries on unchanged; that is the only reason layers could be
+     * added to this file without reopening the stroke path.
+     */
+    private var paintBmp: Bitmap?
+        get() = activeLayer.bmp
+        set(value) { activeLayer.bmp = value }
     private var bufW = 0
     private var bufH = 0
     private val srcRect = Rect()
@@ -286,6 +434,17 @@ class PaintCanvasView @JvmOverloads constructor(
     private var logicalH = 0
     private var canvasLeft = 0
     private var canvasTop = 0
+
+    /**
+     * Buffer px per logical (on-screen) px — everything drawn in view coordinates is
+     * scaled by this on its way into the buffer.
+     *
+     * [SUPER_SAMPLE] for a print or the full screen, where the buffer *is* the
+     * sheet as shown. A [CanvasSize.Frame] sets it instead: its buffer is fixed at
+     * the frame's own pixel grid while the sheet is shown at the frame's physical
+     * size, and this is the ratio between the two.
+     */
+    private var superSample = SUPER_SAMPLE
 
     /** Physical size of the drawing surface. [CanvasSize.FullScreen] fills the panel. */
     var canvasSize: CanvasSize = CanvasSize.FullScreen
@@ -303,8 +462,44 @@ class PaintCanvasView @JvmOverloads constructor(
     private var active: Stroke? = null
     private var activeClip: Bitmap? = null
     private var activePointerId = INVALID_POINTER
+
+    /**
+     * A pen that came down off the sheet and has not reached it yet.
+     *
+     * The mat is not paper and nothing is painted on it, but a press that lands
+     * there is not necessarily a press meant for it. A hand coming in from the
+     * side of the panel puts the pen down beyond the edge of the sheet and is
+     * already moving by the time it arrives; asking it to lift and start again
+     * once it is over the paper is asking it to draw the way the mat is drawn,
+     * not the way paper is. So the press is kept rather than dropped, and the
+     * mark begins at the crossing. [INVALID_POINTER] when there is none waiting.
+     */
+    private var pendingEntryId = INVALID_POINTER
     private val unbaked = mutableListOf<Stroke>()
     private val unbakedClips = mutableListOf<Bitmap?>()
+
+    /**
+     * Which layer each queued stroke landed on, recorded at pen-up.
+     *
+     * The bake is off-thread and the queue outlives it, so between a stroke
+     * leaving the pen and reaching the pixels the layer under it can change —
+     * tap the sketch layer to check something while the ink is still baking and
+     * the two are no longer the same place. Asking at bake time gives whichever
+     * layer is selected *then*, which is how ink ends up on the wrong sheet.
+     * Parallel to [unbaked] and cleared with it, like [unbakedClips].
+     */
+    private val unbakedLayers = mutableListOf<String>()
+
+    /**
+     * The layer the stroke now under the pen was started on.
+     *
+     * Captured at pen-down rather than read at pen-up, because the stack can be
+     * rearranged while a mark is being made — the layer panel is its own view and
+     * takes a second hand's taps whatever the pen is doing, and a wash goes on
+     * settling for seconds after the pen has lifted. A mark belongs to the sheet
+     * it was drawn on; nothing done to the stack afterwards moves it.
+     */
+    private var strokeLayer: String = ""
     private var pressureMax = 1.0f
 
     // --- Touch history gestures (finger, not stylus) ------------------------
@@ -392,6 +587,8 @@ class PaintCanvasView @JvmOverloads constructor(
     private fun predictedTailPoint(): StrokePoint? {
         if (active == null) return null
         val e = motionPredictor.predict() ?: return null
+        // Whatever the mark is being made with, right way up or not.
+        val tool = effectiveTool
         try {
             if (!insideCanvas(e.x, e.y)) return null
             val pressure = normPressure(e.pressure)
@@ -399,6 +596,11 @@ class PaintCanvasView @JvmOverloads constructor(
             val width = resolveWidth(tool, sizeFor(tool), pressure, tilt)
             val density = resolveDensity(tool, pressure)
             return when {
+                // The tail of an erase is sized the way the stroke is, or the
+                // preview runs ahead of the pen at the wrong width.
+                tool == Tool.ERASER -> StrokePoint(
+                    Vec2(e.x, e.y), eraserWidth(sizeFor(tool), pressure, tilt), density,
+                )
                 tool.usesLoad ->
                     StrokePoint(Vec2(e.x, e.y), width, density, color = brushLoad.color, load = brushLoad.fill)
                 // The preview tail carries the tip's current saturation and
@@ -437,6 +639,36 @@ class PaintCanvasView @JvmOverloads constructor(
     private val committed = mutableListOf<PaintOp>()
     private val redoStack = mutableListOf<PaintOp>()
     var onHistoryChanged: (() -> Unit)? = null
+
+    /**
+     * Persistence hooks. Called for each *newly* committed op, and when the undo
+     * frontier moves — never for a redo replay, which is the same op arriving
+     * again rather than a new one.
+     *
+     * The order these fire in is the order the ops sit in, which is what lets the
+     * stored history and this one be the same history.
+     */
+    var onOpCommitted: ((PaintOp) -> Unit)? = null
+    /**
+     * Told which layer the step belonged to, because storage keeps each layer's
+     * undo boundary separately and cannot work it out from the step alone.
+     */
+    var onUndone: ((layerId: String) -> Unit)? = null
+    var onRedone: ((layerId: String) -> Unit)? = null
+
+    /** A finger swept across the sheet: [PageTurn.FORWARD] or [PageTurn.BACK]. */
+    var onPageTurn: ((PageTurn) -> Unit)? = null
+
+    /**
+     * Quarter turns between the sheet and the person looking at it.
+     *
+     * The sheet stays pinned to the glass however the tablet is held, which is the
+     * whole point of it — but a hand sweeping the page aside is moving in the
+     * artist's space, not the paper's. Set from the same place that turns the
+     * rail's glyphs back, and used for exactly one thing: reading which way a
+     * finger went. See [PageTurn.of].
+     */
+    var artistQuarter: Int = 0
     val canUndo: Boolean get() = committed.isNotEmpty()
     val canRedo: Boolean get() = redoStack.isNotEmpty()
 
@@ -454,7 +686,15 @@ class PaintCanvasView @JvmOverloads constructor(
     /** White where selected (half-buffer resolution), or null when unselected. */
     private var selectionMask: Bitmap? = null
 
-    /** Selection bounds in VIEW (= buffer) pixels. */
+    /**
+     * Selection bounds in **view** px.
+     *
+     * View and buffer were the same space until a [CanvasSize.Frame] could set
+     * [superSample] to something other than one, and this rectangle is touched by
+     * both — the dashed frame and the handle hit-tests are view-space, the bake and
+     * the mask are buffer-space. It is held in view px because that is the space
+     * the gesture arrives in; [floatMatrix] is the one place that converts.
+     */
     private val selRect = RectF()
 
     /** Fired when a selection appears (true) or is cleared (false). */
@@ -465,11 +705,17 @@ class PaintCanvasView @JvmOverloads constructor(
     private var floating: Bitmap? = null       // lifted paint (buffer res)
     private var paintHole: Bitmap? = null      // committed paint with the region removed
     private var floatSourceMask: Bitmap? = null
+    /** View px, like [selRect] — it accumulates raw finger travel. */
     private val floatTranslate = PointF(0f, 0f)
     private var floatScale = 1f
     private var floatRotation = 0f // radians
     private var lifting = false
     private val isFloating: Boolean get() = floating != null
+
+    // Lasso-gesture tracking: the loop being drawn, as flat x,y pairs in canvas
+    // coordinates. Empty except while a loop is in progress.
+    private var lassoPointerId = INVALID_POINTER
+    private val lassoPts = mutableListOf<Float>()
 
     // Wand-gesture tracking (single stylus pointer).
     private var wandPointerId = INVALID_POINTER
@@ -701,7 +947,7 @@ class PaintCanvasView @JvmOverloads constructor(
             // held still would grow the schedule (and every later replay of it)
             // by thirty no-op ticks a second. Stamping resumes the ticking.
             if (wetStamped > 0 && !sim.isCalm) {
-                sim.tick(ToothCache.rawFieldFor(surface), surface.toothScale * SUPER_SAMPLE)
+                sim.tick(ToothCache.rawFieldFor(surface), surface.toothScale * superSample)
                 stroke.wetSchedule.add(wetStamped)
                 invalidate()
             }
@@ -797,6 +1043,7 @@ class PaintCanvasView @JvmOverloads constructor(
         }
         unbaked.add(stroke)
         unbakedClips.add(clip)
+        unbakedLayers.add(strokeLayer.ifEmpty { activeLayer.id })
         kickBake()
         invalidate()
     }
@@ -815,6 +1062,9 @@ class PaintCanvasView @JvmOverloads constructor(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         reconfigureBuffers(w, h)
+        // A page can be handed over before the view has been measured; now that
+        // there are buffers to draw onto, put it up.
+        pendingRestore?.let { restore(it.committed, it.undone, it.cached, it.drawnW, it.drawnH) }
     }
 
     /**
@@ -830,8 +1080,18 @@ class PaintCanvasView @JvmOverloads constructor(
         logicalH = lh
         canvasLeft = (w - lw) / 2
         canvasTop = (h - lh) / 2
-        bufW = (lw * SUPER_SAMPLE).roundToInt()
-        bufH = (lh * SUPER_SAMPLE).roundToInt()
+        val frame = canvasSize as? CanvasSize.Frame
+        if (frame != null) {
+            // The frame's own grid, exactly — the artwork is stored in the pixels
+            // the frame will show it in, so nothing resamples on the way out.
+            bufW = frame.pxW
+            bufH = frame.pxH
+            superSample = frame.pxH.toFloat() / lh
+        } else {
+            bufW = (lw * SUPER_SAMPLE).roundToInt()
+            bufH = (lh * SUPER_SAMPLE).roundToInt()
+            superSample = SUPER_SAMPLE
+        }
         srcRect.set(0, 0, bufW, bufH)
         dstRect.set(0, 0, lw, lh)
 
@@ -841,16 +1101,20 @@ class PaintCanvasView @JvmOverloads constructor(
         pickupCanvas = null
 
         val placeholder = createBitmap(bufW, bufH).apply { Canvas(this).drawColor(plainColor) }
-        val newPaint = createBitmap(bufW, bufH)
 
         surfaceBmp?.recycle()
-        paintBmp?.recycle()
         surfaceBmp = placeholder
-        paintBmp = newPaint
+        // Every layer is buffer-sized, so every layer is reallocated together.
+        for (l in layers) {
+            l.bmp?.recycle()
+            l.bmp = createBitmap(bufW, bufH)
+        }
         abortWet()
         unbaked.clear()
         unbakedClips.clear()
+        unbakedLayers.clear()
         active = null
+        pendingEntryId = INVALID_POINTER
         endActiveExtras()
         recycleWashScratch()
         recycleCheckpoints()
@@ -872,6 +1136,10 @@ class PaintCanvasView @JvmOverloads constructor(
             val ph = Calibration.inToPx(s.hIn, ppi).roundToInt().coerceIn(1, h)
             pw to ph
         }
+        // A frame lies down like every other sheet here, at its physical size on
+        // the glass, shrunk only if the panel is too small to hold it. See
+        // [CanvasSize.Frame.displayPx].
+        is CanvasSize.Frame -> s.displayPx(Calibration.effectivePpi(context), w, h)
     }
 
     /**
@@ -879,6 +1147,20 @@ class PaintCanvasView @JvmOverloads constructor(
      * different-sized sheet can't share the old buffers, so the paint and the undo
      * history are cleared (fresh paper, new surface seed).
      */
+    /**
+     * Sets the sheet's size when a saved book is reopened.
+     *
+     * Deliberately *not* [applyCanvasSize], which clears the history and re-rolls
+     * the seed because choosing a new size means starting a new sheet. This is the
+     * same sheet being picked up again: the buffers are resized and everything
+     * else is left exactly where it was, so the ops and the cache that follow land
+     * on a canvas of the right shape.
+     */
+    fun restoreCanvasSize(size: CanvasSize) {
+        canvasSize = size
+        if (width > 0 && height > 0) reconfigureBuffers(width, height)
+    }
+
     fun applyCanvasSize(size: CanvasSize) {
         canvasSize = size
         if (width <= 0 || height <= 0) return // onSizeChanged will apply it once laid out
@@ -965,7 +1247,9 @@ class PaintCanvasView @JvmOverloads constructor(
         concreteParams = concrete
         metalParams = metal
         chalkboardParams = chalkboard
-        committed.add(SurfaceOp(kind, bgColor, canvas, watercolor, wood, stone, concrete, metal, chalkboard))
+        val surfaceOp = SurfaceOp(kind, bgColor, canvas, watercolor, wood, stone, concrete, metal, chalkboard)
+        committed.add(surfaceOp)
+        onOpCommitted?.invoke(surfaceOp)
         regenerateSurface()
         // Checkpoints hold paint toothed for the OLD surface, so drop them and
         // rebuild from blank — foldOps re-tooths each stroke with the new surface.
@@ -1078,10 +1362,77 @@ class PaintCanvasView @JvmOverloads constructor(
         )
     }
 
+    /**
+     * Surface, then the stack over it, bottom-first.
+     *
+     * Only the active layer is drawn through the live-edit path; the rest are
+     * finished pixels and go down as they are. Each gets its own `saveLayerAlpha`
+     * so its opacity applies to the layer as a whole rather than to each mark on
+     * it — two overlapping strokes at half opacity are one half-opaque layer, not
+     * a darker patch where they cross.
+     */
     private fun drawDocument(canvas: Canvas) {
         val surfaceLayer = surfaceBmp ?: return
         canvas.drawBitmap(surfaceLayer, srcRect, dstRect, null)
 
+        for ((i, layer) in layers.withIndex()) {
+            if (!shown(layer)) continue
+            if (i == activeIndex) drawActiveLayer(canvas, layer) else drawRestingLayer(canvas, layer)
+        }
+
+        drawPendingLine(canvas)
+        drawPendingArc(canvas)
+        drawPendingPolyline(canvas)
+        drawPendingPolyarc(canvas)
+        drawSelectionOverlay(canvas)
+        drawLassoInProgress(canvas)
+    }
+
+    /**
+     * Whether a layer shows at all: its own eye, and every folder's above it.
+     *
+     * A folder gates rather than composites, so hiding one hides what it holds
+     * without any of them being drawn together first.
+     */
+    private fun shown(layer: Layer): Boolean =
+        layer.visible && stack.ancestors(layer.id).all { foldersById[it]?.visible != false }
+
+    /**
+     * A layer's opacity as it actually paints: its own, times every folder's
+     * above it.
+     *
+     * The whole of what nesting costs. Because a folder scales what it holds
+     * instead of flattening it, this is a product down a chain and never a
+     * buffer — which is why folders can sit inside folders for nothing.
+     */
+    private fun effectiveAlpha(layer: Layer): Int {
+        var opacity = layer.opacity
+        for (id in stack.ancestors(layer.id)) opacity *= foldersById[id]?.opacity ?: 1f
+        return (opacity.coerceIn(0f, 1f) * 255f).toInt()
+    }
+
+    /** A layer nobody is drawing on: its pixels, at its opacity. */
+    private fun drawRestingLayer(canvas: Canvas, layer: Layer) {
+        val bmp = layer.bmp ?: return
+        val alpha = effectiveAlpha(layer)
+        if (alpha <= 0) return
+        layerAlphaPaint.alpha = alpha
+        canvas.drawBitmap(bmp, srcRect, dstRect, layerAlphaPaint)
+    }
+
+    private val layerAlphaPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+
+    private fun drawActiveLayer(canvas: Canvas, activeOne: Layer) {
+        val alpha = effectiveAlpha(activeOne)
+        if (alpha <= 0) return
+        val group = canvas.saveLayerAlpha(
+            0f, 0f, logicalW.toFloat(), logicalH.toFloat(), alpha,
+        )
+        drawActiveContent(canvas)
+        canvas.restoreToCount(group)
+    }
+
+    private fun drawActiveContent(canvas: Canvas) {
         // Moving a selection: the committed paint with a hole where the region was
         // lifted, then the floating paint on top under its live transform.
         val fl = floating
@@ -1092,7 +1443,6 @@ class PaintCanvasView @JvmOverloads constructor(
             canvas.concat(floatMatrix(1f))
             canvas.drawBitmap(fl, srcRect, dstRect, hqPaint)
             canvas.restore()
-            drawSelectionOverlay(canvas)
             return
         }
 
@@ -1128,8 +1478,9 @@ class PaintCanvasView @JvmOverloads constructor(
             a?.let { drawLiveStroke(canvas, it, isActive = true) }
         }
 
-        // Isolated layer so an eraser stroke (CLEAR) punches through to the surface
-        // rather than the window behind the view.
+        // Isolated so an eraser stroke (CLEAR) punches through this layer only —
+        // revealing whatever lies under it in the stack, or the paper if nothing
+        // does, rather than the window behind the view.
         val layer = canvas.saveLayer(0f, 0f, logicalW.toFloat(), logicalH.toFloat(), null)
         if (liveClip == null || !hasEdits) {
             drawEdited()
@@ -1148,12 +1499,6 @@ class PaintCanvasView @JvmOverloads constructor(
             canvas.restoreToCount(inside)
         }
         canvas.restoreToCount(layer)
-
-        drawPendingLine(canvas)
-        drawPendingArc(canvas)
-        drawPendingPolyline(canvas)
-        drawPendingPolyarc(canvas)
-        drawSelectionOverlay(canvas)
     }
 
     /** Previews the editable line (as it will bake) plus its grab handles. */
@@ -1504,7 +1849,7 @@ class PaintCanvasView @JvmOverloads constructor(
                     drawColor(Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
                     save()
                     translate(-l, -t)
-                    scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                    scale(superSample, superSample)
                     StrokeRenderer.paintStroke(this, stroke, surface, liveWetness(stroke))
                     restore()
                 }
@@ -1512,7 +1857,7 @@ class PaintCanvasView @JvmOverloads constructor(
                     setLocalMatrix(Matrix().apply { setTranslate(l, t) })
                 }
             }
-            val avgW = avgWidth(stroke) * SUPER_SAMPLE
+            val avgW = avgWidth(stroke) * superSample
             val soften = max(2f, avgW * 0.14f)
             val spread = max(4f, avgW * 0.30f) * if (stroke.water) WATER_SPREAD_SCALE else 1f
             b = RectF()
@@ -1584,7 +1929,7 @@ class PaintCanvasView @JvmOverloads constructor(
         }
         val l = crop.left.toFloat()
         val t = crop.top.toFloat()
-        val avgW = avgWidth(stroke) * SUPER_SAMPLE
+        val avgW = avgWidth(stroke) * superSample
         val soften = max(2f, avgW * 0.14f)
         val clearFeather = max(2f, avgW * 0.10f)
         // Clean water re-wets harder than a pigmented wash: it pushes the paint
@@ -1634,8 +1979,8 @@ class PaintCanvasView @JvmOverloads constructor(
     private fun drawWetPending(canvas: Canvas) {
         for (p in wetPending) {
             val dst = RectF(
-                p.crop.left / SUPER_SAMPLE, p.crop.top / SUPER_SAMPLE,
-                p.crop.right / SUPER_SAMPLE, p.crop.bottom / SUPER_SAMPLE,
+                p.crop.left / superSample, p.crop.top / superSample,
+                p.crop.right / superSample, p.crop.bottom / superSample,
             )
             canvas.drawBitmap(p.snapshot, null, dst, wetPendingPaint)
         }
@@ -1677,10 +2022,10 @@ class PaintCanvasView @JvmOverloads constructor(
 
     /** The live sim crop: [activeBounds] padded like [watercolorCrop], quantized. */
     private fun liveWetCrop(): Rect {
-        val pad = (activeMaxWidth / 2f + activeMaxWidth * 1.5f + 16f) * SUPER_SAMPLE
+        val pad = (activeMaxWidth / 2f + activeMaxWidth * 1.5f + 16f) * superSample
         return quantizedCrop(
-            activeBounds.left * SUPER_SAMPLE - pad, activeBounds.top * SUPER_SAMPLE - pad,
-            activeBounds.right * SUPER_SAMPLE + pad, activeBounds.bottom * SUPER_SAMPLE + pad,
+            activeBounds.left * superSample - pad, activeBounds.top * superSample - pad,
+            activeBounds.right * superSample + pad, activeBounds.bottom * superSample + pad,
         )
     }
 
@@ -1706,6 +2051,7 @@ class PaintCanvasView @JvmOverloads constructor(
         wetStamped = 0
         unbaked.add(stroke)
         unbakedClips.add(clip)
+        unbakedLayers.add(strokeLayer.ifEmpty { activeLayer.id })
         kickBake()
         invalidate()
     }
@@ -1864,134 +2210,107 @@ class PaintCanvasView @JvmOverloads constructor(
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                // Ignore presses that land in the mat around the sheet.
-                if (!insideCanvas(event.getX(actionIndex), event.getY(actionIndex))) return true
-                // A new mark cuts a still-settling wash short (committed as shown).
-                interruptWet()
-                if (tool == Tool.WAND) {
-                    handleWandDown(event, actionIndex)
+                // A press in the mat is not a mark, but it may be on its way to
+                // being one — hold on to it and let the crossing start the mark.
+                if (!insideCanvas(event.getX(actionIndex), event.getY(actionIndex))) {
+                    pendingEntryId = event.getPointerId(actionIndex)
                     return true
                 }
-                if (tool == Tool.LINE) {
-                    handleLineDown(event, actionIndex)
-                    return true
-                }
-                if (tool == Tool.ARC) {
-                    handleArcDown(event, actionIndex)
-                    return true
-                }
-                if (tool == Tool.POLYLINE) {
-                    handlePolyDown(event, actionIndex)
-                    return true
-                }
-                if (tool == Tool.POLYARC) {
-                    handlePolyarcDown(event, actionIndex)
-                    return true
-                }
-                if (active != null) return true
-                activePointerId = event.getPointerId(actionIndex)
-                pressureMax = event.device
-                    ?.getMotionRange(MotionEvent.AXIS_PRESSURE)
-                    ?.max
-                    ?.takeIf { it > 0f } ?: 1.0f
-                val color = if (tool == Tool.ERASER) Color.WHITE else strokeColor
-                // Capture the frisket this stroke is drawn under, if any.
-                activeClip = selectionMask?.copy(Bitmap.Config.ARGB_8888, false)
-                // Paint is spent over distance travelled; a new stroke starts
-                // from its own first point, not wherever the last one ended.
-                lastDepositPos = null
-                markerLastPos = null
-                markerDir = null
-                penSpeedEma = 0f
-                beginConditioning(
-                    event.getPressure(actionIndex),
-                    event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
-                )
-                val stroke = Stroke(
-                    tool, color, seed = Random.nextInt(), baseWidth = sizeFor(tool),
-                    water = tool == Tool.WATERCOLOR && waterMode,
-                )
-                active = stroke
-                if (tool == Tool.SPRAY) {
-                    removeCallbacks(sprayDwell)
-                    postDelayed(sprayDwell, SPRAY_DWELL_MS)
-                }
-                if (tool == Tool.WATERCOLOR) {
-                    startWetSim(stroke)
-                    startDrying(stroke)
-                }
-                // Extras first: the first sample stamps the pickup trail, which
-                // beginActiveExtras would otherwise immediately erase.
-                beginActiveExtras()
-                addSample(
-                    stroke, event.getX(actionIndex), event.getY(actionIndex),
-                    event.getPressure(actionIndex), event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
-                )
-                invalidate()
+                pendingEntryId = INVALID_POINTER
+                stylusDown(event, actionIndex)
                 return true
             }
 
             MotionEvent.ACTION_MOVE -> {
-                if (tool == Tool.WAND) {
+                // A mark that began off the sheet begins in earnest here, at the
+                // sample that crosses onto it; the rest of the batch follows.
+                val replayFrom = if (pendingEntryId == INVALID_POINTER) 0 else beginOnEntry(event)
+                if (replayFrom < 0) return true
+                // Flipped over, none of these are what is in hand: the eraser end
+                // rubs out, and the half-built shape waits for the tip.
+                if (effectiveTool == Tool.WAND) {
                     handleWandMove(event)
                     return true
                 }
-                if (tool == Tool.LINE) {
+                if (effectiveTool == Tool.LASSO) {
+                    handleLassoMove(event)
+                    return true
+                }
+                if (effectiveTool == Tool.LINE) {
                     handleLineMove(event)
                     return true
                 }
-                if (tool == Tool.ARC) {
+                if (effectiveTool == Tool.ARC) {
                     handleArcMove(event)
                     return true
                 }
-                if (tool == Tool.POLYLINE) {
+                if (effectiveTool == Tool.POLYLINE) {
                     handlePolyMove(event)
                     return true
                 }
-                if (tool == Tool.POLYARC) {
+                if (effectiveTool == Tool.POLYARC) {
                     handlePolyarcMove(event)
                     return true
                 }
                 val stroke = active ?: return true
                 val pi = event.findPointerIndex(activePointerId)
                 if (pi < 0) return true
-                for (h in 0 until event.historySize) {
+                for (h in replayFrom until event.historySize) {
                     addSample(
                         stroke, event.getHistoricalX(pi, h), event.getHistoricalY(pi, h),
                         event.getHistoricalPressure(pi, h),
                         event.getHistoricalAxisValue(MotionEvent.AXIS_TILT, pi, h),
                     )
                 }
-                addSample(
-                    stroke, event.getX(pi), event.getY(pi),
-                    event.getPressure(pi), event.getAxisValue(MotionEvent.AXIS_TILT, pi),
-                )
+                // Skipped when the crossing *was* the trailing sample: it has just
+                // been laid down as the first point and is not laid down twice.
+                if (replayFrom <= event.historySize) {
+                    addSample(
+                        stroke, event.getX(pi), event.getY(pi),
+                        event.getPressure(pi), event.getAxisValue(MotionEvent.AXIS_TILT, pi),
+                    )
+                }
                 invalidate()
                 return true
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                if (tool == Tool.WAND) {
+                // A pen that lifted without ever reaching the sheet leaves nothing
+                // behind but this.
+                if (event.getPointerId(actionIndex) == pendingEntryId) {
+                    pendingEntryId = INVALID_POINTER
+                }
+                if (effectiveTool == Tool.WAND) {
                     handleWandUp(event, actionIndex)
                     return true
                 }
-                if (tool == Tool.LINE) {
+                if (effectiveTool == Tool.LASSO) {
+                    handleLassoUp(event, actionIndex)
+                    return true
+                }
+                if (effectiveTool == Tool.LINE) {
                     handleLineUp(event, actionIndex)
                     return true
                 }
-                if (tool == Tool.ARC) {
+                if (effectiveTool == Tool.ARC) {
                     handleArcUp(event, actionIndex)
                     return true
                 }
-                if (tool == Tool.POLYLINE) {
+                if (effectiveTool == Tool.POLYLINE) {
                     handlePolyUp(event, actionIndex)
                     return true
                 }
-                if (tool == Tool.POLYARC) {
+                if (effectiveTool == Tool.POLYARC) {
                     handlePolyarcUp(event, actionIndex)
                     return true
                 }
                 val stroke = active
+                // The pen is up. Which end the next mark is made with is read at
+                // the next pen-down and never carried over from this one — a
+                // stale flip would have the tip rubbing out.
+                if (stroke == null || event.getPointerId(actionIndex) == activePointerId) {
+                    eraserEnd = false
+                }
                 if (stroke != null && event.getPointerId(actionIndex) == activePointerId) {
                     if (stroke === wetStroke) {
                         // The wash stays live past pen-up: it keeps spreading and
@@ -2007,6 +2326,7 @@ class PaintCanvasView @JvmOverloads constructor(
                     } else {
                         unbaked.add(stroke)
                         unbakedClips.add(activeClip)
+                        unbakedLayers.add(strokeLayer.ifEmpty { activeLayer.id })
                         kickBake()
                     }
                     active = null
@@ -2023,6 +2343,147 @@ class PaintCanvasView @JvmOverloads constructor(
     }
 
     /**
+     * Lays the pen down on the sheet: everything a press means, once it is known
+     * to be on paper.
+     *
+     * Split out from [onTouchEvent] because a press is not the only way a mark
+     * starts. A pen arriving from off the sheet is set down at the moment it
+     * crosses, from a sample of a move batch rather than from a down event, and
+     * what happens then has to be the same thing to the last detail — see
+     * [beginOnEntry].
+     */
+    private fun stylusDown(event: MotionEvent, actionIndex: Int) {
+        // Which end of the pen this is — the one place it is read, because this
+        // is the one place a mark starts. A mark that began off the sheet is set
+        // down here too, from a copy carrying the same pointer properties, so it
+        // arrives the right way up as well (see [entryDown]). A second pointer
+        // touching down mid-mark does not turn the mark already in flight over.
+        if (active == null) {
+            eraserEnd = event.getToolType(actionIndex) == MotionEvent.TOOL_TYPE_ERASER
+        }
+        val marking = effectiveTool
+        // A new mark cuts a still-settling wash short (committed as shown).
+        interruptWet()
+        if (marking == Tool.WAND) return handleWandDown(event, actionIndex)
+        if (marking == Tool.LASSO) return handleLassoDown(event, actionIndex)
+        if (marking == Tool.LINE) return handleLineDown(event, actionIndex)
+        if (marking == Tool.ARC) return handleArcDown(event, actionIndex)
+        if (marking == Tool.POLYLINE) return handlePolyDown(event, actionIndex)
+        if (marking == Tool.POLYARC) return handlePolyarcDown(event, actionIndex)
+        if (active != null) return
+        activePointerId = event.getPointerId(actionIndex)
+        pressureMax = event.device
+            ?.getMotionRange(MotionEvent.AXIS_PRESSURE)
+            ?.max
+            ?.takeIf { it > 0f } ?: 1.0f
+        val color = if (marking == Tool.ERASER) Color.WHITE else strokeColor
+        // Capture the frisket this stroke is drawn under, if any.
+        activeClip = selectionMask?.copy(Bitmap.Config.ARGB_8888, false)
+        // And the sheet it is being drawn on, for the same reason.
+        strokeLayer = activeLayer.id
+        // Paint is spent over distance travelled; a new stroke starts
+        // from its own first point, not wherever the last one ended.
+        lastDepositPos = null
+        markerLastPos = null
+        markerDir = null
+        penSpeedEma = 0f
+        beginConditioning(
+            event.getPressure(actionIndex),
+            event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
+        )
+        val stroke = Stroke(
+            marking, color, seed = Random.nextInt(), baseWidth = sizeFor(marking),
+            water = marking == Tool.WATERCOLOR && waterMode,
+        )
+        active = stroke
+        if (marking == Tool.SPRAY) {
+            removeCallbacks(sprayDwell)
+            postDelayed(sprayDwell, SPRAY_DWELL_MS)
+        }
+        if (marking == Tool.WATERCOLOR) {
+            startWetSim(stroke)
+            startDrying(stroke)
+        }
+        // Extras first: the first sample stamps the pickup trail, which
+        // beginActiveExtras would otherwise immediately erase.
+        beginActiveExtras()
+        addSample(
+            stroke, event.getX(actionIndex), event.getY(actionIndex),
+            event.getPressure(actionIndex), event.getAxisValue(MotionEvent.AXIS_TILT, actionIndex),
+        )
+        invalidate()
+    }
+
+    /**
+     * Sets the pen down at the point where a mark that began off the sheet first
+     * reaches it.
+     *
+     * A move batch carries several samples, and the crossing can be any of them,
+     * so they are walked in order and the first one on paper is the one the mark
+     * starts from. That sample is handed to [stylusDown] as a pen-down of its
+     * own, which is why it is worth building a real event for: the first sample
+     * of a stroke sets its conditioning, and pressure and tilt at the crossing —
+     * not at the end of the batch it happened to arrive in — are what a pen
+     * already in motion actually had.
+     *
+     * Returns the index of the first sample still to be drawn, counting the
+     * batch's trailing position as one past its history, or -1 while the pen is
+     * still off the sheet.
+     */
+    private fun beginOnEntry(event: MotionEvent): Int {
+        val pi = event.findPointerIndex(pendingEntryId)
+        if (pi < 0) {
+            pendingEntryId = INVALID_POINTER
+            return -1
+        }
+        val history = event.historySize
+        for (i in 0..history) {
+            val x = if (i < history) event.getHistoricalX(pi, i) else event.getX(pi)
+            val y = if (i < history) event.getHistoricalY(pi, i) else event.getY(pi)
+            if (!insideCanvas(x, y)) continue
+            pendingEntryId = INVALID_POINTER
+            val down = entryDown(event, pi, i)
+            try {
+                stylusDown(down, 0)
+            } finally {
+                down.recycle()
+            }
+            return i + 1
+        }
+        return -1
+    }
+
+    /**
+     * A pen-down built from one sample of a move batch.
+     *
+     * Copied whole rather than rebuilt from x and y: everything a stroke's first
+     * sample is asked for — pressure, tilt, which end of the pen it is — comes
+     * off the coordinates, and the device the ranges are read from comes off the
+     * event. The coordinates are already canvas-local; the offset [onTouchEvent]
+     * applies to the batch moves its history with it.
+     */
+    private fun entryDown(event: MotionEvent, pointerIndex: Int, sample: Int): MotionEvent {
+        val props = MotionEvent.PointerProperties()
+        event.getPointerProperties(pointerIndex, props)
+        val coords = MotionEvent.PointerCoords()
+        val at: Long
+        if (sample < event.historySize) {
+            event.getHistoricalPointerCoords(pointerIndex, sample, coords)
+            at = event.getHistoricalEventTime(sample)
+        } else {
+            event.getPointerCoords(pointerIndex, coords)
+            at = event.eventTime
+        }
+        return MotionEvent.obtain(
+            event.downTime, at, MotionEvent.ACTION_DOWN,
+            1, arrayOf(props), arrayOf(coords),
+            event.metaState, event.buttonState,
+            event.xPrecision, event.yPrecision,
+            event.deviceId, event.edgeFlags, event.source, event.flags,
+        )
+    }
+
+    /**
      * Stylus hover: while tapping out a polyline / polyarc, track the hovering pen
      * so the next segment can be previewed as a rubber band from the last anchor.
      * Only meaningful for an unfinished run of the active tool; ignored otherwise.
@@ -2033,7 +2494,10 @@ class PaintCanvasView @JvmOverloads constructor(
             Tool.POLYARC -> !paFinished && paAnchors.isNotEmpty()
             else -> false
         }
-        if (!building || !isStylus(event.getToolType(event.actionIndex))) {
+        // The eraser end is not going to place the next anchor, so the rubber
+        // band does not follow it around.
+        val toolType = event.getToolType(event.actionIndex)
+        if (!building || toolType == MotionEvent.TOOL_TYPE_ERASER || !isStylus(toolType)) {
             if (polyHoverPt != null) { polyHoverPt = null; invalidate() }
             if (paHoverPt != null) { paHoverPt = null; invalidate() }
             return super.onHoverEvent(event)
@@ -2055,11 +2519,16 @@ class PaintCanvasView @JvmOverloads constructor(
     }
 
     /**
-     * Finger-touch history gestures: a two-finger double-tap undoes, a
-     * three-finger double-tap redoes. A "tap" = all fingers down and up within
-     * ~400 ms with no finger dragged past the slop; the tap's count is the most
-     * fingers down at once. Two matching taps within [DOUBLE_TAP_WINDOW_MS] make
-     * the double-tap. Mirrors Flutter's `_onTouch*` handlers. Always consumes.
+     * Finger-touch gestures: a two-finger double-tap undoes, a three-finger
+     * double-tap redoes, and one finger dragged sideways turns the page. A "tap"
+     * = all fingers down and up within ~400 ms with no finger dragged past the
+     * slop; the tap's count is the most fingers down at once. Two matching taps
+     * within [DOUBLE_TAP_WINDOW_MS] make the double-tap. Mirrors Flutter's
+     * `_onTouch*` handlers. Always consumes.
+     *
+     * The page turn is a *finger* gesture for the same reason drawing is a stylus
+     * one: the hand that turns a sheet is not the hand holding the pencil, and
+     * the two must never be confused for each other mid-mark.
      */
     private fun handleTouchGesture(event: MotionEvent): Boolean {
         val slop = TOUCH_TAP_SLOP_DP * resources.displayMetrics.density
@@ -2083,8 +2552,29 @@ class PaintCanvasView @JvmOverloads constructor(
                 }
             }
             MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP -> {
-                if (touchStart.remove(event.getPointerId(event.actionIndex)) == null) return true
+                val ai = event.actionIndex
+                val from = touchStart.remove(event.getPointerId(ai)) ?: return true
                 if (touchStart.isNotEmpty()) return true // still fingers down; wait
+                if (touchMaxCount == 1 && touchMoved) {
+                    // Not mid-mark. The hand that turns a sheet is not the hand
+                    // holding the pencil, but they are both on the tablet, and a
+                    // page turned out from under a stroke leaves the stroke behind.
+                    val turn = if (active != null) {
+                        null
+                    } else {
+                        PageTurn.of(
+                            dx = event.getX(ai) - from.x,
+                            dy = event.getY(ai) - from.y,
+                            minimum = PAGE_TURN_MIN_DP * resources.displayMetrics.density,
+                            quarter = artistQuarter,
+                        )
+                    }
+                    touchMaxCount = 0
+                    touchMoved = false
+                    pendingTapCount = 0
+                    turn?.let { onPageTurn?.invoke(it) }
+                    return true
+                }
                 val tapped = !touchMoved && event.eventTime - touchSessionStart < TAP_MAX_MS
                 val count = touchMaxCount
                 touchMaxCount = 0
@@ -2189,6 +2679,77 @@ class PaintCanvasView @JvmOverloads constructor(
             wandMoved = false
             if (!moved && pos != null) scope.launch { runWandSelection(pos) }
         }
+    }
+
+    // --- Lasso gestures -----------------------------------------------------
+
+    /**
+     * The lasso shares the wand's transform handles deliberately: once a region is
+     * selected, how it was selected stops mattering, and a corner that scales
+     * under one tool and does nothing under the other would be the kind of
+     * inconsistency you only notice by being caught out by it.
+     */
+    private fun handleLassoDown(e: MotionEvent, ai: Int) {
+        val p = PointF(e.getX(ai), e.getY(ai))
+        val mode = hitTransform(p)
+        if (mode != null) {
+            movePointerId = e.getPointerId(ai)
+            moveLastPos.set(p)
+            xformMode = mode
+            if (!isFloating && !lifting) scope.launch { liftSelection() }
+            return
+        }
+        lassoPointerId = e.getPointerId(ai)
+        lassoPts.clear()
+        lassoPts.add(p.x)
+        lassoPts.add(p.y)
+        invalidate()
+    }
+
+    private fun handleLassoMove(e: MotionEvent) {
+        if (movePointerId != INVALID_POINTER) {
+            handleWandMove(e) // the transform drag, unchanged
+            return
+        }
+        if (lassoPointerId == INVALID_POINTER) return
+        val pi = e.findPointerIndex(lassoPointerId)
+        if (pi < 0) return
+        // Every historical sample, so a fast loop is a loop rather than a polygon.
+        for (h in 0 until e.historySize) {
+            addLassoPoint(e.getHistoricalX(pi, h), e.getHistoricalY(pi, h))
+        }
+        addLassoPoint(e.getX(pi), e.getY(pi))
+        invalidate()
+    }
+
+    private fun addLassoPoint(x: Float, y: Float) {
+        val n = lassoPts.size
+        if (n >= 2 && hypot(x - lassoPts[n - 2], y - lassoPts[n - 1]) < LASSO_SPACING) return
+        lassoPts.add(x)
+        lassoPts.add(y)
+    }
+
+    private fun handleLassoUp(e: MotionEvent, ai: Int) {
+        val pid = e.getPointerId(ai)
+        if (pid == movePointerId) {
+            movePointerId = INVALID_POINTER
+            xformMode = null
+            return
+        }
+        if (pid != lassoPointerId) return
+        lassoPointerId = INVALID_POINTER
+        val loop = lassoPts.toFloatArray()
+        lassoPts.clear()
+        invalidate()
+        // A gesture the system took away was not a decision the user made.
+        if (e.actionMasked == MotionEvent.ACTION_CANCEL) return
+        // A loop that encloses nothing clears the selection rather than making a
+        // sliver of one: a tap with the lasso should mean "never mind".
+        if (!LassoLoop.encloses(loop)) {
+            clearSelection()
+            return
+        }
+        scope.launch { runLassoSelection(loop) }
     }
 
     // --- Line-tool gestures -------------------------------------------------
@@ -3158,7 +3719,7 @@ class PaintCanvasView @JvmOverloads constructor(
                 u.union(sim.crop)
                 sim.grow(quantizedCrop(u.left.toFloat(), u.top.toFloat(), u.right.toFloat(), u.bottom.toFloat()))
             }
-            sim.stampPoint(point, stroke.color, SUPER_SAMPLE)
+            sim.stampPoint(point, stroke.color, superSample)
             wetStamped = stroke.points.size
         }
     }
@@ -3169,8 +3730,20 @@ class PaintCanvasView @JvmOverloads constructor(
      * brush drains.
      */
     private fun buildPoint(pos: Vec2, pressure: Float, tilt: Float, spacing: Float = 0f): StrokePoint {
+        // Whatever the mark is being made with, right way up or not. Shadowing
+        // the property deliberately: nothing below wants the tool that was
+        // *chosen*, it wants the end of the pen actually on the paper.
+        val tool = effectiveTool
         var width = resolveWidth(tool, sizeFor(tool), pressure, tilt)
         val density = resolveDensity(tool, pressure)
+
+        // The rubber is a body, not a point: how much of it is against the paper
+        // is the hand's to say, and it comes out as width. Pressure is spent
+        // twice over here — on how much is touching AND on how much it lifts —
+        // which is what a real eraser does.
+        if (tool == Tool.ERASER) {
+            return StrokePoint(pos, eraserWidth(sizeFor(tool), pressure, tilt), density)
+        }
 
         // A hurried pen lays a hair less ink per length: subtle speed→width
         // thinning from the EMA'd spacing between accepted points — seeded
@@ -3310,6 +3883,16 @@ class PaintCanvasView @JvmOverloads constructor(
      * underneath and the brush could never pick anything up. So the trail only
      * speaks where there is no committed paint — a later part of the stroke
      * crossing back over an earlier part on bare ground.
+     *
+     * **The layer under the pen, and no other.** [paintBmp] is the active layer,
+     * so a brush dragged over a colour that is really on the sheet below picks up
+     * nothing, however plainly that colour can be seen. This looks wrong for a
+     * moment and is the only defensible answer: lifting paint from a lower layer
+     * and depositing it here would leave two copies of it, one on each sheet, and
+     * the original is not ours to take. It is also why the wet ledger is keyed by
+     * layer (see [WetTrace]). A layer's own opacity is ignored for the same
+     * reason it is ignored everywhere else — it changes how the paint composites,
+     * not what colour the paint is.
      */
     /** Whether [pickupColorAt]'s last answer came from the live trail (always
      *  wet) rather than committed paint (wet per the trace ledger). */
@@ -3317,8 +3900,8 @@ class PaintCanvasView @JvmOverloads constructor(
 
     private fun pickupColorAt(pos: Vec2): Int {
         pickupWasTrail = false
-        val bx = (pos.x * SUPER_SAMPLE).toInt()
-        val by = (pos.y * SUPER_SAMPLE).toInt()
+        val bx = (pos.x * superSample).toInt()
+        val by = (pos.y * superSample).toInt()
         if (bx < 0 || by < 0 || bx >= bufW || by >= bufH) return 0
 
         paintBmp?.getPixel(bx, by)?.let { if ((it ushr 24) > PICKUP_ALPHA_FLOOR) return it }
@@ -3335,7 +3918,7 @@ class PaintCanvasView @JvmOverloads constructor(
     private fun stampPickupTrail(pos: Vec2, width: Float, @ColorInt color: Int) {
         val c = pickupCanvas ?: return
         pickupStampPaint.color = color or 0xFF000000.toInt()
-        c.drawCircle(pos.x * SUPER_SAMPLE, pos.y * SUPER_SAMPLE, (width * SUPER_SAMPLE) / 2f, pickupStampPaint)
+        c.drawCircle(pos.x * superSample, pos.y * superSample, (width * superSample) / 2f, pickupStampPaint)
     }
 
     // --- Wet-trace ledger (smearing) ------------------------------------------
@@ -3346,12 +3929,24 @@ class PaintCanvasView @JvmOverloads constructor(
      * smears it. Geometry is the stroke's own spine (hit-tested per point
      * width), so wetness follows the mark, not its bounding box.
      */
-    private class WetTrace(val stroke: Stroke, val bounds: RectF, val windowMs: Long, val bornAt: Long)
+    private class WetTrace(
+        val stroke: Stroke,
+        /**
+         * Which layer's paint is wet. Smearing lifts pixels from the layer under
+         * the pen and nothing else, so wetness has to be about that layer too —
+         * otherwise fresh ink on the sheet above would make the dry paint below
+         * it smearable, at a spot where nothing wet was ever laid.
+         */
+        val layerId: String,
+        val bounds: RectF,
+        val windowMs: Long,
+        val bornAt: Long,
+    )
 
     private val wetTraces = ArrayDeque<WetTrace>()
 
-    /** Starts [stroke]'s wet window (called as it heads into the bake). */
-    private fun recordWetTrace(stroke: Stroke) {
+    /** Starts [stroke]'s wet window on [layerId] (called as it heads into the bake). */
+    private fun recordWetTrace(stroke: Stroke, layerId: String) {
         val win = com.symmetricalpalmtree.paintsprout.paint.ToolProfile.of(stroke.tool).wetMs
         if (win <= 0L || stroke.isEmpty) return
         var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE
@@ -3364,7 +3959,7 @@ class PaintCanvasView @JvmOverloads constructor(
         }
         val pad = maxW / 2f + WET_TRACE_SLACK_PX
         val bounds = RectF(minX - pad, minY - pad, maxX + pad, maxY + pad)
-        wetTraces.addLast(WetTrace(stroke, bounds, win, SystemClock.uptimeMillis()))
+        wetTraces.addLast(WetTrace(stroke, layerId, bounds, win, SystemClock.uptimeMillis()))
         while (wetTraces.size > WET_TRACE_MAX) wetTraces.removeFirst()
     }
 
@@ -3377,8 +3972,10 @@ class PaintCanvasView @JvmOverloads constructor(
         if (wetTraces.isEmpty()) return 0f
         val now = SystemClock.uptimeMillis()
         wetTraces.removeAll { now - it.bornAt >= it.windowMs }
+        val here = activeLayer.id
         var best = 0f
         for (t in wetTraces) {
+            if (t.layerId != here) continue
             val fresh = 1f - (now - t.bornAt).toFloat() / t.windowMs
             if (fresh <= best) continue
             if (!t.bounds.contains(pos.x, pos.y)) continue
@@ -3444,29 +4041,72 @@ class PaintCanvasView @JvmOverloads constructor(
 
     // --- Baking -------------------------------------------------------------
 
+    /**
+     * Folds the front of the queue into the layer those strokes were drawn on.
+     *
+     * The layer comes from the queue rather than from the selection, and every
+     * pixel here goes through it rather than through [paintBmp]. Nothing in this
+     * method may ask what is selected: it is called again from its own tail, and
+     * it hands off to another thread in between, so "the layer under the pen" is
+     * a different answer by the time the paint lands. Reading it there put a
+     * layer's finished pixels onto whichever sheet had since been tapped and
+     * recycled the one it displaced — one tap on the layers panel at the wrong
+     * moment, and a layer was gone.
+     *
+     * One layer per batch, so a queue that spans a change of layer is baked in
+     * runs. Ordinary drawing never fills more than one.
+     */
     private fun kickBake() {
         if (baking || rebuilding || unbaked.isEmpty()) return
-        val base = paintBmp ?: return
+        val ontoId = unbakedLayers.first()
+        val n = unbakedLayers.takeWhile { it == ontoId }.size
+        // A layer deleted while its paint was still queued is shelved, not
+        // destroyed, and its ops stay on the timeline — so the paint still has
+        // somewhere to land, and it comes back with the layer if the deletion is
+        // undone.
+        //
+        // An id in neither place belongs to a page that has since closed. Those
+        // strokes are dropped rather than left at the head of the queue: they have
+        // nowhere to go, and [flushPending] spins until the queue drains.
+        val onto = layersById[ontoId] ?: retired[ontoId]
+        if (onto == null) {
+            unbakedClips.subList(0, n).forEach { it?.recycle() }
+            unbaked.subList(0, n).clear()
+            unbakedClips.subList(0, n).clear()
+            unbakedLayers.subList(0, n).clear()
+            invalidate()
+            if (unbaked.isNotEmpty()) kickBake()
+            return
+        }
+        // No pixels yet means the view has not been laid out; the queue waits for
+        // layout rather than losing its paint to it.
+        val base = onto.bmp ?: return
         baking = true
-        val batch = unbaked.toList()
-        val clips = unbakedClips.toList()
-        val ops = batch.indices.map { StrokeOp(batch[it], clips[it]) }
+        val batch = unbaked.subList(0, n).toList()
+        val clips = unbakedClips.subList(0, n).toList()
+        val ops = batch.indices.map { StrokeOp(batch[it], clips[it]).also { op -> op.layerId = ontoId } }
         // The paint these strokes laid starts its wet window now (≈ pen-up):
         // while it lasts, a brush dragged through them smears them. Undo
         // rebuilds don't come through here, so replayed history never
         // re-wets.
-        batch.forEach(::recordWetTrace)
+        batch.forEach { recordWetTrace(it, ontoId) }
         scope.launch {
             val next = withContext(Dispatchers.Default) {
                 foldOps(base.copy(Bitmap.Config.ARGB_8888, true), ops)
             }
-            val old = paintBmp
-            paintBmp = next
-            unbaked.subList(0, batch.size).clear()
-            unbakedClips.subList(0, batch.size).clear()
+            val old = onto.bmp
+            onto.bmp = next
+            unbaked.subList(0, n).clear()
+            unbakedClips.subList(0, n).clear()
+            unbakedLayers.subList(0, n).clear()
             committed.addAll(ops)
+            ops.forEach { onOpCommitted?.invoke(it) }
             clearRedo()
-            storeCheckpoint(committed.size, next)
+            // Checkpoints are kept for the layer under the pen alone and indexed
+            // by that layer's own op count, so one taken of somebody else's
+            // pixels is worse than none: a later undo would resume the wrong
+            // paint from it.
+            if (onto === activeLayer) storeCheckpoint(activeOpCount(), next)
             old?.recycle()
             baking = false
             pruneWetPending()
@@ -3495,7 +4135,7 @@ class PaintCanvasView @JvmOverloads constructor(
                         } else {
                             Canvas(cur).apply {
                                 save()
-                                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                                scale(superSample, superSample)
                                 StrokeRenderer.paintStroke(this, s, surface)
                                 restore()
                             }
@@ -3507,7 +4147,7 @@ class PaintCanvasView @JvmOverloads constructor(
                             } else {
                                 Canvas(it).apply {
                                     save()
-                                    scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                                    scale(superSample, superSample)
                                     StrokeRenderer.paintStroke(this, s, surface)
                                     restore()
                                 }
@@ -3523,7 +4163,7 @@ class PaintCanvasView @JvmOverloads constructor(
                     Canvas(cur).let {
                         SelectionRender.paintToothedFill(
                             it, op.mask, RectF(0f, 0f, bufW.toFloat(), bufH.toFloat()),
-                            op.color, surface, surface.toothScale * SUPER_SAMPLE,
+                            op.color, surface, surface.toothScale * superSample,
                         )
                     }
                 }
@@ -3537,13 +4177,249 @@ class PaintCanvasView @JvmOverloads constructor(
                     cur.recycle()
                     cur = out
                 }
+                // A paste replays what it holds, in order — it is one step in the
+                // history and a list of marks on the paint layer.
+                is PasteOp -> cur = foldOps(cur, op.ops)
+
                 // Surface changes don't touch the paint layer; the surface state is
                 // resolved separately (see syncSurfaceToHistory).
+                // These change nothing about the pixels: the surface is the ground
+                // under the stack, and the layer ops say how a layer composites
+                // rather than what is on it. Both are re-derived from history
+                // elsewhere — see syncSurfaceToHistory and syncLayerStateToHistory.
                 is SurfaceOp -> {}
+                is LayerOpacityOp -> {}
+                is LayerVisibilityOp -> {}
+                is LayerAddOp -> {}
+                is LayerDeleteOp -> {}
+                is LayerOrderOp -> {}
+
+                // A folder holds no pixels at all, so there is even less here to
+                // do. Where it sits is the stack's business and how far it is
+                // turned down is applied when the stack is drawn, not folded in.
+                is FolderAddOp -> {}
+                is FolderDeleteOp -> {}
+                is FolderOpacityOp -> {}
+                is FolderVisibilityOp -> {}
+                is FolderCollapseOp -> {}
+                is NameOp -> {}
             }
         }
         return cur
     }
+
+    // --- Restoring a saved page ---------------------------------------------
+
+    /** Buffer dimensions, so a cached raster can be checked against this device. */
+    val bufferWidth: Int get() = bufW
+    val bufferHeight: Int get() = bufH
+
+    /**
+     * The sheet's size on screen, in view px — the space a mark is recorded in,
+     * and so the space a page stamps as its own. Not the buffer: for a frame the
+     * two differ.
+     */
+    val drawnWidth: Int get() = logicalW
+    val drawnHeight: Int get() = logicalH
+
+    /**
+     * Reports the fit a [restore] resolved: how the page's recorded space maps to
+     * this one, for marks and for the buffer. Fires after layout when the restore
+     * had to wait for it, which is why this is a callback rather than a return.
+     */
+    var onPageSpace: ((view: PageSpace, buffer: PageSpace) -> Unit)? = null
+
+    /**
+     * A copy of the composited paint, for the raster cache. Null before layout.
+     */
+    fun paintSnapshot(): Bitmap? =
+        // Only a page with a single layer has a paint that one bitmap can stand
+        // for. On a stack this used to hand back whichever layer was selected,
+        // which was then filed as the page's cache — so adding a layer and leaving
+        // the page wrote its blank pixels over the real drawing's cache.
+        if (layers.size == 1) paintBmp?.copy(Bitmap.Config.ARGB_8888, false) else null
+
+    /**
+     * A small flattened picture of the page — paper and paint — for a library card.
+     *
+     * Scaled down here rather than at the call site so the full-size composite
+     * never leaves this class, and drawn with filtering so the thumbnail reads as
+     * the artwork rather than as aliasing.
+     */
+    fun coverSnapshot(maxEdge: Int = 512): Bitmap? {
+        val surface = surfaceBmp ?: return null
+        if (bufW <= 0 || bufH <= 0) return null
+
+        val scale = minOf(maxEdge.toFloat() / bufW, maxEdge.toFloat() / bufH, 1f)
+        val w = (bufW * scale).roundToInt().coerceAtLeast(1)
+        val h = (bufH * scale).roundToInt().coerceAtLeast(1)
+        val dst = Rect(0, 0, w, h)
+
+        return createBitmap(w, h).also { out ->
+            Canvas(out).apply {
+                drawBitmap(surface, srcRect, dst, hqPaint)
+                for (l in layers) {
+                    val bmp = l.bmp ?: continue
+                    if (!l.visible || l.alpha <= 0) continue
+                    hqPaint.alpha = l.alpha
+                    drawBitmap(bmp, srcRect, dst, hqPaint)
+                }
+                hqPaint.alpha = 255
+            }
+        }
+    }
+
+    /**
+     * Puts a saved page back on the canvas.
+     *
+     * [committedOps] and [undoneOps] together are the layer's whole history: the
+     * frontier sits between them, so undo can walk backwards past the moment the
+     * document was last closed and redo can walk forwards again.
+     *
+     * [cached] is the composited result of [committedOps], if it was saved and is
+     * still current. When it is present this is a decode rather than a replay —
+     * which for a page of a few hundred strokes is the difference between opening
+     * and waiting. When it is absent, or its dimensions do not match this device's
+     * buffer, the ops are replayed instead: a degradation, never a failure.
+     *
+     * [drawnW] and [drawnH] are the view size the page's marks were recorded in —
+     * another tablet's, possibly. The ops are fitted from that space into this
+     * one before anything is folded, and [onPageSpace] reports the conversion so
+     * that saving can put later marks back in the space the file is written in.
+     * Null means a page from before pages recorded their size, which is opened
+     * exactly as it always was.
+     *
+     * Safe to call before layout. The work is deferred until the buffers exist,
+     * because until then there is nothing to draw onto — and, since the fit needs
+     * the buffers too, deferring it is what keeps the two in step.
+     */
+    fun restore(
+        committedOps: List<PaintOp>,
+        undoneOps: List<PaintOp>,
+        cached: Bitmap?,
+        drawnW: Float? = null,
+        drawnH: Float? = null,
+    ) {
+        if (bufW <= 0 || bufH <= 0) {
+            pendingRestore = PendingRestore(committedOps, undoneOps, cached, drawnW, drawnH)
+            return
+        }
+        pendingRestore = null
+
+        // Marks are view px; the wet crop that rides along with a wash is buffer
+        // px. They are the same fit unless this is a frame, whose buffer is its
+        // own fixed grid and therefore already the same on every tablet.
+        val viewFit = PageSpace.fit(drawnW, drawnH, logicalW.toFloat(), logicalH.toFloat())
+        val bufferFit = if (canvasSize is CanvasSize.Frame) PageSpace.IDENTITY else viewFit
+        PageRemap.apply(committedOps, viewFit, bufferFit)
+        PageRemap.apply(undoneOps, viewFit, bufferFit)
+        onPageSpace?.invoke(viewFit, bufferFit)
+
+        // A selection belongs to the page it was drawn on: its mask is in that
+        // page's buffer, and carrying it to the next one leaves marching ants
+        // around nothing and a frisket clipping the next stroke drawn there.
+        clearSelectionState()
+
+        for (op in committed) op.recycle()
+        for (op in redoStack) op.recycle()
+        committed.clear()
+        redoStack.clear()
+        recycleCheckpoints()
+
+        committed.addAll(committedOps)
+        // The view pops the redo stack from its end, so the op nearest the
+        // frontier has to be last; storage hands them over oldest-first.
+        redoStack.addAll(undoneOps.reversed())
+
+        // A page written before layers existed has ops that name no layer, and a
+        // fold that matches ops to layers by name would match none of them and
+        // hand back a blank page. Everything from such a page belongs to the one
+        // layer it was painted on.
+        val home = activeLayer.id
+        for (op in committed) if (op.layerId.isEmpty()) op.layerId = home
+        for (op in redoStack) if (op.layerId.isEmpty()) op.layerId = home
+
+        // The rows arrived carrying the state as it stood when the page closed —
+        // the end of the timeline, not its start. For a layer the timeline speaks
+        // about, that state is reproduced by replaying from the base, so the base
+        // is where a layer begins.
+        //
+        // For a layer it says nothing about, there is nothing to replay, and the
+        // row is the only record there is. That covers every page set before these
+        // ops existed: their opacity was written to the row alone, and starting
+        // such a layer from the base would quietly reset it to fully opaque.
+        for (l in layers) {
+            val onTheTimeline = committed.any {
+                it.layerId == l.id && (it is LayerOpacityOp || it is LayerVisibilityOp)
+            }
+            if (!onTheTimeline) {
+                l.baseVisible = l.visible
+                l.baseOpacity = l.opacity
+            }
+            if (committed.none { it is NameOp && it.named == l.id }) l.baseName = l.name
+        }
+        // Folders, by the same rule and for the same reason. They are named by the
+        // step rather than filed under it, so this asks what the step is about.
+        for (f in foldersById.values) {
+            val onTheTimeline = committed.any {
+                (it is FolderOpacityOp && it.folderId == f.id) ||
+                    (it is FolderVisibilityOp && it.folderId == f.id)
+            }
+            if (!onTheTimeline) {
+                f.baseVisible = f.visible
+                f.baseOpacity = f.opacity
+            }
+            if (committed.none { it is NameOp && it.named == f.id }) f.baseName = f.name
+            if (committed.none { it is FolderCollapseOp && it.folderId == f.id }) {
+                f.baseCollapsed = f.collapsed
+            }
+        }
+
+        // Only the deletions are replayed, and only because nothing else records
+        // them: a deleted layer is still a row in the file, so that the step can
+        // be undone and bring its paint back with it, and the timeline is the one
+        // place that says it is gone.
+        //
+        // Moves are deliberately not replayed. The layer rows carry the order
+        // themselves, so the stack arrives already arranged and applying the
+        // steps again would move everything a second time. Undo still reaches
+        // them after a reload: the layer is where the step says it ended up, so
+        // putting it back where it started needs nothing but the step.
+        for (op in committed) if (op is LayerDeleteOp) applyStructure(op, forward = true)
+
+        syncLayerStateToHistory()
+
+        // The cache is one raster, and one raster cannot describe a stack: it says
+        // nothing about which layer its pixels belong to or what is under them.
+        // Taken at face value on a page with more than one layer, it would be laid
+        // on whichever layer happened to be selected and the fold skipped, leaving
+        // every other layer blank — which is exactly what it did. A page of layers
+        // replays instead. Slower to open; never wrong. Per-layer caches can earn
+        // the speed back later.
+        val single = layers.size == 1
+        val usable = cached?.takeIf { single && it.width == bufW && it.height == bufH }
+        if (usable != null) {
+            paintBmp?.recycle()
+            paintBmp = usable.copy(Bitmap.Config.ARGB_8888, true)
+            storeCheckpoint(activeOpCount(), paintBmp!!)
+            invalidate()
+            onHistoryChanged?.invoke()
+        } else {
+            cached?.recycle()
+            rebuild()
+        }
+    }
+
+    /** Set when [restore] arrives before the buffers exist; replayed on layout. */
+    private class PendingRestore(
+        val committed: List<PaintOp>,
+        val undone: List<PaintOp>,
+        val cached: Bitmap?,
+        val drawnW: Float?,
+        val drawnH: Float?,
+    )
+
+    private var pendingRestore: PendingRestore? = null
 
     fun undo() {
         // A settling wash commits first (it becomes the newest op — so the FIRST
@@ -3551,34 +4427,70 @@ class PaintCanvasView @JvmOverloads constructor(
         // and the guard below makes this undo a no-op while that bake runs).
         interruptWet()
         if (baking || rebuilding || committed.isEmpty()) return
-        redoStack.add(committed.removeAt(committed.lastIndex))
+        val undone = committed.removeAt(committed.lastIndex)
+        redoStack.add(undone)
+        onUndone?.invoke(undone.layerId)
+        applyStructure(undone, forward = false)
         syncSurfaceToHistory()
+        syncLayerStateToHistory()
         rebuild()
     }
 
     fun redo() {
         interruptWet()
         if (baking || rebuilding || redoStack.isEmpty()) return
-        committed.add(redoStack.removeAt(redoStack.lastIndex))
+        val again = redoStack.removeAt(redoStack.lastIndex)
+        committed.add(again)
+        onRedone?.invoke(again.layerId)
+        applyStructure(again, forward = true)
         syncSurfaceToHistory()
+        syncLayerStateToHistory()
         rebuild()
     }
 
+    /**
+     * Refolds the stack from history.
+     *
+     * An op only ever touched one layer, so each layer is folded from its own ops
+     * and nothing else — which is also why an undo on one layer cannot disturb
+     * what is on another. Checkpoints are kept for the layer under the pen alone,
+     * indexed by that layer's own op count: they are what makes undo instant
+     * while drawing, and holding six full-size copies for every layer at once is
+     * how a page runs out of memory.
+     */
     private fun rebuild() {
         rebuilding = true
-        val target = committed.size
-        val startIdx = checkpoints.floorKey(target) ?: 0
+        val stack = layers.toList()
+        // Held as the layer itself, not as whatever is selected when the fold
+        // lands: the checkpoint below is indexed by *this* layer's op count, and
+        // a layer tapped meanwhile would be filed under a count that is not its
+        // own — an undo would then resume from someone else's paint.
+        val checkpointed = activeLayer
+        val activeId = checkpointed.id
+        val perLayer = stack.associate { l -> l.id to committed.filter { it.layerId == l.id } }
+        val activeCount = perLayer[activeId]?.size ?: 0
+        val startIdx = checkpoints.floorKey(activeCount) ?: 0
         val startBmp = if (startIdx == 0) null else checkpoints[startIdx]
-        val ops = committed.subList(startIdx, target).toList()
         scope.launch {
-            val next = withContext(Dispatchers.Default) {
-                val base = startBmp?.copy(Bitmap.Config.ARGB_8888, true) ?: createBitmap(bufW, bufH)
-                foldOps(base, ops)
+            val folded = withContext(Dispatchers.Default) {
+                stack.map { l ->
+                    val ops = perLayer[l.id].orEmpty()
+                    val resume = if (l.id == activeId && startBmp != null) startIdx else 0
+                    val base = if (resume > 0) {
+                        startBmp!!.copy(Bitmap.Config.ARGB_8888, true)
+                    } else {
+                        createBitmap(bufW, bufH)
+                    }
+                    l to foldOps(base, ops.subList(resume, ops.size))
+                }
             }
-            val old = paintBmp
-            paintBmp = next
-            old?.recycle()
-            storeCheckpoint(target, next)
+            for ((l, bmp) in folded) {
+                l.bmp?.recycle()
+                l.bmp = bmp
+            }
+            if (checkpointed === activeLayer) {
+                checkpointed.bmp?.let { storeCheckpoint(activeCount, it) }
+            }
             rebuilding = false
             invalidate()
             onHistoryChanged?.invoke()
@@ -3589,7 +4501,13 @@ class PaintCanvasView @JvmOverloads constructor(
     private fun clearRedo() {
         for (op in redoStack) op.recycle()
         redoStack.clear()
-        dropCheckpointsAfter(committed.size)
+        dropCheckpointsAfter(activeOpCount())
+    }
+
+    /** How many committed ops belong to the layer under the pen. */
+    private fun activeOpCount(): Int {
+        val id = activeLayer.id
+        return committed.count { it.layerId == id }
     }
 
     /** Snapshots the paint at [index] ops (a copy of [source]) if it's on-stride. */
@@ -3617,8 +4535,8 @@ class PaintCanvasView @JvmOverloads constructor(
     private suspend fun runWandSelection(logical: PointF) {
         commitFloating()
         val paint = paintBmp ?: return
-        val seedX = logical.x.roundToInt().coerceIn(0, bufW - 1)
-        val seedY = logical.y.roundToInt().coerceIn(0, bufH - 1)
+        val seedX = (logical.x * superSample).roundToInt().coerceIn(0, bufW - 1)
+        val seedY = (logical.y * superSample).roundToInt().coerceIn(0, bufH - 1)
         val w = bufW
         val h = bufH
         val result = withContext(Dispatchers.Default) {
@@ -3638,7 +4556,8 @@ class PaintCanvasView @JvmOverloads constructor(
         val maskBmp = createBitmap(result.width, result.height).apply {
             setPixels(result.mask, 0, result.width, 0, 0, result.width, result.height)
         }
-        val ds = WandFloodFill.DOWNSAMPLE.toFloat()
+        // The wand works at DOWNSAMPLE of the *buffer*; [selRect] is view px.
+        val ds = WandFloodFill.DOWNSAMPLE.toFloat() / superSample
         val old = selectionMask
         selectionMask = maskBmp
         selRect.set(
@@ -3652,6 +4571,75 @@ class PaintCanvasView @JvmOverloads constructor(
         startAnts()
         onSelectionChanged?.invoke(true)
         invalidate()
+    }
+
+    /**
+     * Turns a freehand loop into a selection.
+     *
+     * The mask is the wand's mask in every respect that matters — same half-buffer
+     * resolution, same white-is-selected convention — because everything
+     * downstream of here is shared: fill, erase, lift-and-transform, the frisket a
+     * stroke captures, and the codec that writes any of those to a page. The lasso
+     * is a different way of *arriving* at a mask, and nothing more.
+     *
+     * Drawn antialiased, unlike the wand's. The wand traces edges that are already
+     * in the paint, so a hard mask lands on a hard boundary; a lasso cuts across
+     * whatever is under it, and a stair-stepped edge at half resolution is a
+     * stair-stepped cut in the artwork.
+     */
+    private suspend fun runLassoSelection(loop: FloatArray) {
+        commitFloating()
+        if (bufW <= 0 || bufH <= 0) return
+        val ds = WandFloodFill.DOWNSAMPLE.toFloat()
+        val w = (bufW + WandFloodFill.DOWNSAMPLE - 1) / WandFloodFill.DOWNSAMPLE
+        val h = (bufH + WandFloodFill.DOWNSAMPLE - 1) / WandFloodFill.DOWNSAMPLE
+        val scale = superSample / ds
+
+        val path = Path().apply {
+            moveTo(loop[0] * scale, loop[1] * scale)
+            for (i in 1 until loop.size / 2) lineTo(loop[2 * i] * scale, loop[2 * i + 1] * scale)
+            close()
+        }
+        val maskBmp = createBitmap(w, h)
+        Canvas(maskBmp).drawPath(
+            path,
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.WHITE
+                style = Paint.Style.FILL
+            },
+        )
+
+        val bounds = LassoLoop.bounds(loop) ?: return
+        val old = selectionMask
+        selectionMask = maskBmp
+        // Clamped to the sheet: the loop may well have run off the edge of it, and
+        // a selection frame floating out in the mat has nothing to grab.
+        selRect.set(
+            bounds[0].coerceIn(0f, logicalW.toFloat()),
+            bounds[1].coerceIn(0f, logicalH.toFloat()),
+            bounds[2].coerceIn(0f, logicalW.toFloat()),
+            bounds[3].coerceIn(0f, logicalH.toFloat()),
+        )
+        floatTranslate.set(0f, 0f)
+        floatScale = 1f
+        floatRotation = 0f
+        old?.recycle()
+        startAnts()
+        onSelectionChanged?.invoke(true)
+        invalidate()
+    }
+
+    /** The loop as it is being drawn: a thin dashed line that closes itself. */
+    private fun drawLassoInProgress(canvas: Canvas) {
+        if (lassoPts.size < 4) return
+        val path = Path().apply {
+            moveTo(lassoPts[0], lassoPts[1])
+            for (i in 1 until lassoPts.size / 2) lineTo(lassoPts[2 * i], lassoPts[2 * i + 1])
+            // Shown closed while it is still open, so what will be enclosed is
+            // never a surprise at the moment the pen lifts.
+            close()
+        }
+        canvas.drawPath(path, lassoGuidePaint)
     }
 
     /** Fills the current selection with [color] (toothed), as one undoable op. */
@@ -3676,6 +4664,34 @@ class PaintCanvasView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * The live selection mask, as an independent copy, or null when there is none.
+     *
+     * A copy because the caller reads it off the UI thread — the selection can be
+     * cleared or replaced while a copy is being written — and the scale factor
+     * comes with it, since a mask on its own does not say what it is a mask *of*.
+     */
+    fun selectionSnapshot(): Pair<Bitmap, Float>? {
+        val mask = selectionMask ?: return null
+        return mask.copy(Bitmap.Config.ARGB_8888, false) to (bufW.toFloat() / mask.width)
+    }
+
+    /**
+     * Lays pasted ops onto the paint layer as **one** committed step.
+     *
+     * They arrive already decoded, at the coordinates they were copied from — a
+     * paste lands where the marks were, which is what makes copying between two
+     * pages of the same book, or two books the same size, mean anything.
+     */
+    fun pasteOps(ops: List<PaintOp>) {
+        if (ops.isEmpty()) return
+        scope.launch {
+            commitFloating()
+            flushPending()
+            applyCommittedOp(PasteOp(ops))
+        }
+    }
+
     /** Clears the current selection (baking any floating move first). */
     fun clearSelection() {
         scope.launch {
@@ -3691,28 +4707,73 @@ class PaintCanvasView @JvmOverloads constructor(
         }
     }
 
-    /** Bakes [op] onto the paint layer and records it as a committed step. */
+    /**
+     * Bakes [op] onto the layer under the pen and records it as a committed step.
+     *
+     * Everything that is not a freehand stroke arrives here — a shape's commit, a
+     * fill, an erase-inside, a paste — and every one of them was landing on the
+     * page without saying which layer it landed on. A step that names no layer
+     * belongs to none: the fold matches each layer's ops by name, so the mark
+     * showed up under the pen and then vanished at the next undo, having been
+     * left out of every layer's rebuild. It reappeared on reload, on the bottom
+     * layer, because that is where an untagged step gets adopted.
+     *
+     * Tagged and resolved before the fold, then written back to that same layer,
+     * for [kickBake]'s reason: this suspends in the middle, and the selection can
+     * move while it does.
+     */
     private suspend fun applyCommittedOp(op: PaintOp) {
-        val base = paintBmp ?: return
+        val onto = activeLayer
+        if (op.layerId.isEmpty()) op.layerId = onto.id
+        val base = onto.bmp ?: return
         val next = withContext(Dispatchers.Default) {
             foldOps(base.copy(Bitmap.Config.ARGB_8888, true), listOf(op))
         }
-        val old = paintBmp
-        paintBmp = next
+        val old = onto.bmp
+        onto.bmp = next
         committed.add(op)
+        onOpCommitted?.invoke(op)
         clearRedo()
-        storeCheckpoint(committed.size, next)
+        if (onto === activeLayer) storeCheckpoint(activeOpCount(), next)
         old?.recycle()
         invalidate()
         onHistoryChanged?.invoke()
     }
 
-    /** Waits for pending strokes to bake so a following op composites on top. */
+    /**
+     * Waits for pending strokes to bake so a following op composites on top.
+     *
+     * A rebuild counts as pending too: it is refolding every layer from history
+     * onto fresh bitmaps, and an op composited into the old ones while it runs is
+     * an op that was never made. [kickBake] stands aside for the same reason, so
+     * this has to wait it out rather than push through it.
+     */
     private suspend fun flushPending() {
-        while (unbaked.isNotEmpty() || baking) {
-            if (!baking && unbaked.isNotEmpty()) kickBake()
+        while (unbaked.isNotEmpty() || baking || rebuilding) {
+            if (!baking && !rebuilding && unbaked.isNotEmpty()) kickBake()
             delay(8)
         }
+    }
+
+    /**
+     * Everything in flight finished, so the page can be put down.
+     *
+     * **Call this before taking a page away from the view.** A bake runs off the
+     * UI thread against a layer's bitmap, and loading the next page recycles those
+     * bitmaps and empties the history — so a page turned while a stroke was baking
+     * either died on a recycled bitmap or landed its paint, and its op, on the page
+     * that had just arrived. The window is only as long as one fold, which is why
+     * it took until a slow brush stroke to be noticed.
+     *
+     * The order is what makes it safe to leave: a lifted selection is set down
+     * first (it belongs to the page it was lifted from), then a settling wash is
+     * committed as shown, and only then does the queue drain — because both of
+     * those *add* to it.
+     */
+    suspend fun settle() {
+        commitFloating()
+        interruptWet()
+        flushPending()
     }
 
     // --- Floating move/transform --------------------------------------------
@@ -3722,8 +4783,18 @@ class PaintCanvasView @JvmOverloads constructor(
 
     /**
      * The current float transform (scale + rotate about the selection centre, then
-     * translate) as an affine [Matrix]. [sampleScale] scales the pivot/translation
-     * into the target space: 1 for buffer/view coords, 1/DOWNSAMPLE for the mask.
+     * translate) as an affine [Matrix].
+     *
+     * [selRect] and [floatTranslate] are both **view px**, so this comes out in
+     * view space at [sampleScale] 1 — which is what the live preview, the dashed
+     * frame and the handle hit-tests all want. [sampleScale] carries it into the
+     * other two spaces: [superSample] for the buffer, and that over DOWNSAMPLE for
+     * the half-resolution mask.
+     *
+     * Only the pivot and the translation are scaled, because that is the whole of
+     * the conversion: rotating by an angle and scaling by a factor mean the same
+     * thing in either space, and a similarity transform conjugated by a uniform
+     * scale changes nothing else.
      */
     private fun floatMatrix(sampleScale: Float): Matrix {
         val px = selRect.centerX() * sampleScale
@@ -3830,7 +4901,12 @@ class PaintCanvasView @JvmOverloads constructor(
     /** Bakes the floating move into the paint as a [MoveOp] and re-lands the mask. */
     private suspend fun commitFloating() {
         val sourceMask = floatSourceMask
-        val base = paintBmp
+        // The layer the paint was lifted from, held for the same reason
+        // [applyCommittedOp] holds it. Selecting another layer is refused while
+        // something is floating, but adding one is not, and either way this
+        // suspends before it writes.
+        val onto = activeLayer
+        val base = onto.bmp
         if (floating == null || sourceMask == null || base == null) {
             discardFloating()
             return
@@ -3839,23 +4915,25 @@ class PaintCanvasView @JvmOverloads constructor(
             discardFloating()
             return
         }
-        val bufMatrix = floatMatrix(1f)
-        val maskMatrix = floatMatrix(1f / WandFloodFill.DOWNSAMPLE)
+        val bufMatrix = floatMatrix(superSample)
+        val maskMatrix = floatMatrix(superSample / WandFloodFill.DOWNSAMPLE)
         val newRect = boundsOf(floatCorners())
         val op = MoveOp(sourceMask.copy(Bitmap.Config.ARGB_8888, false), Matrix(bufMatrix))
+        op.layerId = onto.id
         val liveMask = selectionMask
         val (newPaint, movedMask) = withContext(Dispatchers.Default) {
             compositeMove(base, op) to (liveMask?.let { transformMask(it, maskMatrix) })
         }
-        val oldPaint = paintBmp
+        val oldPaint = onto.bmp
         val oldMask = selectionMask
         val f = floating
         val hh = paintHole
         val m = floatSourceMask
-        paintBmp = newPaint
+        onto.bmp = newPaint
         committed.add(op)
+        onOpCommitted?.invoke(op)
         clearRedo()
-        storeCheckpoint(committed.size, newPaint)
+        if (onto === activeLayer) storeCheckpoint(activeOpCount(), newPaint)
         if (movedMask != null) selectionMask = movedMask
         selRect.set(newRect)
         floating = null
@@ -3966,7 +5044,18 @@ class PaintCanvasView @JvmOverloads constructor(
         if (!hasSelection) antsAnimator.cancel()
     }
 
+    /**
+     * Drops the selection and any half-made shape, and **says so**.
+     *
+     * The announcement is the load-bearing part. Every path that resizes the
+     * buffers already came through here, so the mask was being destroyed while
+     * whoever draws the toolbar still believed there was a selection — offering
+     * Fill, Erase and Copy for a region that no longer existed. Found on device
+     * after a page switch: the rail kept offering to copy a selection made in a
+     * book two documents ago.
+     */
     private fun clearSelectionState() {
+        val had = hasSelection
         selectionMask?.recycle()
         selectionMask = null
         discardFloating()
@@ -3976,6 +5065,7 @@ class PaintCanvasView @JvmOverloads constructor(
         discardPendingPolyarc()
         selRect.setEmpty()
         antsAnimator.cancel()
+        if (had) onSelectionChanged?.invoke(false)
     }
 
     // --- Watercolor (from Stage 4b) -----------------------------------------
@@ -4021,7 +5111,7 @@ class PaintCanvasView @JvmOverloads constructor(
         if (cw <= 0 || ch <= 0) return null
         val l = crop.left.toFloat()
         val t = crop.top.toFloat()
-        val avgW = avgWidth(stroke) * SUPER_SAMPLE
+        val avgW = avgWidth(stroke) * superSample
         val soften = max(2f, avgW * 0.14f)
         val clearFeather = max(2f, avgW * 0.10f)
         val spread = max(4f, avgW * 0.30f) * if (stroke.water) WATER_SPREAD_SCALE else 1f
@@ -4034,7 +5124,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val backdrop = GpuRender.renderToBitmap(cw, ch) { canvas ->
             nodes += recordWetBackdrop(
                 canvas as android.graphics.RecordingCanvas, base, drawMask, cw, ch,
-                SUPER_SAMPLE, clearFeather, spread, soften, l, t, dilute, drawOverBase,
+                superSample, clearFeather, spread, soften, l, t, dilute, drawOverBase,
             )
         }
         nodes.forEach { it.discardDisplayList() }
@@ -4046,7 +5136,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val wash = createBitmap(cw, ch)
         Canvas(wash).apply {
             translate(-l, -t)
-            scale(SUPER_SAMPLE, SUPER_SAMPLE)
+            scale(superSample, superSample)
             StrokeRenderer.paintStroke(this, stroke, surface, stroke.dryFreeze)
         }
         val agsl = pigmentAgsl
@@ -4086,18 +5176,18 @@ class PaintCanvasView @JvmOverloads constructor(
         val sim = bakeWetSim ?: WetSim(agsl[0], agsl[1], agsl[2]).also { bakeWetSim = it }
         sim.begin(crop)
         val tooth = ToothCache.rawFieldFor(surface)
-        val toothScale = surface.toothScale * SUPER_SAMPLE
+        val toothScale = surface.toothScale * superSample
         var cursor = 0
         for (n in stroke.wetSchedule) {
             while (cursor < n && cursor < stroke.points.size) {
-                sim.stampPoint(stroke.points[cursor], stroke.color, SUPER_SAMPLE)
+                sim.stampPoint(stroke.points[cursor], stroke.color, superSample)
                 cursor++
             }
             sim.tick(tooth, toothScale)
         }
         // Points laid after the last live tick were stamped but never advanced.
         while (cursor < stroke.points.size) {
-            sim.stampPoint(stroke.points[cursor], stroke.color, SUPER_SAMPLE)
+            sim.stampPoint(stroke.points[cursor], stroke.color, superSample)
             cursor++
         }
         val wash = sim.presentToBitmap()
@@ -4106,7 +5196,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val t = crop.top.toFloat()
         val region = strokeRegionPath(stroke)
         val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
-        val avgW = avgWidth(stroke) * SUPER_SAMPLE
+        val avgW = avgWidth(stroke) * superSample
         val soften = max(2f, avgW * 0.14f)
         val clearFeather = max(2f, avgW * 0.10f)
         val spread = max(4f, avgW * 0.30f)
@@ -4114,7 +5204,7 @@ class PaintCanvasView @JvmOverloads constructor(
         val backdrop = GpuRender.renderToBitmap(cw, ch) { canvas ->
             nodes += recordWetBackdrop(
                 canvas as android.graphics.RecordingCanvas, base, { c -> c.drawPath(region, white) },
-                cw, ch, SUPER_SAMPLE, clearFeather, spread, soften, l, t,
+                cw, ch, superSample, clearFeather, spread, soften, l, t,
             )
         }
         nodes.forEach { it.discardDisplayList() }
@@ -4159,10 +5249,10 @@ class PaintCanvasView @JvmOverloads constructor(
         // Must cover everything the pipeline draws: the ribbon (maxW/2), the
         // bloom + bleed reach (~1.44*avgW, see drawWetLive's mixer rect), with
         // margin so the crop-clamped shaders never show their edge.
-        val pad = (maxW / 2f + avgW * 1.5f + 16f) * SUPER_SAMPLE
+        val pad = (maxW / 2f + avgW * 1.5f + 16f) * superSample
         return quantizedCrop(
-            minX * SUPER_SAMPLE - pad, minY * SUPER_SAMPLE - pad,
-            maxX * SUPER_SAMPLE + pad, maxY * SUPER_SAMPLE + pad,
+            minX * superSample - pad, minY * superSample - pad,
+            maxX * superSample + pad, maxY * superSample + pad,
         )
     }
 
@@ -4247,6 +5337,552 @@ class PaintCanvasView @JvmOverloads constructor(
         return sum / stroke.points.size
     }
 
+    // --- Layers ---------------------------------------------------------------
+
+    /**
+     * Adds an empty layer directly above the active one and selects it.
+     *
+     * Above rather than at the top of the stack: a new layer is nearly always
+     * wanted in front of what you were just working on, and a stack you have
+     * ordered deliberately should not be reordered by adding to it.
+     */
+    fun addLayer(id: String, name: String): Boolean {
+        if (layers.size >= Layer.MAX_PER_PAGE) return false
+        val layer = Layer(id, name)
+        if (bufW > 0 && bufH > 0) layer.bmp = createBitmap(bufW, bufH)
+        layersById[id] = layer
+        // Directly above the layer being worked on means inside whatever folder
+        // that layer is in: a new sheet joins the thing you were drawing on, and
+        // arriving beside its folder instead would be somewhere else entirely.
+        val spot = spotAbove(activeLayer.id)
+        stack.insertAt(StackEntry(id), spot.folder, spot.at)
+        reflow()
+        activeIndex = layers.indexOf(layer).coerceAtLeast(0)
+        commitLayerOp(LayerAddOp(name, spot), layer)
+        invalidate()
+        onLayersChanged?.invoke()
+        return true
+    }
+
+    /** The place immediately above [id], inside whatever holds it. */
+    private fun spotAbove(id: String): StackSpot {
+        val (folder, at) = stack.spotOf(id) ?: return StackSpot(StackSpot.LOOSE, stack.size)
+        return StackSpot(folder, at + 1)
+    }
+
+    private fun spotOf(id: String): StackSpot =
+        stack.spotOf(id)?.let { (folder, at) -> StackSpot(folder, at) }
+            ?: StackSpot(StackSpot.LOOSE, 0)
+
+    /**
+     * Layers taken out of the stack but not thrown away.
+     *
+     * A deleted layer keeps its pixels and its ops here, because the step that
+     * removed it is on the timeline and an undo has to be able to put it back
+     * whole. Nothing is recycled until the view is.
+     */
+    private val retired = mutableMapOf<String, Layer>()
+
+    /**
+     * Removes a layer and everything drawn on it.
+     *
+     * The last layer standing cannot go: a page with nowhere to paint is not a
+     * state the rest of this class is written to survive. Its ops leave history
+     * with it, which is what makes the deletion undoable from the outside — the
+     * caller keeps them.
+     */
+    fun removeLayer(index: Int): List<PaintOp> {
+        if (layers.size <= 1 || index !in layers.indices) return emptyList()
+        val gone = layers[index]
+        val spot = spotOf(gone.id)
+        // The layer goes on the shelf rather than in the bin, and its ops stay on
+        // the timeline: the step that removed it is itself undoable, and putting
+        // it back has to put back everything that was on it.
+        stack.remove(gone.id)
+        layersById.remove(gone.id)
+        retired[gone.id] = gone
+        reflow()
+        recycleCheckpoints()
+        commitLayerOp(LayerDeleteOp(spot), gone)
+        invalidate()
+        onLayersChanged?.invoke()
+        onHistoryChanged?.invoke()
+        return emptyList()
+    }
+
+    /**
+     * Puts the stack back the way the timeline says it should be.
+     *
+     * Applied as an inverse rather than re-derived: a stack is a sequence, and
+     * replaying one from a base needs a base the file does not record. Undoing
+     * the step that removed a layer takes it off the shelf and back to where it
+     * sat; undoing the step that made one shelves it again.
+     */
+    private fun applyStructure(op: PaintOp, forward: Boolean) {
+        when (op) {
+            is LayerDeleteOp -> if (forward) shelve(op.layerId) else unshelve(op.layerId, op.spot)
+            is LayerAddOp -> if (forward) unshelve(op.layerId, op.spot) else shelve(op.layerId)
+            is LayerOrderOp -> slide(op.moved, if (forward) op.to else op.from)
+            is FolderDeleteOp -> if (forward) {
+                closeFolder(op.folderId)
+            } else {
+                openFolder(op.folderId, op.name, op.spot, op.held)
+            }
+            // A folder is made empty, and a timeline unwinds in order, so by the
+            // time this is undone whatever was filed in it since has come back
+            // out. It arrives holding nothing, and leaves holding nothing.
+            is FolderAddOp -> if (forward) {
+                openFolder(op.folderId, op.name, op.spot, held = 0)
+            } else {
+                closeFolder(op.folderId)
+            }
+            else -> return
+        }
+        reflow()
+        recycleCheckpoints()
+        onLayersChanged?.invoke()
+    }
+
+    private fun shelve(id: String) {
+        // The last layer standing stays: a page with nowhere to paint is not a
+        // state the rest of this class is written to survive.
+        if (!stack.contains(id) || layers.size <= 1) return
+        stack.remove(id)
+        layersById.remove(id)?.let { retired[id] = it }
+    }
+
+    /**
+     * Moves a layer or a folder to [spot], wherever it currently is.
+     *
+     * Found by identity rather than by where the op says it was, because a step
+     * further back may have shifted it since. The step says which thing and
+     * where it belongs; where it happens to be right now is the stack's business.
+     */
+    private fun slide(id: String, spot: StackSpot) {
+        if (!stack.contains(id)) return
+        // A step that names a folder deleted since points nowhere. Left alone
+        // rather than dropped loose: the folder comes back if the undo carries
+        // on far enough, and moving it out now would be a change nobody made.
+        if (spot.folder != StackSpot.LOOSE && !stack.contains(spot.folder)) return
+        stack.placeAt(id, spot.folder, spot.at)
+    }
+
+    private fun unshelve(id: String, spot: StackSpot) {
+        val layer = retired.remove(id) ?: return
+        if (layer.bmp == null && bufW > 0 && bufH > 0) layer.bmp = createBitmap(bufW, bufH)
+        layersById[id] = layer
+        val home = spot.folder.takeIf { it == StackSpot.LOOSE || stack.contains(it) } ?: StackSpot.LOOSE
+        stack.insertAt(StackEntry(id), home, spot.at)
+    }
+
+    // --- Folders --------------------------------------------------------------
+
+    /**
+     * Makes a folder above the layer being worked on, holding nothing yet.
+     *
+     * Empty rather than wrapped around the selection, because those are two
+     * different intentions and only one of them can be undone by dragging a
+     * layer back out.
+     */
+    fun addFolder(id: String, name: String): Boolean {
+        val spot = spotAbove(activeLayer.id)
+        if (!canNest(spot.folder)) return false
+        foldersById[id] = Folder(id, name)
+        stack.insertAt(StackEntry(id, isFolder = true), spot.folder, spot.at)
+        reflow()
+        commitFolderOp(FolderAddOp(id, name, spot))
+        invalidate()
+        onLayersChanged?.invoke()
+        return true
+    }
+
+    /** Whether another folder will fit inside [folder] without passing the cap. */
+    fun canNest(folder: String): Boolean =
+        folder == StackSpot.LOOSE ||
+            (stack.contains(folder) && stack.depth(stack.indexOf(folder)) + 1 < LayerStack.MAX_NESTING)
+
+    /** Whether [addFolder] would find room where it means to put one. */
+    fun canAddFolder(): Boolean = canNest(spotAbove(activeLayer.id).folder)
+
+    /**
+     * Takes a folder away, and leaves everything that was in it.
+     *
+     * The contents come out where the folder stood, in the order they were in,
+     * because a folder is a place to keep work and not the work. Nothing here
+     * needs shelving for that reason: no paint is going anywhere.
+     */
+    fun removeFolder(id: String): Boolean {
+        val folder = foldersById[id] ?: return false
+        if (!stack.contains(id)) return false
+        val spot = spotOf(id)
+        val held = stack.childrenOf(id).size
+        closeFolder(id)
+        reflow()
+        commitFolderOp(FolderDeleteOp(id, folder.name, spot, held))
+        invalidate()
+        onLayersChanged?.invoke()
+        return true
+    }
+
+    /**
+     * Tips a folder's contents out where it stood, and takes the folder away.
+     *
+     * Lifted as one block and put back without its first entry, so everything
+     * inside keeps its order and its own nesting and lands one shelf shallower.
+     * The folder object is kept: undo may want it back, and it is a name and two
+     * numbers.
+     */
+    private fun closeFolder(id: String) {
+        if (!stack.contains(id)) return
+        val spot = spotOf(id)
+        val block = stack.remove(id)
+        val freed = block.drop(1).map {
+            if (it.parentId == id) it.copy(parentId = spot.folder) else it
+        }
+        stack.insertAll(freed, stack.flatIndexFor(spot.folder, spot.at))
+    }
+
+    /**
+     * The inverse: the place comes back, and takes its contents in again.
+     *
+     * The [held] things that spilled out are the run standing where the folder
+     * stood, so the folder goes in directly above the topmost of them and each
+     * is refiled in turn. Each is moved rather than relabelled because a folder
+     * among them brings its own contents along, and how far that reaches is not
+     * something a count knows.
+     */
+    private fun openFolder(id: String, name: String, spot: StackSpot, held: Int) {
+        if (stack.contains(id)) return
+        foldersById.getOrPut(id) { Folder(id, name) }.name = name
+
+        val siblings = stack.childrenOf(spot.folder)
+        // Siblings read top-down and the spot counts up from the bottom.
+        val topmost = (siblings.size - spot.at - held).coerceIn(0, siblings.size)
+        val taken = siblings
+            .subList(topmost, (topmost + held).coerceAtMost(siblings.size))
+            .map { it.id }
+
+        val landing = taken.firstOrNull()?.let { stack.indexOf(it) }
+            ?: stack.flatIndexFor(spot.folder, spot.at)
+        stack.insert(StackEntry(id, isFolder = true, parentId = spot.folder), landing)
+
+        var at = landing + 1
+        for (child in taken) {
+            stack.move(child, at, id)
+            at = stack.span(stack.indexOf(child)).last + 1
+        }
+    }
+
+    /**
+     * What came of asking for a layer — and when it was refused, why.
+     *
+     * Three answers rather than a yes/no, because the caller has to say something
+     * and there is no message that is true of all three. One boolean here meant a
+     * lifted selection was reported as a hidden layer, which is not a smaller
+     * mistake than saying nothing.
+     */
+    enum class LayerPick { OK, HIDDEN, DRAWING, FLOATING }
+
+    /**
+     * Selects a layer to paint on.
+     *
+     * Hidden layers cannot be selected: a stroke that lands somewhere invisible
+     * looks exactly like a stroke that failed. Nor can the sheet be changed out
+     * from under a mark in progress — the panel is its own view and will take a
+     * second hand's tap while the pen is down, and a stroke that finished
+     * somewhere other than where it started is not a thing to have to explain.
+     * (The mark itself is safe either way: it carries the layer it began on, see
+     * [strokeLayer]. This is so the preview does not jump.)
+     */
+    fun selectLayer(index: Int): LayerPick {
+        if (index !in layers.indices) return LayerPick.HIDDEN
+        if (!shown(layers[index])) return LayerPick.HIDDEN
+        if (index == activeIndex) return LayerPick.OK
+        if (active != null) return LayerPick.DRAWING
+        // A lifted selection belongs to the layer it was lifted from; carrying it
+        // across would set it down somewhere it never came from. Put it down first.
+        if (floating != null) return LayerPick.FLOATING
+        interruptWet()
+        activeIndex = index
+        // Checkpoints belong to whichever layer they were folded from.
+        recycleCheckpoints()
+        invalidate()
+        onLayersChanged?.invoke()
+        onHistoryChanged?.invoke()
+        return LayerPick.OK
+    }
+
+    fun setLayerVisible(index: Int, visible: Boolean) {
+        val layer = layers.getOrNull(index) ?: return
+        layer.visible = visible
+        moveThePenSomewhereItShows()
+        commitLayerOp(LayerVisibilityOp(visible), layer)
+        invalidate()
+        onLayersChanged?.invoke()
+    }
+
+    /**
+     * The pen cannot be left on a layer that no longer shows.
+     *
+     * "No longer shows" now includes a layer whose folder was closed over it,
+     * which is why this is one routine rather than a check at each eye: hiding a
+     * folder can take the layer under the pen out of sight without touching it.
+     */
+    private fun moveThePenSomewhereItShows() {
+        if (layers.getOrNull(activeIndex)?.let(::shown) == true) return
+        layers.indexOfFirst { shown(it) }.takeIf { it >= 0 }?.let { activeIndex = it }
+    }
+
+    /**
+     * Live opacity, off the timeline.
+     *
+     * Called on every tick of a slider, so it must not record anything: a drag is
+     * one decision, and a hundred entries in the undo stack is not what "undo the
+     * thing I just did" means. [commitLayerOpacity] closes it when the finger lifts.
+     */
+    fun setLayerOpacity(index: Int, opacity: Float) {
+        val layer = layers.getOrNull(index) ?: return
+        layer.opacity = opacity.coerceIn(0f, 1f)
+        invalidate()
+    }
+
+    /** Puts the opacity a drag arrived at onto the timeline, as one step. */
+    fun commitLayerOpacity(index: Int) {
+        val layer = layers.getOrNull(index) ?: return
+        commitLayerOp(LayerOpacityOp(layer.opacity), layer)
+    }
+
+    private fun commitLayerOp(op: PaintOp, layer: Layer) {
+        op.layerId = layer.id
+        commit(op)
+    }
+
+    /**
+     * Files a folder's step under the layer being worked on.
+     *
+     * A folder has no ops of its own to hang one from — it holds no paint, so it
+     * has no timeline — and every step has to be filed somewhere it will be read
+     * back from. The layer under the pen is that somewhere, and the step names
+     * the folder itself, so which layer it happened to be filed under never
+     * matters again.
+     */
+    private fun commitFolderOp(op: PaintOp) {
+        op.layerId = activeLayer.id
+        commit(op)
+    }
+
+    private fun commit(op: PaintOp) {
+        committed.add(op)
+        onOpCommitted?.invoke(op)
+        clearRedo()
+        onHistoryChanged?.invoke()
+    }
+
+    /**
+     * Re-derives every layer's and folder's opacity and visibility from the
+     * timeline.
+     *
+     * The same shape as [syncSurfaceToHistory], and for the same reason: an undo
+     * moves the boundary, and state that was written straight onto the layer
+     * would sit there contradicting the history it came from. Each starts at its
+     * anchored base and the surviving ops are applied over it in order.
+     */
+    private fun syncLayerStateToHistory() {
+        for (l in layersById.values) {
+            l.visible = l.baseVisible
+            l.opacity = l.baseOpacity
+            l.name = l.baseName
+        }
+        for (f in foldersById.values) {
+            f.visible = f.baseVisible
+            f.opacity = f.baseOpacity
+            f.name = f.baseName
+            f.collapsed = f.baseCollapsed
+        }
+        for (op in committed) {
+            when (op) {
+                is LayerOpacityOp -> layersById[op.layerId]?.opacity = op.opacity
+                is LayerVisibilityOp -> layersById[op.layerId]?.visible = op.visible
+                is FolderOpacityOp -> foldersById[op.folderId]?.opacity = op.opacity
+                is FolderVisibilityOp -> foldersById[op.folderId]?.visible = op.visible
+                is FolderCollapseOp -> foldersById[op.folderId]?.collapsed = op.collapsed
+                // One step for both kinds, so it asks both which of them it named.
+                is NameOp -> {
+                    layersById[op.named]?.name = op.name
+                    foldersById[op.named]?.name = op.name
+                }
+                else -> Unit
+            }
+        }
+        moveThePenSomewhereItShows()
+        onLayersChanged?.invoke()
+    }
+
+    /**
+     * Moves a layer or a folder to a new place in the stack, and possibly into or
+     * out of a folder.
+     *
+     * The selection follows the layer rather than the position: you dragged this
+     * sheet, so this sheet is still the one under the pen when it lands. A folder
+     * takes its contents with it, and one step covers all of them — dragging a
+     * folder is one thing you did, however many layers travelled with it.
+     */
+    fun moveInStack(id: String, to: Int, into: String): Boolean {
+        val from = spotOf(id)
+        if (!stack.move(id, to, into)) return false
+        reflow()
+        val landed = spotOf(id)
+        // Filed under a layer either way: under itself when a layer moved, and
+        // under the layer being worked on when a folder did — a folder has no
+        // timeline of its own, so the step has to name what it was about.
+        val layer = layersById[id]
+        if (layer != null) {
+            commitLayerOp(LayerOrderOp(from, landed), layer)
+        } else {
+            commitFolderOp(LayerOrderOp(from, landed, subject = id))
+        }
+        invalidate()
+        onLayersChanged?.invoke()
+        return true
+    }
+
+    /** The whole stack as the panel reads it, top-down: folders and layers both. */
+    fun stackEntries(): List<StackEntry> = stack.entries.toList()
+
+    fun stackRows(): List<Int> = stack.visibleRows(foldersById.filterValues { it.collapsed }.keys)
+
+    fun stackDepth(index: Int): Int = stack.depth(index)
+
+    /** The row at [index] together with everything filed inside it. */
+    fun stackSpan(index: Int): IntRange = stack.span(index)
+
+    fun folderAt(id: String): Folder? = foldersById[id]
+
+    val folderCount: Int get() = stack.entries.count { it.isFolder }
+
+    fun layerAt(id: String): Layer? = layersById[id]
+
+    /** Which folder catches a drop in the gap between two rows, [stepsOut] out. */
+    fun dropInto(above: Int?, below: Int?, stepsOut: Int): String =
+        stack.dropInto(above, below, stepsOut)
+
+    /** How many readings that gap has — how far out a drag there could reach. */
+    fun dropChoices(above: Int?, below: Int?): Int = stack.dropChain(above, below).size
+
+    /** The folder holding [id], or nothing when nothing holds it. */
+    fun holderOf(id: String): String = stack.entry(id)?.parentId ?: StackSpot.LOOSE
+
+    /** How deep a thing filed directly inside [folder] would sit. */
+    fun depthInside(folder: String): Int = stack.depthInside(folder)
+
+    /** The stack bottom-first, for writing the order back to the file. */
+    fun layerIdsInOrder(): List<String> = layers.map { it.id }
+
+    /** Where a layer sits in the paint order — the index everything else takes. */
+    fun indexOfLayer(id: String): Int = layers.indexOfFirst { it.id == id }
+
+    fun layerVisibleAt(index: Int): Boolean = layers.getOrNull(index)?.visible ?: false
+    fun layerOpacityAt(index: Int): Float = layers.getOrNull(index)?.opacity ?: 1f
+
+    /** Whether a folder above this layer is hiding it, whatever its own eye says. */
+    fun layerHiddenByFolder(index: Int): Boolean =
+        layers.getOrNull(index)?.let { it.visible && !shown(it) } ?: false
+
+    // --- A folder's eye and its dial -------------------------------------------
+
+    fun setFolderVisible(id: String, visible: Boolean) {
+        val folder = foldersById[id] ?: return
+        folder.visible = visible
+        moveThePenSomewhereItShows()
+        commitFolderOp(FolderVisibilityOp(id, visible))
+        invalidate()
+        onLayersChanged?.invoke()
+    }
+
+    /** Live, off the timeline — the slider's every tick. See [setLayerOpacity]. */
+    fun setFolderOpacity(id: String, opacity: Float) {
+        val folder = foldersById[id] ?: return
+        folder.opacity = opacity.coerceIn(0f, 1f)
+        invalidate()
+    }
+
+    fun commitFolderOpacity(id: String) {
+        val folder = foldersById[id] ?: return
+        commitFolderOp(FolderOpacityOp(id, folder.opacity))
+    }
+
+    /**
+     * Folds a folder shut, or opens it — as a step, like everything else the file
+     * remembers about a sketchbook.
+     *
+     * The furthest that rule reaches: this changes how much of the panel you are
+     * looking at rather than anything on the page. It is in the file, so it is
+     * part of the sketchbook, so it is undoable — and so it discards a redo you
+     * were keeping, the way any other step does.
+     */
+    fun setFolderCollapsed(id: String, collapsed: Boolean) {
+        val folder = foldersById[id] ?: return
+        folder.collapsed = collapsed
+        commitFolderOp(FolderCollapseOp(id, collapsed))
+        onLayersChanged?.invoke()
+    }
+
+    /**
+     * Renames a layer or a folder, as a step.
+     *
+     * On the timeline by the rule the rest of these follow: if the sketchbook
+     * remembers it, undo can take it back. A layer's step is filed under itself
+     * and needs no second name; a folder has no timeline of its own, so its step
+     * rides under the layer being worked on and says which folder it meant.
+     */
+    fun renameStackEntry(id: String, name: String) {
+        val layer = layersById[id]
+        val folder = foldersById[id]
+        if (layer == null && folder == null) return
+        layer?.name = name
+        folder?.name = name
+        if (layer != null) commitLayerOp(NameOp(name), layer) else commitFolderOp(NameOp(name, id))
+        onLayersChanged?.invoke()
+    }
+
+    /**
+     * Replaces the whole stack on page load. [restore] follows with the paint.
+     *
+     * [shape] is the arrangement as the file records it, top-down. A page saved
+     * before folders existed has none, and then the loaded layers are the whole
+     * stack in the order they came, which is what they were.
+     */
+    fun restoreLayers(
+        loaded: List<Layer>,
+        active: Int,
+        folders: List<Folder> = emptyList(),
+        shape: List<StackEntry> = emptyList(),
+    ) {
+        if (loaded.isEmpty()) return
+        for (l in layersById.values) l.recycle()
+        for (l in retired.values) l.recycle()
+        retired.clear()
+        layersById.clear()
+        foldersById.clear()
+        for (l in loaded) layersById[l.id] = l
+        for (f in folders) foldersById[f.id] = f
+
+        val arrangement = shape.takeIf { it.isNotEmpty() }
+            ?: loaded.asReversed().map { StackEntry(it.id) }
+        stack.replaceWith(arrangement.filter { layersById.containsKey(it.id) || foldersById.containsKey(it.id) })
+
+        layers.clear()
+        stack.drawOrder().mapNotNullTo(layers) { layersById[it] }
+        if (layers.isEmpty()) layers.addAll(loaded)
+        activeIndex = active.coerceIn(0, layers.lastIndex)
+        if (bufW > 0 && bufH > 0) {
+            for (l in layers) if (l.bmp == null) l.bmp = createBitmap(bufW, bufH)
+        }
+        recycleCheckpoints()
+        invalidate()
+        onLayersChanged?.invoke()
+    }
+
     /** Clears painted strokes, history, and any selection, keeping the surface. */
     fun clear() {
         val old = paintBmp ?: return
@@ -4254,6 +5890,7 @@ class PaintCanvasView @JvmOverloads constructor(
         unbaked.clear()
         unbakedClips.forEach { it?.recycle() }
         unbakedClips.clear()
+        unbakedLayers.clear()
         active = null
         activeClip?.recycle()
         activeClip = null
@@ -4277,9 +5914,15 @@ class PaintCanvasView @JvmOverloads constructor(
         // A cleared canvas is a new piece of art: fresh paper for organic surfaces.
         surfaceSeed = java.util.Random().nextLong()
         regenerateSurface()
-        paintBmp = createBitmap(bufW, bufH)
-        old.recycle()
+        // Clearing the page clears every layer. The stack itself survives: the
+        // layers you set up are how you were working, not what you drew.
+        for (l in layers) {
+            l.bmp?.recycle()
+            l.bmp = createBitmap(bufW, bufH)
+        }
+        if (old.isRecycled.not() && layers.none { it.bmp === old }) old.recycle()
         invalidate()
+        onLayersChanged?.invoke()
         onHistoryChanged?.invoke()
     }
 
@@ -4299,9 +5942,10 @@ class PaintCanvasView @JvmOverloads constructor(
         pickupBuf = null
         pickupCanvas = null
         surfaceBmp?.recycle()
-        paintBmp?.recycle()
         surfaceBmp = null
-        paintBmp = null
+        for (l in layers) l.recycle()
+        for (l in retired.values) l.recycle()
+        retired.clear()
         GpuRender.release()
     }
 
@@ -4325,7 +5969,7 @@ class PaintCanvasView @JvmOverloads constructor(
         if (la != null && lb != null) {
             Canvas(paintCopy).apply {
                 save()
-                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                scale(superSample, superSample)
                 StrokeRenderer.paintStroke(this, buildLineStroke(la, lb), surface = this@PaintCanvasView.surface)
                 restore()
             }
@@ -4336,7 +5980,7 @@ class PaintCanvasView @JvmOverloads constructor(
         if (aa != null && ab != null && am != null) {
             Canvas(paintCopy).apply {
                 save()
-                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                scale(superSample, superSample)
                 StrokeRenderer.paintStroke(this, buildArcStroke(aa, ab, am), surface = this@PaintCanvasView.surface)
                 restore()
             }
@@ -4344,7 +5988,7 @@ class PaintCanvasView @JvmOverloads constructor(
         if (polyPts.size >= 2) {
             Canvas(paintCopy).apply {
                 save()
-                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                scale(superSample, superSample)
                 StrokeRenderer.paintStroke(this, buildPolyStroke(), surface = this@PaintCanvasView.surface)
                 restore()
             }
@@ -4352,7 +5996,7 @@ class PaintCanvasView @JvmOverloads constructor(
         if (paAnchors.size >= 2) {
             Canvas(paintCopy).apply {
                 save()
-                scale(SUPER_SAMPLE, SUPER_SAMPLE)
+                scale(superSample, superSample)
                 StrokeRenderer.paintStroke(this, buildPolyarcStroke(), surface = this@PaintCanvasView.surface)
                 restore()
             }
@@ -4367,8 +6011,15 @@ class PaintCanvasView @JvmOverloads constructor(
                     }
                     val name = "paintsprout_${System.currentTimeMillis()}"
                     // Stamp the file with the physical resolution so it prints 1:1
-                    // with the screen: the buffer is SUPER_SAMPLE× the view pixels.
-                    val dpi = Calibration.effectivePpi(context) * SUPER_SAMPLE
+                    // with the screen: the buffer is superSample× the view pixels.
+                    //
+                    // A frame answers for itself. Its sheet may have been shrunk to
+                    // fit the panel, which would make the screen's reading of the
+                    // ratio far too high — but the pixels are the frame's own and
+                    // so is the size they hang at, and neither depends on the
+                    // tablet the painting happened on.
+                    val dpi = (canvasSize as? CanvasSize.Frame)?.dpi
+                        ?: (Calibration.effectivePpi(context) * superSample)
                     val where = GalleryExport.savePng(context, flat, name, dpi)
                     flat.recycle()
                     where
@@ -4394,6 +6045,15 @@ class PaintCanvasView @JvmOverloads constructor(
         // so the mask keeps growing under a resting or lifted pen.
         const val WATER_BACKDROP_STRIDE = 4
         const val WATER_BACKDROP_STRIDE_MS = 100L
+
+        /**
+         * Buffer px per on-screen px for a sheet drawn at true size — one, because
+         * a print is 1:1 with the panel by definition and there is nothing to gain
+         * from painting it at a resolution the screen cannot show.
+         *
+         * A [CanvasSize.Frame] overrides it per canvas: its buffer is the frame's
+         * grid, not the screen's.
+         */
         const val SUPER_SAMPLE = 1.0f
 
         // Input conditioning: EMA weight per raw sample (~10 ms time constant at
@@ -4493,14 +6153,36 @@ class PaintCanvasView @JvmOverloads constructor(
         const val POLY_TAP_SLOP = 26f
         const val POLY_CLOSE_DIST = 24f
 
-        // Finger history gestures (undo/redo double-tap).
+        /**
+         * Minimum spacing between recorded lasso points (px). Dense enough that
+         * the loop follows the hand, sparse enough that a slow careful outline
+         * does not become ten thousand points to rasterise.
+         */
+        const val LASSO_SPACING = 2.5f
+
+        // Finger history gestures (undo/redo double-tap) and the page turn.
         const val TOUCH_TAP_SLOP_DP = 18f
+
+        /**
+         * How far one finger must travel sideways to turn the page. Well past the
+         * tap slop, so a finger resting and shifting on the sheet does not flip
+         * away from what you were drawing.
+         */
+        const val PAGE_TURN_MIN_DP = 72f
         const val TAP_MAX_MS = 400L
         const val DOUBLE_TAP_WINDOW_MS = 450L
 
         fun isStylus(toolType: Int): Boolean =
             toolType == MotionEvent.TOOL_TYPE_STYLUS ||
                 toolType == MotionEvent.TOOL_TYPE_ERASER
+    }
+
+    /** The loop while it is being drawn. Dashed, so it reads as a guide, not a mark. */
+    private val lassoGuidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1.6f
+        color = 0xCC2E7D32.toInt()
+        pathEffect = DashPathEffect(floatArrayOf(9f, 7f), 0f)
     }
 
     // Reusable mask-compositing paints.

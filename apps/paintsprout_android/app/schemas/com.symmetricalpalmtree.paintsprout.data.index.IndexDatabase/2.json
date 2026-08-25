@@ -1,0 +1,200 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 2,
+    "identityHash": "7345d1c81c669871d650b3b74a7c5eb6",
+    "entities": [
+      {
+        "tableName": "objects",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `type` TEXT NOT NULL, `name` TEXT NOT NULL, `parentId` TEXT, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `deletedAt` INTEGER, `order` INTEGER, `pageCount` INTEGER, `flags` INTEGER, `keyScope` TEXT, `canvasKind` TEXT, `canvasW` REAL, `canvasH` REAL, `refId` TEXT, `sortOrder` INTEGER, `blob` BLOB, `params` TEXT, `lastBackedUpLocal` INTEGER, `lastBackedUpDrive` INTEGER, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "type",
+            "columnName": "type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "parentId",
+            "columnName": "parentId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deletedAt",
+            "columnName": "deletedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "order",
+            "columnName": "order",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "pageCount",
+            "columnName": "pageCount",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "flags",
+            "columnName": "flags",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "keyScope",
+            "columnName": "keyScope",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "canvasKind",
+            "columnName": "canvasKind",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "canvasW",
+            "columnName": "canvasW",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "canvasH",
+            "columnName": "canvasH",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "refId",
+            "columnName": "refId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "sortOrder",
+            "columnName": "sortOrder",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "blob",
+            "columnName": "blob",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "params",
+            "columnName": "params",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastBackedUpLocal",
+            "columnName": "lastBackedUpLocal",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastBackedUpDrive",
+            "columnName": "lastBackedUpDrive",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_objects_parentId_type_deletedAt",
+            "unique": false,
+            "columnNames": [
+              "parentId",
+              "type",
+              "deletedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_objects_parentId_type_deletedAt` ON `${TABLE_NAME}` (`parentId`, `type`, `deletedAt`)"
+          }
+        ]
+      },
+      {
+        "tableName": "sketchbook_activity",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `sketchbookId` TEXT NOT NULL, `activityType` TEXT NOT NULL, `timestamp` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sketchbookId",
+            "columnName": "sketchbookId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "activityType",
+            "columnName": "activityType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timestamp",
+            "columnName": "timestamp",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sketchbook_activity_activityType_timestamp",
+            "unique": false,
+            "columnNames": [
+              "activityType",
+              "timestamp"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sketchbook_activity_activityType_timestamp` ON `${TABLE_NAME}` (`activityType`, `timestamp`)"
+          },
+          {
+            "name": "index_sketchbook_activity_sketchbookId",
+            "unique": false,
+            "columnNames": [
+              "sketchbookId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sketchbook_activity_sketchbookId` ON `${TABLE_NAME}` (`sketchbookId`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '7345d1c81c669871d650b3b74a7c5eb6')"
+    ]
+  }
+}

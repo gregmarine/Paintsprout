@@ -17,11 +17,15 @@
 #
 # Usage:  bench/bench.sh [output-file]      (default: bench/results/last-run.txt)
 #         SERIAL=<adb-serial> to override the device.
+#         PKG=<application-id> to benchmark a release install instead.
 set -euo pipefail
 
 SERIAL="${SERIAL:-5HL21V5007384}"
-PKG="com.symmetricalpalmtree.paintsprout"
-ACT="$PKG/.MainActivity"
+# The debug build, because benchmarking is development: debug carries the `.dev`
+# suffix so it can sit beside a shipped install. Note the activity is named from
+# the *namespace*, which has no suffix — only the application id does.
+PKG="${PKG:-com.symmetricalpalmtree.paintsprout.dev}"
+ACT="$PKG/com.symmetricalpalmtree.paintsprout.MainActivity"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$HERE/results/last-run.txt}"
 mkdir -p "$(dirname "$OUT")"

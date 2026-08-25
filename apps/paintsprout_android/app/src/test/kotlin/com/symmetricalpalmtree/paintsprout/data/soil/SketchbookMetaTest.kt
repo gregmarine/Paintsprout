@@ -1,0 +1,90 @@
+package com.symmetricalpalmtree.paintsprout.data.soil
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class SketchbookMetaTest {
+
+    private val meta = SketchbookMeta(
+        sketchbookId = "3f2a1b8c-4d5e-4f60-8a91-b2c3d4e5f607",
+        name = "Harbour studies",
+        createdAt = 1_000,
+        updatedAt = 2_000,
+        encrypted = true,
+        keyScope = "GLOBAL",
+        folderPath = listOf(
+            FolderRef("f1", "Sketches", null),
+            FolderRef("f2", "2026", "f1"),
+        ),
+        appVersionCode = 1,
+    )
+
+    @Test
+    fun `it round-trips`() {
+        val json = SoilJson.encodeToString(SketchbookMeta.serializer(), meta)
+        assertEquals(meta, SoilJson.decodeFromString(SketchbookMeta.serializer(), json))
+    }
+
+    /**
+     * The record says what it holds: a **sketchbook**.
+     *
+     * These names are the format, not an implementation detail — they are what a
+     * reader finds inside a file it did not write — so they are pinned here
+     * rather than left to whatever the data class happens to be called.
+     */
+    @Test
+    fun `the wire field names say sketchbook`() {
+        val json = SoilJson.encodeToString(SketchbookMeta.serializer(), meta)
+        for (field in listOf(
+            "formatVersion", "sketchbookId", "name", "createdAt", "updatedAt",
+            "encrypted", "keyScope", "folderPath",
+        )) {
+            assertTrue("missing \"$field\"", json.contains("\"$field\""))
+        }
+        assertFalse("no trace of the old vocabulary", json.contains("notebook"))
+    }
+
+    /**
+     * The ancestry is carried root-first with stable folder UUIDs, which is what
+     * lets three devices importing the same document converge on one hierarchy.
+     */
+    @Test
+    fun `folderPath runs root to immediate parent`() {
+        assertEquals(listOf("Sketches", "2026"), meta.folderPath.map { it.name })
+        assertNull(meta.folderPath.first().parentId)
+        assertEquals(meta.folderPath.first().id, meta.folderPath.last().parentId)
+    }
+
+    /** A field a newer build added must not make the record unreadable by this one. */
+    @Test
+    fun `unknown fields are ignored`() {
+        val fromTheFuture = """
+            {"formatVersion":2,"sketchbookId":"x","name":"n","createdAt":1,"updatedAt":2,
+             "encrypted":true,"keyScope":"GLOBAL","canvasFinish":"matte","layerCount":7}
+        """.trimIndent()
+        val decoded = SoilJson.decodeFromString(SketchbookMeta.serializer(), fromTheFuture)
+        assertEquals("n", decoded.name)
+        assertEquals(2, decoded.formatVersion)
+    }
+
+    /** And a field this build expects but an older writer omitted must default. */
+    @Test
+    fun `missing optional fields default`() {
+        val minimal = """{"sketchbookId":"x","name":"n","createdAt":1,"updatedAt":2}"""
+        val decoded = SoilJson.decodeFromString(SketchbookMeta.serializer(), minimal)
+        assertEquals(1, decoded.formatVersion)
+        assertFalse(decoded.encrypted)
+        assertNull(decoded.keyScope)
+        assertNull(decoded.cover)
+        assertTrue(decoded.folderPath.isEmpty())
+    }
+
+    /** A reader with the file but not the key must not be handed a picture of it. */
+    @Test
+    fun `an encrypted document carries no cover`() {
+        assertNull(meta.cover)
+    }
+}

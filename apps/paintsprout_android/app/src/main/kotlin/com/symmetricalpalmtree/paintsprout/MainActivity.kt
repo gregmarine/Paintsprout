@@ -4,23 +4,27 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.content.Intent
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.res.ResourcesCompat
-import androidx.core.view.doOnLayout
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -29,20 +33,36 @@ import com.google.android.material.slider.Slider
 import com.google.android.material.snackbar.Snackbar
 import com.symmetricalpalmtree.paintsprout.databinding.ActivityMainBinding
 import com.symmetricalpalmtree.paintsprout.paint.AVAILABLE_SURFACES
+import com.symmetricalpalmtree.paintsprout.paint.BrushLoad
 import com.symmetricalpalmtree.paintsprout.paint.Calibration
+import com.symmetricalpalmtree.paintsprout.paint.Layer
 import com.symmetricalpalmtree.paintsprout.paint.CanvasParams
 import com.symmetricalpalmtree.paintsprout.paint.CanvasSize
 import com.symmetricalpalmtree.paintsprout.paint.ChalkboardParams
 import com.symmetricalpalmtree.paintsprout.paint.ConcreteParams
 import com.symmetricalpalmtree.paintsprout.paint.MetalParams
+import com.symmetricalpalmtree.paintsprout.paint.PageSpace
+import com.symmetricalpalmtree.paintsprout.paint.PageTurn
 import com.symmetricalpalmtree.paintsprout.paint.Pot
 import com.symmetricalpalmtree.paintsprout.paint.StoneParams
 import com.symmetricalpalmtree.paintsprout.paint.SurfaceKind
+import com.symmetricalpalmtree.paintsprout.paint.SurfaceOp
 import com.symmetricalpalmtree.paintsprout.paint.buildSurfaceVisual
 import com.symmetricalpalmtree.paintsprout.paint.Tool
 import com.symmetricalpalmtree.paintsprout.paint.Tray
 import com.symmetricalpalmtree.paintsprout.paint.WatercolorParams
 import com.symmetricalpalmtree.paintsprout.paint.WoodParams
+import com.symmetricalpalmtree.paintsprout.data.LastOpen
+import com.symmetricalpalmtree.paintsprout.data.index.IndexGate
+import com.symmetricalpalmtree.paintsprout.data.soil.DocumentSession
+import com.symmetricalpalmtree.paintsprout.data.soil.PageTransfer
+import com.symmetricalpalmtree.paintsprout.data.soil.Scratchpad
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 /**
@@ -59,9 +79,9 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
 
-    private var tool = Tool.PENCIL
-    private var color = Color.BLACK
-    private var surfaceIndex = AVAILABLE_SURFACES.indexOf(SurfaceKind.PAPER).coerceAtLeast(0)
+    private var tool = Focus.DEFAULT_TOOL
+    private var color = Focus.COLOR
+    private var surfaceIndex = AVAILABLE_SURFACES.indexOf(Focus.SURFACE).coerceAtLeast(0)
     private var plainColor = Color.WHITE
     private var canvasSize: CanvasSize = CanvasSize.FullScreen
     private var canvasParams = CanvasParams()
@@ -74,7 +94,12 @@ class MainActivity : AppCompatActivity() {
     /** The palette. Pots and the mixing well; see [TrayView]. */
     private val tray = Tray()
     private var trayOut = false
-    private var trayHiddenX = 0f
+
+    /** Where the palette rests, and where it grows out of. See [placeTray]. */
+    private var trayRestX = 0f
+    private var trayRestY = 0f
+    private var trayFromX = 0f
+    private var trayFromY = 0f
 
     private var hasSelection = false
     private var hasPendingLine = false
@@ -92,21 +117,11 @@ class MainActivity : AppCompatActivity() {
     // width on any calibrated screen.
     private val sizes = Tool.values().associateWith { it.defaultSizeMm }.toMutableMap()
 
-    private val calibrationLauncher =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == RESULT_OK) {
-                val ppi = result.data?.getFloatExtra(CalibrationActivity.EXTRA_PPI, 0f) ?: 0f
-                if (ppi > 0f) {
-                    // Sizes are stored in mm; re-push at the new PPI so brush widths
-                    // stay their real physical size.
-                    applySizeToCanvas()
-                    Snackbar.make(
-                        binding.root, "Screen calibrated: ${ppi.roundToInt()} PPI",
-                        Snackbar.LENGTH_SHORT,
-                    ).show()
-                }
-            }
-        }
+    // Calibration is launched from the library now, not from here — it is a fact
+    // about the screen rather than about the drawing. Sizes are stored in mm and
+    // `applySizeToCanvas` reads the PPI fresh every time it runs, including at
+    // editor setup and on every tool change, so a screen measured between
+    // sessions is picked up without anything having to be told about it.
 
     // Rail views kept for state updates.
     private val toolButtons = mutableMapOf<Tool, ImageButton>()
@@ -122,16 +137,71 @@ class MainActivity : AppCompatActivity() {
     private lateinit var lineDoneBtn: ImageButton
     private lateinit var undoBtn: ImageButton
     private lateinit var redoBtn: ImageButton
+    private lateinit var pagesBtn: TextView
+    private lateinit var layersBtn: ImageButton
+    private lateinit var scratchBtn: ImageButton
+    private lateinit var canvasSizeBtn: ImageButton
+    private lateinit var copyBtn: ImageButton
+    private lateinit var pasteBtn: ImageButton
+
+    /**
+     * How many marks are on the clipboard, as far as the rail knows.
+     *
+     * Cached rather than queried while drawing the rail: the clipboard lives in
+     * the index database, and `updateRail` runs on every stroke, every undo and
+     * every tool change. Refreshed when it can actually have changed.
+     */
+    private var clipboardCount = 0
+
+    /** The document being painted into, once it has finished opening. */
+    private var session: DocumentSession? = null
+
+    /**
+     * Whether that document is the scratchpad rather than a sketchbook.
+     *
+     * The editor is otherwise the same screen — same canvas, same tray, same
+     * pages — so this drives only what the rail offers and where the way out
+     * leads. It is set before the rail is next drawn and never read by anything
+     * that writes.
+     */
+    private var isScratchpad = false
+
+    /** Outlives this screen, so a flush is never cut short by leaving it. */
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Whether the screen has already been asked for this visit.
+     *
+     * Not "whether it is held" — whether it has been *asked for*. The system's
+     * own confirmation is what makes the difference: it takes the window focus,
+     * and the focus change it gives back on dismissal is the same one that would
+     * ask again. A refusal has to stick for the visit, or there is no way out of
+     * the dialog. [onStart] clears it, so a later visit may ask again — though a
+     * lock still held from the last one means it never gets that far.
+     */
+    private var screenAsked = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        keepBackGestureOffTheEdges()
 
         buildRail()
         setupTray()
         binding.btnShowRail.setOnClickListener { setRailVisible(true) }
+        binding.layerAdd.setOnClickListener { addLayer() }
+        binding.folderAdd.setOnClickListener { addFolder() }
+        binding.canvas.onLayersChanged = {
+            refreshLayers()
+            // The rows carry the arrangement, which is why a page loads already
+            // arranged and the moves on the timeline are not replayed. So the
+            // rows have to follow every rearrangement, including the ones an undo
+            // makes. Unchanged rows are skipped, so saying it often costs little.
+            persistStack()
+        }
+        applyOrientation()
 
         binding.canvas.tool = tool
         binding.canvas.strokeColor = color
@@ -169,9 +239,1317 @@ class MainActivity : AppCompatActivity() {
         updateRail()
     }
 
+    override fun onStart() {
+        super.onStart()
+        // A fresh visit to the editor asks for the screen again, whatever the
+        // answer was last time — including an unpin the artist did by hand.
+        screenAsked = false
+        val displays = getSystemService(android.hardware.display.DisplayManager::class.java)
+        displays?.registerDisplayListener(displayListener, android.os.Handler(android.os.Looper.getMainLooper()))
+        applyOrientation()
+        // Opened here rather than in onCreate: the document is sealed whenever the
+        // editor is not in front of the user, so coming back has to reopen it.
+        if (session == null) attachDocument()
+    }
+
+    /**
+     * Seals the document on the way out.
+     *
+     * A `.soil` must not be left with a `-wal` beside it — a file browser should
+     * show sketchbooks and nothing else — so the file is genuinely closed when the
+     * editor stops, not merely flushed. The snapshots are taken here, on the main
+     * thread, while those bitmaps are certainly still alive; the writing happens
+     * on a scope that outlives this screen.
+     */
+    override fun onStop() {
+        super.onStop()
+        getSystemService(android.hardware.display.DisplayManager::class.java)
+            ?.unregisterDisplayListener(displayListener)
+        val open = session ?: return
+        session = null
+        detachCanvasHooks()
+
+        val paint = if (open.isDirty) binding.canvas.paintSnapshot() else null
+        val cover = if (open.isDirty) binding.canvas.coverSnapshot() else null
+        applicationScope.launch { open.close(paint, cover) }
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) hideSystemBars()
+        if (hasFocus) {
+            hideSystemBars()
+            holdTheScreen()
+        }
+    }
+
+    /**
+     * Binds the canvas to a document on disk.
+     *
+     * Until the library screen exists there is nothing to choose from, so this
+     * opens whatever was last open and creates a sketchbook if there isn't one.
+     * Painting before it resolves is fine: the ops that arrive first are queued in
+     * the canvas's own history and this only starts recording from the moment it
+     * attaches — Phase 12 is what makes the two halves meet on load.
+     */
+    private fun attachDocument() {
+        lifecycleScope.launch {
+            val pointer = LastOpen.load(this@MainActivity)
+            val wantsScratch = pointer?.kind == LastOpen.Kind.SCRATCHPAD
+            // Before the open, not after: the rail should already be the
+            // scratchpad's while the document is still being read off disk.
+            isScratchpad = wantsScratch
+            constrainTools()
+            val opened = runCatching {
+                if (wantsScratch) {
+                    Scratchpad.open()
+                } else {
+                    DocumentSession.openExisting(this@MainActivity, pointer?.documentId)
+                }
+            }.getOrNull()
+
+            // Nothing to edit — the book this pointer named has been deleted, or
+            // was never there. The library is the answer to that; minting a
+            // replacement book is not.
+            if (opened == null) {
+                LastOpen.clear(this@MainActivity)
+                openLibrary()
+                finish()
+                return@launch
+            }
+
+            session = opened
+            rememberWhereWeAre()
+
+            // Wired before the load, unlike the edit hooks below: this one is not
+            // an edit, and the restore it reports on happens during the load.
+            // A page drawn on another tablet is fitted to this one on the way in,
+            // and what goes back out has to be put back the way it came.
+            binding.canvas.onPageSpace = { view, buffer ->
+                opened.toFileView = view.inverse()
+                opened.toFileBuffer = buffer.inverse()
+                opened.drawnSize = binding.canvas.drawnWidth to binding.canvas.drawnHeight
+            }
+
+            // Load before wiring the hooks, so restoring a page does not read back
+            // as a fresh burst of edits to write straight out again.
+            runCatching { opened.load() }.getOrNull()?.let(::applyPage)
+
+            binding.canvas.onOpCommitted = { opened.record(it) }
+            binding.canvas.onUndone = { layer -> opened.recordUndo(layer) }
+            binding.canvas.onRedone = { layer -> opened.recordRedo(layer) }
+            binding.canvas.onBrushLoadChanged = { recordPalette() }
+            binding.canvas.onPageTurn = ::turnPage
+            refreshPageLabel()
+            refreshClipboard()
+        }
+    }
+
+    /** "3/8" — which page of how many, shown on the rail's Pages button. */
+    private var pageLabel = "–"
+
+    /**
+     * The page strip.
+     *
+     * A dialog rather than a permanent strip: the canvas is drawn at true physical
+     * size and centred, and permanently giving up an edge of the screen to
+     * navigation would shrink the sheet on the smallest devices this targets.
+     */
+    private fun showPages() {
+        val open = session ?: return
+        lifecycleScope.launch {
+            val pages = open.pages()
+            val row = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(dp(16), dp(8), dp(16), dp(8))
+            }
+            val dialog = MaterialAlertDialogBuilder(this@MainActivity)
+                .setTitle("Pages")
+                .setView(
+                    android.widget.HorizontalScrollView(this@MainActivity).apply {
+                        isHorizontalScrollBarEnabled = false
+                        addView(row)
+                    },
+                )
+                .setNeutralButton("Add page") { _, _ -> addPage() }
+                .setNegativeButton("Close", null)
+                .create()
+
+            pages.forEach { page -> row.addView(pageCard(page, pages.size, dialog)) }
+            dialog.show()
+        }
+    }
+
+    private fun pageCard(
+        page: DocumentSession.PageInfo,
+        total: Int,
+        dialog: androidx.appcompat.app.AlertDialog,
+    ): View {
+        val thumb = android.widget.ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(120), dp(84))
+            scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+            setBackgroundColor(0xFFEFEDE7.toInt())
+            page.thumbnail?.let(::setImageBitmap)
+        }
+        val label = TextView(this).apply {
+            text = "${page.index + 1}"
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTextColor(if (page.isCurrent) 0xFF2E7D32.toInt() else 0xFF6B7075.toInt())
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            // The page you are on is outlined, because a strip of thumbnails with
+            // nothing marked is a strip you have to count along.
+            if (page.isCurrent) setBackgroundColor(0x1A2E7D32)
+            addView(thumb)
+            addView(label)
+            setOnClickListener {
+                dialog.dismiss()
+                switchToPage(page.id)
+            }
+            setOnLongClickListener {
+                dialog.dismiss()
+                pageActions(page, total)
+                true
+            }
+        }
+    }
+
+    private fun pageActions(page: DocumentSession.PageInfo, total: Int) {
+        val open = session ?: return
+        val actions = buildList {
+            add("Duplicate")
+            if (page.index > 0) add("Move left")
+            if (page.index < total - 1) add("Move right")
+            if (total > 1) add("Delete")
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Page ${page.index + 1}")
+            .setItems(actions.toTypedArray()) { _, which ->
+                lifecycleScope.launch {
+                    when (actions[which]) {
+                        "Duplicate" -> open.duplicatePage(page.id, settledSnapshot())?.let(::applyPage)
+                        "Move left" -> open.movePage(page.id, page.index - 1)
+                        "Move right" -> open.movePage(page.id, page.index + 1)
+                        // Nothing to snapshot — the page is going — but a page
+                        // still arrives afterwards, onto the same buffers.
+                        "Delete" -> {
+                            binding.canvas.settle()
+                            open.deletePage(page.id)?.let(::applyPage)
+                        }
+                    }
+                    refreshPageLabel()
+                }
+            }
+            .show()
+    }
+
+    private fun addPage() {
+        val open = session ?: return
+        lifecycleScope.launch {
+            // A new page starts on the paper you are already using — the same
+            // reasoning as a real sketchbook, where the next sheet is the same
+            // stock as this one.
+            val surface = SurfaceOp(
+                currentSurface(), plainColor, canvasParams, watercolorParams, woodParams,
+                stoneParams, concreteParams, metalParams, chalkboardParams,
+            )
+            open.addPage(surface, java.util.Random().nextLong(), settledSnapshot())
+                ?.let(::applyPage)
+            refreshPageLabel()
+        }
+    }
+
+    private fun switchToPage(id: String) {
+        val open = session ?: return
+        lifecycleScope.launch {
+            open.switchTo(id, settledSnapshot())?.let(::applyPage)
+            refreshPageLabel()
+        }
+    }
+
+    /**
+     * Prev/next, driven by a finger swept across the sheet.
+     *
+     * Stops at the covers rather than wrapping: a sketchbook has a first page and
+     * a last one, and arriving at page 1 by swiping past page 40 would be a
+     * teleport, not a page turn.
+     */
+    private fun turnPage(direction: PageTurn) {
+        val open = session ?: return
+        lifecycleScope.launch {
+            val pages = open.pages()
+            val here = pages.indexOfFirst { it.isCurrent }
+            if (here < 0) return@launch
+            val there = if (direction == PageTurn.FORWARD) here + 1 else here - 1
+            val target = pages.getOrNull(there) ?: return@launch
+            open.switchTo(target.id, settledSnapshot())?.let(::applyPage)
+            refreshPageLabel()
+        }
+    }
+
+    /**
+     * The page as it finally stands, with nothing still on its way onto it.
+     *
+     * Every path that puts a page away goes through here. Loading the next page
+     * recycles the layer bitmaps and empties the history, and a bake is off-thread
+     * — so without the wait, a page turned a moment too early either killed the
+     * bake on a recycled bitmap or delivered its stroke to the page that had just
+     * arrived. See `PaintCanvasView.settle`.
+     */
+    private suspend fun settledSnapshot(): Bitmap? {
+        binding.canvas.settle()
+        return binding.canvas.paintSnapshot()
+    }
+
+    /**
+     * Copies what the selection wholly encloses.
+     *
+     * The count is reported because a copy that took nothing looks exactly like
+     * one that worked: whole ops are copied, so a selection whose strokes all
+     * cross its edge encloses no *marks* however much paint it covers.
+     */
+    private fun copySelection() {
+        val open = session ?: return
+        val (mask, scale) = binding.canvas.selectionSnapshot() ?: return
+        lifecycleScope.launch {
+            val count = runCatching { open.copySelection(mask, scale) }.getOrDefault(0)
+            mask.recycle()
+            clipboardCount = count
+            updateRail()
+            Snackbar.make(
+                binding.root,
+                if (count > 0) {
+                    resources.getQuantityString(R.plurals.editor_copied, count, count)
+                } else {
+                    getString(R.string.editor_copied_nothing)
+                },
+                Snackbar.LENGTH_SHORT,
+            ).show()
+        }
+    }
+
+    /**
+     * Pastes the clipboard onto this page, where the marks were.
+     *
+     * Told rather than shown, because a paste back onto the page it came from
+     * lands exactly on top of the original and is otherwise invisible.
+     */
+    private fun paste() {
+        val open = session ?: return
+        lifecycleScope.launch {
+            val ops = runCatching { open.clipboardOps() }.getOrDefault(emptyList())
+            if (ops.isEmpty()) {
+                clipboardCount = 0
+                updateRail()
+                return@launch
+            }
+            binding.canvas.pasteOps(ops)
+            Snackbar.make(
+                binding.root,
+                resources.getQuantityString(R.plurals.editor_pasted, ops.size, ops.size),
+                Snackbar.LENGTH_SHORT,
+            ).show()
+        }
+    }
+
+    /**
+     * Sends this page somewhere else — a copy, never a move.
+     *
+     * The page stays where it is. "Send" reads as though it leaves, and it would
+     * be a strange thing to do to somebody's only copy of a drawing; what this
+     * does is put a duplicate on the shelf they asked for.
+     */
+    private fun sendPage() {
+        val open = session ?: return
+        val destinations = buildList {
+            if (!isScratchpad) add(getString(R.string.send_to_scratchpad))
+            add(getString(R.string.send_to_sketchbook))
+            add(getString(R.string.send_to_new_sketchbook))
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.send_title)
+            .setItems(destinations.toTypedArray()) { _, which ->
+                when (destinations[which]) {
+                    getString(R.string.send_to_scratchpad) -> sendToScratchpad(open)
+                    getString(R.string.send_to_sketchbook) -> pickSketchbook(open)
+                    else -> promptNewSketchbook(open)
+                }
+            }
+            .show()
+    }
+
+    private fun sendToScratchpad(open: DocumentSession) {
+        lifecycleScope.launch {
+            // Flushed first: a page is sent as it stands on disk, and the last
+            // stroke may still be sitting in the debounce window.
+            runCatching { open.flush() }
+            val ok = runCatching { PageTransfer.toScratchpad(open.repo, open.pageId) }.getOrDefault(false)
+            toast(if (ok) getString(R.string.send_done, Scratchpad.NAME) else getString(R.string.send_failed))
+        }
+    }
+
+    /**
+     * The books this page could go to — every one except the one it is already
+     * in, which is what Duplicate Page is for and what an open file cannot
+     * safely be.
+     */
+    private fun pickSketchbook(open: DocumentSession) {
+        lifecycleScope.launch {
+            val index = IndexGate.awaitReady()
+            val books = index.allSketchbooks().filter { it.id != open.documentId }
+            if (books.isEmpty()) {
+                toast(getString(R.string.send_no_books))
+                return@launch
+            }
+            MaterialAlertDialogBuilder(this@MainActivity)
+                .setTitle(R.string.send_to_sketchbook)
+                .setItems(books.map { it.name }.toTypedArray()) { _, which ->
+                    val book = books[which]
+                    lifecycleScope.launch {
+                        runCatching { open.flush() }
+                        val ok = runCatching {
+                            PageTransfer.toSketchbook(this@MainActivity, open.repo, open.pageId, book.id)
+                        }.getOrDefault(false)
+                        toast(if (ok) getString(R.string.send_done, book.name) else getString(R.string.send_failed))
+                    }
+                }
+                .show()
+        }
+    }
+
+    private fun promptNewSketchbook(open: DocumentSession) {
+        val input = EditText(this).apply {
+            hint = getString(R.string.library_name_hint)
+            setText(getString(R.string.library_default_name))
+            setSingleLine()
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.send_to_new_sketchbook)
+            .setView(FrameLayout(this).apply { setPadding(dp(24), dp(8), dp(24), 0); addView(input) })
+            .setPositiveButton(R.string.library_create) { _, _ ->
+                val name = input.text.toString().trim().ifEmpty { getString(R.string.library_default_name) }
+                lifecycleScope.launch {
+                    runCatching { open.flush() }
+                    val book = runCatching {
+                        // The new book takes this page's size, so the drawing
+                        // arrives at the size it was drawn.
+                        PageTransfer.toNewSketchbook(
+                            this@MainActivity, open.repo, open.pageId, name, canvasSize,
+                        )
+                    }.getOrNull()
+                    toast(
+                        if (book != null) getString(R.string.send_done, book.name)
+                        else getString(R.string.send_failed),
+                    )
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun toast(message: String) =
+        Snackbar.make(binding.root, message, Snackbar.LENGTH_SHORT).show()
+
+    private fun refreshClipboard() {
+        val open = session ?: return
+        lifecycleScope.launch {
+            clipboardCount = runCatching { open.clipboardCount() }.getOrDefault(0)
+            updateRail()
+        }
+    }
+
+    private fun refreshPageLabel() {
+        val open = session ?: return
+        lifecycleScope.launch {
+            val pages = open.pages()
+            val index = pages.indexOfFirst { it.isCurrent }
+            pageLabel = if (index >= 0) "${index + 1}/${pages.size}" else "${pages.size}"
+            updateRail()
+        }
+    }
+
+    /** Puts a saved page back: its paper, its palette, and its whole history. */
+    private fun applyPage(page: DocumentSession.PageSnapshot) {
+        // Size first: the buffers have to be the right shape before any pixels or
+        // ops land on them.
+        canvasSize = page.canvasSize
+        binding.canvas.restoreCanvasSize(page.canvasSize)
+
+        val s = page.surface
+        surfaceIndex = AVAILABLE_SURFACES.indexOf(s.kind).coerceAtLeast(0)
+        plainColor = s.plainColor
+        canvasParams = s.canvas
+        watercolorParams = s.watercolor
+        woodParams = s.wood
+        stoneParams = s.stone
+        concreteParams = s.concrete
+        metalParams = s.metal
+        chalkboardParams = s.chalkboard
+
+        // The seed is the sheet's own: it is what makes this page's paper this
+        // paper, and regenerating it would quietly change the artwork's ground.
+        page.surfaceSeed?.let { binding.canvas.restoreSurfaceSeed(it) }
+        binding.canvas.setInitialSurface(
+            s.kind, s.plainColor, s.canvas, s.watercolor, s.wood, s.stone,
+            s.concrete, s.metal, s.chalkboard,
+        )
+
+        tray.restorePots(page.pots)
+        tray.restoreMixture(page.mixture)
+        binding.tray.tray = tray
+        if (!page.load.recipe.isEmpty) {
+            binding.canvas.loadBrush(page.load)
+            // A page remembers the colour it was last painted with. While the rail
+            // offers no way to change colour, that memory must not become one:
+            // restoring it would put a colour on a locked palette through the back
+            // door, and it would arrive looking like a bug.
+            if (Focus.SHOW_COLOR) color = page.load.color
+        }
+        if (!Focus.SHOW_COLOR) onColorChanged(Focus.COLOR)
+
+        // The stack before the paint: restore() folds ops into layers, so the
+        // layers have to be there to be folded into.
+        // The pointer follows the page, not only the document. Turning a page and
+        // then losing the process used to bring you back to whichever page you had
+        // opened the book on, because the only time anyone wrote down where you
+        // were was the moment the book opened.
+        rememberWhereWeAre()
+
+        if (page.layers.isNotEmpty()) {
+            binding.canvas.restoreLayers(page.layers, page.activeLayer, page.folders, page.shape)
+        }
+        binding.canvas.restore(
+            page.committed, page.undone, page.cachedPaint, page.drawnW, page.drawnH,
+        )
+        refreshLayers()
+        updateRail()
+    }
+
+    /** Writes down where the user is, so a process that dies puts them back. */
+    private fun rememberWhereWeAre() {
+        val open = session ?: return
+        LastOpen.save(
+            this,
+            if (isScratchpad) {
+                LastOpen.Pointer(LastOpen.Kind.SCRATCHPAD, null, open.pageId)
+            } else {
+                LastOpen.Pointer(LastOpen.Kind.SKETCHBOOK, open.documentId, open.pageId)
+            },
+        )
+    }
+
+    /**
+     * Snapshots the tray into the document.
+     *
+     * Called on every change including the brush picking up colour mid-stroke;
+     * the session keeps only the latest and writes it with the next batch, so a
+     * dirty brush costs one write rather than hundreds.
+     */
+    private fun recordPalette() {
+        session?.recordPalette(tray.pots, tray.mixture, binding.canvas.brushLoad)
+    }
+
+    /**
+     * Flushes early, before the seal.
+     *
+     * `onStop` does the real work, but a process can be killed between pause and
+     * stop — and this is also the last callback a *force*-stop respects on some
+     * devices. Flushing here narrows the window in which recent strokes exist only
+     * in memory to the debounce interval.
+     */
+    override fun onPause() {
+        super.onPause()
+        val open = session ?: return
+        applicationScope.launch { open.flush() }
+    }
+
+    // --- Layers ---------------------------------------------------------------
+
+    /**
+     * Opens the layers panel, and closes the palette if it is out.
+     *
+     * One at a time. They are two opaque cards over the same sheet, and they can
+     * still land on each other — the palette hangs off the rail in the glass's
+     * space while the panel sits in the artist's, so how close they come depends on
+     * which way the tablet is being held, and the panel is drawn over the palette
+     * when they meet. Nothing is lost by it either way: you mix a colour and then
+     * paint with it, you choose a sheet and then draw on it. Neither is a thing you
+     * do while doing the other.
+     */
+    private fun toggleLayerPanel() {
+        val showing = binding.layerPanel.visibility == View.VISIBLE
+        binding.layerPanel.visibility = if (showing) View.GONE else View.VISIBLE
+        if (!showing) {
+            if (trayOut) setTrayOut(false)
+            refreshLayers()
+        }
+        updateRail()
+    }
+
+    /** True while the layers panel is up. */
+    private val layersShowing: Boolean
+        get() = binding.layerPanel.visibility == View.VISIBLE
+
+    /**
+     * Redraws the list from the canvas.
+     *
+     * Rebuilt wholesale rather than diffed: a page holds a handful of layers, and
+     * a list that is regenerated cannot drift out of step with what it describes.
+     *
+     * The canvas hands over the stack already top-down and already knowing which
+     * rows a shut folder is hiding, so this walks a flat list and indents by the
+     * depth it is told. The panel does not model the tree; it draws one.
+     */
+    private fun refreshLayers() {
+        val list = binding.layerList
+        list.removeAllViews()
+        rowViews.clear()
+        edges.clear()
+        val canvas = binding.canvas
+        val entries = canvas.stackEntries()
+        for (row in canvas.stackRows()) {
+            val entry = entries.getOrNull(row) ?: continue
+            val depth = canvas.stackDepth(row)
+            val view = if (entry.isFolder) folderRow(entry.id, depth, row) else layerRow(entry.id, depth, row)
+            rowViews[row] = view
+            list.addView(view)
+        }
+        // One more edge past the last row: the bottom of the stack is a place a
+        // drop can land, and it needs somewhere to be drawn.
+        tailEdge = rowEdge().also { list.addView(it) }
+    }
+
+    /** Row containers and their top edges, by their place in the stack. */
+    private val rowViews = mutableMapOf<Int, View>()
+    private val edges = mutableMapOf<Int, View>()
+    private var tailEdge: View? = null
+
+    /**
+     * The strip above a row, which is two things at once.
+     *
+     * At rest it draws the hairline that separates one row from the next. Under a
+     * drag it fills solid, and that is the mark saying a drop lands *here*. They
+     * are the same view because they are the same place — the seam between two
+     * rows — and a separate indicator would have to be positioned to agree with a
+     * separator that was already there.
+     */
+    private fun rowEdge(depth: Int = 0): View = View(this).apply {
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3))
+        background = hairline(depth)
+        // Kept so the strip can be put back to a rule after being a drop mark.
+        tag = depth
+    }
+
+    /**
+     * A 1dp rule, centred in the 3dp strip so the solid state has room to grow
+     * into, and inset to match the row it sits above.
+     *
+     * The inset is what makes a folder's contents read as a block: the rules
+     * between them start where they start, so the run of them is visibly one
+     * thing rather than a stretch of evenly divided list.
+     */
+    private fun hairline(depth: Int): Drawable =
+        InsetDrawable(ColorDrawable(0x1F000000), indentFor(depth) + dp(4), dp(1), dp(4), dp(1))
+
+    /** How far in a row sits for each folder above it. */
+    private fun indentFor(depth: Int) = dp(14 * depth)
+
+    private fun layerRow(id: String, depth: Int, row: Int): View {
+        val canvas = binding.canvas
+        val index = canvas.indexOfLayer(id)
+        if (index < 0) return View(this)
+        val selected = index == canvas.activeLayerIndex
+        val visible = canvas.layerVisibleAt(index)
+        // A layer whose folder is shut over it is showing nothing either, and
+        // saying so with the same dimming is how the panel stays honest about
+        // what is on the page.
+        val showing = visible && !canvas.layerHiddenByFolder(index)
+
+        val eye = iconButton(
+            if (visible) R.drawable.ic_eye else R.drawable.ic_eye_off,
+            getString(if (visible) R.string.layers_hide else R.string.layers_reveal),
+        ) { setLayerVisible(index, !visible) }
+
+        val name = TextView(this).apply {
+            text = canvas.layerNameAt(index)
+            textSize = 14f
+            // A layer that cannot be drawn on should not look like one that can.
+            alpha = if (showing) 1f else 0.45f
+            setTextColor(if (selected) 0xFF1B5E20.toInt() else 0xFF37474F.toInt())
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
+        val percent = TextView(this).apply {
+            text = percentOf(canvas.layerOpacityAt(index))
+            textSize = 12f
+            gravity = Gravity.END
+            setTextColor(0xFF6B7075.toInt())
+            width = dp(38)
+            isClickable = true
+            background = rippleBg()
+            // Typed, because a slider is for judging by eye and a number you
+            // already know is faster said than found.
+            setOnClickListener { typeOpacity(index) }
+        }
+
+        val handle = iconButton(R.drawable.ic_drag, getString(R.string.layers_reorder)) {}
+
+        val slider = opacitySlider(canvas.layerOpacityAt(index), percent) { value, done ->
+            canvas.setLayerOpacity(index, value)
+            if (done) {
+                canvas.commitLayerOpacity(index)
+                persistStack()
+            }
+        }
+
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(eye)
+            addView(name)
+            addView(percent)
+            addView(handle)
+        }
+
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(4) + indentFor(depth), dp(2), dp(4), dp(2))
+            background = if (selected) selectedBg() else rippleBg()
+            addView(top)
+            addView(slider)
+            setOnClickListener {
+                when (canvas.selectLayer(index)) {
+                    PaintCanvasView.LayerPick.OK -> refreshLayers()
+                    PaintCanvasView.LayerPick.HIDDEN -> toast(getString(R.string.layers_hidden))
+                    PaintCanvasView.LayerPick.DRAWING -> toast(getString(R.string.layers_drawing))
+                    PaintCanvasView.LayerPick.FLOATING -> toast(getString(R.string.layers_floating))
+                }
+            }
+            setOnLongClickListener { stackMenu(id); true }
+        }
+
+        return rowContainer(handle, id, row, depth, body)
+    }
+
+    /**
+     * A row, wrapped with the seam above it, and wired to be dragged.
+     *
+     * The wrapper exists so the drag has something whole to move: the finger
+     * carries the row's own view, seam and all, rather than the panel redrawing
+     * around it.
+     */
+    private fun rowContainer(handle: View, id: String, row: Int, depth: Int, body: View): View {
+        val edge = rowEdge(depth).also { edges[row] = it }
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(edge)
+            addView(body)
+        }
+        attachDragHandle(handle, id, row, container)
+        return container
+    }
+
+    /**
+     * A folder's row: the same shape as a layer's, one notch further in.
+     *
+     * Deliberately the same height and the same controls, because it is the same
+     * two decisions — is this showing, and how strongly — and because the drag
+     * that reorders the stack measures itself in rows and wants them uniform.
+     * The twisty replaces nothing; it takes the place a layer leaves empty.
+     */
+    private fun folderRow(id: String, depth: Int, row: Int): View {
+        val canvas = binding.canvas
+        val folder = canvas.folderAt(id) ?: return View(this)
+
+        val twisty = iconButton(
+            if (folder.collapsed) R.drawable.ic_chevron_right else R.drawable.ic_chevron_down,
+            getString(if (folder.collapsed) R.string.folders_expand else R.string.folders_collapse),
+        ) {
+            canvas.setFolderCollapsed(id, !folder.collapsed)
+            persistStack()
+            refreshLayers()
+        }
+
+        val eye = iconButton(
+            if (folder.visible) R.drawable.ic_eye else R.drawable.ic_eye_off,
+            getString(if (folder.visible) R.string.folders_hide else R.string.folders_reveal),
+        ) {
+            canvas.setFolderVisible(id, !folder.visible)
+            refreshLayers()
+        }
+
+        val name = TextView(this).apply {
+            text = folder.name
+            textSize = 14f
+            alpha = if (folder.visible) 1f else 0.45f
+            setTextColor(0xFF37474F.toInt())
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
+        val percent = TextView(this).apply {
+            text = percentOf(folder.opacity)
+            textSize = 12f
+            gravity = Gravity.END
+            setTextColor(0xFF6B7075.toInt())
+            width = dp(38)
+        }
+
+        val handle = iconButton(R.drawable.ic_drag, getString(R.string.folders_reorder)) {}
+
+        val slider = opacitySlider(folder.opacity, percent) { value, done ->
+            canvas.setFolderOpacity(id, value)
+            if (done) {
+                canvas.commitFolderOpacity(id)
+                persistStack()
+            }
+        }
+
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(twisty)
+            addView(eye)
+            addView(name)
+            addView(percent)
+            addView(handle)
+        }
+
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(4) + indentFor(depth), dp(2), dp(4), dp(2))
+            background = rippleBg()
+            addView(top)
+            addView(slider)
+            setOnClickListener {
+                canvas.setFolderCollapsed(id, !folder.collapsed)
+                persistStack()
+                refreshLayers()
+            }
+            setOnLongClickListener { stackMenu(id); true }
+        }
+
+        return rowContainer(handle, id, row, depth, body)
+    }
+
+    /**
+     * The dial, wherever it appears.
+     *
+     * [onChange] is told the value and whether the finger has left it: everything
+     * in between goes straight to the canvas so the page answers while you move,
+     * and only the release becomes a step on the timeline — a drag is one
+     * decision, not a hundred.
+     */
+    private fun opacitySlider(
+        start: Float,
+        percent: TextView,
+        onChange: (value: Float, done: Boolean) -> Unit,
+    ): Slider = Slider(this).apply {
+        valueFrom = 0f
+        valueTo = 100f
+        value = (start * 100f).coerceIn(0f, 100f)
+        addOnChangeListener { _, v, fromUser ->
+            if (!fromUser) return@addOnChangeListener
+            onChange(v / 100f, false)
+            percent.text = percentOf(v / 100f)
+        }
+        addOnSliderTouchListener(object : com.google.android.material.slider.Slider.OnSliderTouchListener {
+            override fun onStartTrackingTouch(slider: com.google.android.material.slider.Slider) = Unit
+
+            override fun onStopTrackingTouch(slider: com.google.android.material.slider.Slider) {
+                onChange(slider.value / 100f, true)
+            }
+        })
+    }
+
+    private fun percentOf(opacity: Float): String = "${(opacity * 100f).roundToInt()}%"
+
+    private fun setLayerVisible(index: Int, visible: Boolean) {
+        binding.canvas.setLayerVisible(index, visible)
+        persistStack()
+        refreshLayers()
+    }
+
+    /**
+     * Writes the arrangement — folders and all — back to the file.
+     *
+     * One call for the whole shape rather than one per edit, because the canvas
+     * is the authority on it and this makes the file agree whatever changed. It
+     * runs on every change to the stack, an undo's included.
+     */
+    private fun persistStack() {
+        val open = session ?: return
+        val canvas = binding.canvas
+        val entries = canvas.stackEntries()
+        val states = entries.mapNotNull { entry ->
+            val folder = canvas.folderAt(entry.id)
+            val layer = canvas.layerAt(entry.id)
+            when {
+                folder != null -> DocumentSession.EntryState(
+                    folder.id, true, folder.name, folder.visible, folder.opacity, folder.collapsed,
+                )
+                layer != null -> DocumentSession.EntryState(
+                    layer.id, false, layer.name, layer.visible, layer.opacity, collapsed = false,
+                )
+                else -> null
+            }
+        }
+        lifecycleScope.launch { open.recordStack(entries, states) }
+    }
+
+    private fun typeOpacity(index: Int) {
+        val field = inchField(binding.canvas.layerOpacityAt(index) * 100f)
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.layers_opacity)
+            .setView(vbox(fieldRow(getString(R.string.layers_opacity), field, unit = "%")))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.library_size_use) { _, _ ->
+                val pct = field.inches(binding.canvas.layerOpacityAt(index) * 100f).coerceIn(0f, 100f)
+                binding.canvas.setLayerOpacity(index, pct / 100f)
+                binding.canvas.commitLayerOpacity(index)
+                persistStack()
+                refreshLayers()
+            }
+            .show()
+    }
+
+    /**
+     * Drag to reorder, and to file.
+     *
+     * The handle owns the gesture rather than the row, so a drag can never be
+     * mistaken for the tap that selects. Rows are a uniform height, so where the
+     * finger is tells you which position it is over without measuring anything.
+     *
+     * What lands is not just a position now: the gap a row is dropped in belongs
+     * to a folder, or to nothing, and dragging into a folder is the same gesture
+     * as dragging past one. Both ends of the gap are handed to the canvas, which
+     * knows which of them catches it — this only counts rows.
+     *
+     * [row] is the position in the panel, which is the stack's own index. The
+     * list reads top-down and so does the stack, so a row dragged down moves
+     * further down the stack and the arithmetic is finally the plain kind.
+     */
+    private fun attachDragHandle(handle: View, id: String, row: Int, container: View) {
+        val list = binding.layerList
+        var startY = 0f
+        var startX = 0f
+        // Whether the gesture being finished is one that started here.
+        //
+        // A move rebuilds the rows, and the finger is still down: the release
+        // then lands on a *replacement* handle that never saw the press, which
+        // read the missing start as an enormous drag and undid the move that had
+        // just been made. One flag, and a stray ending belongs to nobody.
+        var mine = false
+        handle.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startY = event.rawY
+                    startX = event.rawX
+                    mine = true
+                    // The list scrolls, and a scrolling parent takes any vertical
+                    // drag off its children the moment it passes touch slop — the
+                    // handle then gets a cancel where it expected a release, and
+                    // reads it as having gone nowhere. Holding the gesture here
+                    // for the length of the drag is the whole fix, and it is why
+                    // reordering by dragging only ever worked on a short list.
+                    v.parent?.requestDisallowInterceptTouchEvent(true)
+                    lift(container)
+                    true
+                }
+
+                // The row travels with the finger, and the seam it would drop into
+                // lights up as it goes. Neither changes anything yet: this is the
+                // question being asked, and the release is the answer.
+                MotionEvent.ACTION_MOVE -> {
+                    if (mine) {
+                        container.translationY = event.rawY - startY
+                        showLanding(
+                            landingFor(id, row, movedBy(list, event, startY), stepsOutBy(event, startX)),
+                        )
+                    }
+                    true
+                }
+
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    setDown(container)
+                    clearLanding()
+                    if (!mine) return@setOnTouchListener true
+                    mine = false
+                    val moved = movedBy(list, event, startY)
+                    val stepsOut = stepsOutBy(event, startX)
+                    if (moved != 0 || stepsOut != 0) dropAfterDrag(id, row, moved, stepsOut)
+                    true
+                }
+                else -> true
+            }
+        }
+    }
+
+    /** How many rows the finger has travelled. Rows are uniform, so this is division. */
+    private fun movedBy(list: View, event: MotionEvent, startY: Float): Int {
+        val rowHeight = ((list as? ViewGroup)?.getChildAt(0)?.height ?: 1).coerceAtLeast(1)
+        return ((event.rawY - startY) / rowHeight).roundToInt()
+    }
+
+    /**
+     * How many folders leftward the drag has reached out of.
+     *
+     * Rightward is nothing, because there is no room for it: the panel is pinned
+     * to the right edge and the handle sits at its rim. It needs none — the
+     * deepest reading of a seam is already the default, so going in is where you
+     * start and coming out is the thing you have to ask for.
+     */
+    private fun stepsOutBy(event: MotionEvent, startX: Float): Int =
+        ((startX - event.rawX) / dp(NEST_REACH)).toInt().coerceAtLeast(0)
+
+    /** Picked up: off the page, and see-through enough to read what is under it. */
+    private fun lift(container: View) {
+        container.alpha = 0.85f
+        container.elevation = dp(8).toFloat()
+        container.scaleX = 1.02f
+        container.scaleY = 1.02f
+    }
+
+    private fun setDown(container: View) {
+        container.alpha = 1f
+        container.elevation = 0f
+        container.scaleX = 1f
+        container.scaleY = 1f
+        container.translationY = 0f
+    }
+
+    /**
+     * How far sideways a drag reaches per folder it comes out of.
+     *
+     * Depth needs its own axis. A seam in a list of rows is one place on screen
+     * and often several places in the stack — the gap under a folder's last layer
+     * is the bottom of that folder and equally the ground beside it — and a
+     * gesture with only one direction can name only one of them. Sideways is the
+     * spare direction a list of rows is not using, and it says the thing vertical
+     * cannot: how deep, independently of where.
+     */
+    private val NEST_REACH = 36
+
+    /**
+     * Where a dragged row ends up.
+     *
+     * Counted in *shown* rows, because those are the ones under the finger: a
+     * shut folder is one row however much is inside it, and dragging past it
+     * passes the whole thing rather than landing in the middle of something that
+     * is not on screen.
+     *
+     * The block being dragged is taken out of the reckoning first, and that is
+     * the part worth spelling out. A folder travels with its contents, so the
+     * rows it holds are not places it can be dropped — leave them in and a folder
+     * nudged down one row is asked to go inside itself, which is refused, and the
+     * drag does nothing at all for no visible reason. Take them out and the count
+     * is over the rows that are actually staying put, which is what the finger
+     * was measuring against anyway.
+     */
+    /**
+     * Where a drag would put the thing being dragged.
+     *
+     * Worked out on its own so that showing the answer and acting on it cannot
+     * disagree: the mark drawn under the finger comes from this, and so does the
+     * move made when the finger lifts.
+     *
+     * Down the list chooses the seam; across it chooses which of that seam's
+     * meanings. A seam at the edge of a folder has more than one — the gap under
+     * a folder's last layer is the bottom of that folder and also the place after
+     * it — so the vertical alone cannot say, and every reading it cannot say is
+     * somewhere a layer cannot be put.
+     */
+    private class Landing(val to: Int, val into: String, val seam: Int?)
+
+    private fun landingFor(id: String, row: Int, moved: Int, stepsOut: Int): Landing? {
+        val canvas = binding.canvas
+        val entries = canvas.stackEntries()
+        val span = canvas.stackSpan(row)
+
+        val staying = canvas.stackRows().filterNot { it in span }
+        val from = staying.count { it < span.first }
+        val gap = (from + moved).coerceIn(0, staying.size)
+        val above = staying.getOrNull(gap - 1)
+        val below = staying.getOrNull(gap)
+
+        val into = canvas.dropInto(above, below, stepsOut)
+        // Landing back where it started is not a move, and saying so with no mark
+        // at all is how the panel admits nothing would happen.
+        if (gap == from && into == canvas.holderOf(id)) return null
+        return Landing(to = below ?: entries.size, into = into, seam = below)
+    }
+
+    private fun dropAfterDrag(id: String, row: Int, moved: Int, stepsOut: Int) {
+        val landing = landingFor(id, row, moved, stepsOut) ?: return
+        // The move puts a step on the timeline and the rows follow through
+        // onLayersChanged; nothing more to do here.
+        binding.canvas.moveInStack(id, landing.to, landing.into)
+    }
+
+    /**
+     * The seam that would catch a drop, drawn solid, starting where the thing
+     * dropped there would start — and the folder that would hold it, ringed.
+     *
+     * The inset is not decoration. One seam can mean several places, so a mark
+     * that looked the same for all of them would be showing the question rather
+     * than the answer. Where the line begins is which reading you are about to
+     * get; the ring says which folder is about to take it.
+     */
+    private fun showLanding(landing: Landing?) {
+        clearLanding()
+        if (landing == null) return
+        val canvas = binding.canvas
+        val mark = landing.seam?.let { edges[it] } ?: tailEdge
+        mark?.background = dropMark(canvas.depthInside(landing.into))
+        if (landing.into.isNotEmpty()) {
+            val holder = canvas.stackEntries().indexOfFirst { it.id == landing.into }
+            rowViews[holder]?.background = catchingBg()
+        }
+    }
+
+    private fun dropMark(depth: Int): Drawable =
+        InsetDrawable(ColorDrawable(DROP_MARK), indentFor(depth) + dp(4), 0, dp(4), 0)
+
+    private fun clearLanding() {
+        for (edge in edges.values) edge.background = hairline(edge.tag as? Int ?: 0)
+        tailEdge?.let { it.background = hairline(it.tag as? Int ?: 0) }
+        for (view in rowViews.values) view.background = null
+    }
+
+    /**
+     * The folder a drop would go into, shown as the row ringed to catch it.
+     *
+     * Outlined rather than merely tinted, because a tint is already spoken for:
+     * the selected layer wears one, in this same green, and a target that looked
+     * like a selection would be asking the eye to tell two different meanings
+     * apart by shade alone. A ring is not a fill, and reads as one thing.
+     */
+    private fun catchingBg(): Drawable = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = dp(12).toFloat()
+        setColor(0x1A3DA35A)
+        setStroke(dp(2), DROP_MARK)
+    }
+
+    private val DROP_MARK = 0xFF3DA35A.toInt()
+
+    private fun addLayer() {
+        val open = session ?: return
+        if (binding.canvas.layerCount >= Layer.MAX_PER_PAGE) {
+            toast(getString(R.string.layers_full))
+            return
+        }
+        lifecycleScope.launch {
+            val name = getString(R.string.layers_default_name, binding.canvas.layerCount + 1)
+            // Written first: a layer the canvas knows about but the file does not
+            // is paint with nowhere to be filed. Which folder it lands in is
+            // settled a moment later, when the arrangement is written back.
+            val id = open.addLayer(name) ?: run { toast(getString(R.string.layers_full)); return@launch }
+            binding.canvas.addLayer(id, name)
+            refreshLayers()
+        }
+    }
+
+    // --- Folders ---------------------------------------------------------------
+
+    private fun addFolder() {
+        val open = session ?: return
+        if (!binding.canvas.canAddFolder()) {
+            toast(getString(R.string.folders_deep))
+            return
+        }
+        lifecycleScope.launch {
+            val name = getString(R.string.folders_default_name, binding.canvas.folderCount + 1)
+            val id = open.addFolder(name)
+            binding.canvas.addFolder(id, name)
+            refreshLayers()
+        }
+    }
+
+    /**
+     * Rename or remove, on a long press — the same two for a layer as for a
+     * folder.
+     *
+     * A folder was worth naming because a name is most of what a folder is. A
+     * layer turns out to be worth naming for the opposite reason: it is full of
+     * something, and "Layer 3" says nothing about which of the three it is. Both
+     * are the same question asked of the row under your finger, so both are one
+     * menu rather than two conventions to remember.
+     */
+    private fun stackMenu(id: String) {
+        val canvas = binding.canvas
+        val folder = canvas.folderAt(id)
+        val name = folder?.name ?: canvas.layerAt(id)?.name ?: return
+        val remove = getString(if (folder != null) R.string.folders_delete else R.string.layers_delete)
+        MaterialAlertDialogBuilder(this)
+            .setTitle(name)
+            .setItems(arrayOf(getString(R.string.stack_rename), remove)) { _, which ->
+                when {
+                    which == 0 -> renameEntry(id)
+                    folder != null -> deleteFolder(id)
+                    else -> deleteLayer(canvas.indexOfLayer(id))
+                }
+            }
+            .show()
+    }
+
+    /**
+     * A name, and nothing else about the row.
+     *
+     * Off the undo timeline, like a folder folded shut and unlike its eye: undo
+     * retraces what you did to the picture, and what a layer is called is not the
+     * picture. It is written straight to the row the moment it is given.
+     */
+    private fun renameEntry(id: String) {
+        val canvas = binding.canvas
+        val was = canvas.folderAt(id)?.name ?: canvas.layerAt(id)?.name ?: return
+        val field = android.widget.EditText(this).apply {
+            setText(was)
+            setSingleLine()
+            setSelectAllOnFocus(true)
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.stack_rename)
+            .setView(vbox(fieldRow(getString(R.string.stack_name), field, unit = "")))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.library_size_use) { _, _ ->
+                // A row with no name at all is a row you cannot tell from its
+                // neighbours, so an empty box keeps what was there.
+                val name = field.text.toString().trim().ifEmpty { was }
+                canvas.renameStackEntry(id, name)
+                refreshLayers()
+            }
+            .show()
+    }
+
+    /**
+     * Deleting a folder is not deleting the work in it.
+     *
+     * So there is no warning to give and nothing to ask twice about: what was
+     * inside comes out where the folder stood, and the step is on the timeline
+     * like any other.
+     */
+    private fun deleteFolder(id: String) {
+        binding.canvas.removeFolder(id)
+        refreshLayers()
+    }
+
+    private fun deleteLayer(index: Int) {
+        val open = session ?: return
+        if (binding.canvas.layerCount <= 1) {
+            toast(getString(R.string.layers_last))
+            return
+        }
+        val id = binding.canvas.layerIdAt(index)
+        val name = binding.canvas.layerNameAt(index)
+        // Still asked twice, though undo reaches it now: everything drawn on the
+        // layer goes with it, and a long press is easy to mean by accident.
+        MaterialAlertDialogBuilder(this)
+            .setTitle(getString(R.string.layers_delete_title, name))
+            .setMessage(R.string.layers_delete_warning)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.layers_delete_confirm) { _, _ ->
+                // The row is left where it is. The step that removed the layer
+                // goes on the timeline, and that is what says it is gone — so an
+                // undo brings it back with everything that was on it.
+                binding.canvas.removeLayer(index)
+                refreshLayers()
+            }
+            .show()
+    }
+
+    // --- Which way up ---------------------------------------------------------
+
+    /**
+     * The display rotation at which the sheet lies square on the glass.
+     *
+     * The panel's natural orientation is portrait, and its landscape is
+     * `ROTATION_90` (`mLandscapeRotation`, confirmed on the Movink 14 Pro). That
+     * is the drawing's home: every other rotation is measured from here and undone
+     * on [ActivityMainBinding.deviceFrame], so the sheet never moves.
+     */
+    private val homeRotation = android.view.Surface.ROTATION_90
+
+    /** Quarter turns the tablet is from [homeRotation]; the glyphs turn back by this. */
+    private var chromeQuarter = -1
+
+    private val displayListener = object : android.hardware.display.DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+        override fun onDisplayRemoved(displayId: Int) = Unit
+
+        // A 180° flip changes no dimension and so raises no configuration change;
+        // the display rotation is the only thing that reports it.
+        override fun onDisplayChanged(displayId: Int) = applyOrientation()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applyOrientation()
+    }
+
+    /**
+     * Pins the desk to the glass and turns the glyphs back to face the artist.
+     *
+     * The frame is always the panel's landscape geometry — long side first —
+     * whatever shape the window currently is. Rotated by the opposite of however
+     * far the tablet has been turned, it lands back exactly over the panel.
+     */
+    private fun applyOrientation() {
+        val rot = display?.rotation ?: return
+        val quarter = ((rot - homeRotation) + 4) % 4
+
+        val bounds = windowManager.currentWindowMetrics.bounds
+        val long = maxOf(bounds.width(), bounds.height())
+        val short = minOf(bounds.width(), bounds.height())
+        val frame = binding.deviceFrame
+        val lp = frame.layoutParams
+        if (lp.width != long || lp.height != short) {
+            lp.width = long
+            lp.height = short
+            frame.layoutParams = lp
+        }
+        frame.rotation = -quarter * 90f
+        // The sheet does not turn, so a swipe across it has to be read as the
+        // hand meant it rather than as the paper received it.
+        binding.canvas.artistQuarter = quarter
+
+        if (quarter != chromeQuarter) {
+            val first = chromeQuarter < 0
+            chromeQuarter = quarter
+            faceTheArtist(quarter, animate = !first)
+        }
+    }
+
+    /**
+     * Turns the buttons to face the artist, leaving the rail where it lies.
+     *
+     * Every rail button is a 44×44 square, so a quarter turn about its own centre
+     * stays inside its own bounds — nothing re-measures, nothing clips. The
+     * dividers are skipped: they are plain rules, and turning one would stand it
+     * on end.
+     */
+    private fun faceTheArtist(quarter: Int, animate: Boolean) {
+        val angle = quarter * 90f
+        val turn = { v: View ->
+            if (animate) v.animate().rotation(angle).setDuration(180).start() else v.rotation = angle
+        }
+        for (i in 0 until binding.rail.childCount) {
+            val v = binding.rail.getChildAt(i)
+            if (v is ImageButton || v is TextView) turn(v)
+        }
+        turn(binding.btnShowRail)
+        // The palette hangs off the rail, so it turns with the glass like the rail
+        // does — but it is a thing you read, and it is square, so its face can be
+        // turned back without moving it by a pixel.
+        turn(binding.trayCard)
+        // Where the swatch is has just changed; where the palette belongs with it.
+        if (trayOut) {
+            placeTray()
+            binding.trayCard.translationX = trayRestX
+            binding.trayCard.translationY = trayRestY
+        }
     }
 
     private fun hideSystemBars() {
@@ -181,65 +1559,234 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Takes the screen, if the app is not already holding it.
+     *
+     * The editor is the only place that asks, and it asks as rarely as it can:
+     * every ask is a system dialog that cannot be suppressed, so a lock already
+     * held — carried back from the library, or through a page turn — is left
+     * exactly where it is. See [ScreenLock] for why it is held rather than
+     * taken and given back around each painting.
+     *
+     * Asking is best-effort by design: the answer is the artist's, and a device
+     * that will not pin simply carries on unpinned rather than failing the
+     * screen it is trying to protect.
+     */
+    private fun holdTheScreen() {
+        if (screenAsked || holdsTheScreen()) return
+        screenAsked = true
+        runCatching { startLockTask() }
+    }
+
+    /**
+     * Keeps Android's back gesture off the left and right edges of the glass.
+     *
+     * The system reserves a strip down each side for it, and a pen working out
+     * to the edge of the sheet is inside that strip. An app may ask for those
+     * two strips back. It may not ask for the status bar pull at the top or the
+     * home and app-switch swipes at the bottom: the system holds those as
+     * mandatory and grants them to nobody, which is why [holdTheScreen] exists.
+     *
+     * At most 200dp per edge is honoured however much is asked for, so this asks
+     * for the whole edge and takes what it is given. Set on the root rather than
+     * the canvas because the desk turns with the tablet and these rects are read
+     * in the view's own space: the window's edges are the ones that stay put.
+     */
+    private fun keepBackGestureOffTheEdges() {
+        binding.root.addOnLayoutChangeListener { v, left, top, right, bottom, _, _, _, _ ->
+            val w = right - left
+            val h = bottom - top
+            if (w <= 0 || h <= 0) return@addOnLayoutChangeListener
+            val strip = (EDGE_GESTURE_DP * resources.displayMetrics.density).roundToInt()
+            v.systemGestureExclusionRects = listOf(
+                Rect(0, 0, strip, h),
+                Rect(w - strip, 0, w, h),
+            )
+        }
+    }
+
     // --- Rail construction --------------------------------------------------
 
+    /**
+     * Builds every control, adds only the ones in scope.
+     *
+     * The out-of-scope buttons are still *constructed* — `updateRail` reads them
+     * on every stroke and a half-built rail would be a crash waiting for a tool
+     * change — but they never reach the layout. What [Focus] leaves out is not
+     * disabled or greyed: it is simply not there.
+     */
     private fun buildRail() {
         val rail = binding.rail
-        for (t in Tool.values()) {
+        for (t in Focus.TOOLS) {
             val b = iconButton(toolIcon(t), t.label) { onToolChanged(t) }
             toolButtons[t] = b
             rail.addView(b)
         }
         rail.addView(divider())
 
-        colorBtn = iconButton(0, "Color") { pickColor("Stroke color", color) { onColorChanged(it) } }
-        rail.addView(colorBtn)
+        // The swatch opens the palette; holding the palette's well opens the
+        // wheel. One button for "the paint", rather than a button for the colour
+        // and a tab for the palette at opposite edges of the screen.
+        //
+        // With no palette to open it falls back to the wheel directly, so the
+        // colour is still reachable when the tray is out of scope. It is added for
+        // *either* flag, because the tray has no other way in.
+        colorBtn = iconButton(0, "Paint") {
+            if (Focus.SHOW_TRAY) setTrayOut(!trayOut) else pickColor("Stroke color", color) { onColorChanged(it) }
+        }
+        if (Focus.SHOW_COLOR || Focus.SHOW_TRAY) rail.addView(colorBtn)
 
         sizeBtn = textButton("Size") { pickSize() }
-        rail.addView(sizeBtn)
+        if (Focus.SHOW_SIZE) rail.addView(sizeBtn)
 
         waterBtn = iconButton(R.drawable.ic_water_mode, "Clean water") {
             waterMode = !waterMode
             binding.canvas.waterMode = waterMode
             updateRail()
         }
-        rail.addView(waterBtn)
+        if (Focus.SHOW_WATER_MODE) rail.addView(waterBtn)
         toleranceBtn = textButton("Wand tolerance") { pickWand() }
-        rail.addView(toleranceBtn)
+        if (Focus.SHOW_WAND_TOLERANCE) rail.addView(toleranceBtn)
 
         surfaceBtn = iconButton(surfaceIcon(currentSurface()), "Surface") { pickSurface() }
-        rail.addView(surfaceBtn)
+        if (Focus.SHOW_SURFACE) rail.addView(surfaceBtn)
 
         fillBtn = iconButton(R.drawable.ic_fill, "Fill selection") { binding.canvas.fillSelection(color) }
         eraseBtn = iconButton(R.drawable.ic_erase_sel, "Erase inside selection") { binding.canvas.deleteSelection() }
         deselectBtn = iconButton(R.drawable.ic_deselect, "Deselect") { binding.canvas.clearSelection() }
-        rail.addView(fillBtn)
-        rail.addView(eraseBtn)
-        rail.addView(deselectBtn)
+        copyBtn = iconButton(R.drawable.ic_copy, "Copy selection") { copySelection() }
+        pasteBtn = iconButton(R.drawable.ic_paste, "Paste") { paste() }
+        if (Focus.SHOW_SELECTION_ACTIONS) {
+            rail.addView(fillBtn)
+            rail.addView(eraseBtn)
+            rail.addView(copyBtn)
+            rail.addView(deselectBtn)
+        }
+        if (Focus.SHOW_PASTE) rail.addView(pasteBtn)
 
         lineDoneBtn = iconButton(R.drawable.ic_done, "Finish shape") { binding.canvas.commitPendingShape() }
-        rail.addView(lineDoneBtn)
+        if (Focus.SHOW_SHAPE_COMMIT) rail.addView(lineDoneBtn)
 
-        rail.addView(divider())
         undoBtn = iconButton(R.drawable.ic_undo, "Undo") { binding.canvas.undo() }
         redoBtn = iconButton(R.drawable.ic_redo, "Redo") { binding.canvas.redo() }
-        rail.addView(undoBtn)
-        rail.addView(redoBtn)
+        if (Focus.SHOW_UNDO_REDO) {
+            rail.addView(divider())
+            rail.addView(undoBtn)
+            rail.addView(redoBtn)
+        }
+
+        layersBtn = iconButton(R.drawable.ic_layers, getString(R.string.layers_show)) { toggleLayerPanel() }
+        if (Focus.SHOW_LAYERS) rail.addView(layersBtn)
 
         rail.addView(divider())
-        rail.addView(iconButton(R.drawable.ic_save, "Save PNG") { save() })
-        rail.addView(iconButton(R.drawable.ic_canvas_size, "Canvas size") { pickCanvasSize() })
-        rail.addView(iconButton(R.drawable.ic_calibrate, "Calibrate screen") { openCalibration() })
-        rail.addView(iconButton(R.drawable.ic_clear, "Clear") { confirmClear() })
-        rail.addView(iconButton(R.drawable.ic_hide, "Hide toolbar") { setRailVisible(false) })
+        pagesBtn = textButton("Pages") { showPages() }
+        if (Focus.SHOW_PAGES) rail.addView(pagesBtn)
+        scratchBtn = iconButton(R.drawable.ic_scratchpad, "Scratchpad") { toggleScratchpad() }
+        if (Focus.SHOW_SCRATCHPAD) rail.addView(scratchBtn)
+        if (Focus.SHOW_SEND_PAGE) rail.addView(iconButton(R.drawable.ic_send, "Send page") { sendPage() })
+        if (Focus.SHOW_LIBRARY) rail.addView(iconButton(R.drawable.ic_library, "Library") { openLibrary() })
+        if (Focus.SHOW_SAVE_PNG) rail.addView(iconButton(R.drawable.ic_save, "Save PNG") { save() })
+        canvasSizeBtn = iconButton(R.drawable.ic_canvas_size, "Canvas size") { pickCanvasSize() }
+        if (Focus.SHOW_CANVAS_SIZE) rail.addView(canvasSizeBtn)
+        if (Focus.SHOW_CLEAR) rail.addView(iconButton(R.drawable.ic_clear, "Clear") { confirmClear() })
+        if (Focus.SHOW_HIDE_RAIL) {
+            rail.addView(iconButton(R.drawable.ic_hide, "Hide toolbar") { setRailVisible(false) })
+        }
+    }
+
+    /**
+     * Keeps the rail honest about where the user is.
+     *
+     * A tool that is not on offer here cannot simply be hidden: it might be the
+     * one already selected, and a rail with nothing lit while the pen still draws
+     * lines is worse than no restriction at all. So the selection moves too.
+     */
+    private fun constrainTools() {
+        if (tool !in Focus.toolsFor(isScratchpad)) onToolChanged(Focus.DEFAULT_TOOL)
+        updateRail()
+    }
+
+    /**
+     * Into the scratchpad, or back out to the book you were in.
+     *
+     * Both directions go through the same door, because "somewhere to try
+     * something out" is only useful if getting back is as cheap as getting there.
+     * With no book to return to — a fresh install, or a library that has been
+     * emptied — the way back is the library itself.
+     */
+    private fun toggleScratchpad() {
+        if (isScratchpad) {
+            val book = LastOpen.lastBook(this)
+            if (book == null) {
+                openLibrary()
+                return
+            }
+            LastOpen.save(this, book)
+        } else {
+            LastOpen.save(this, LastOpen.Pointer(LastOpen.Kind.SCRATCHPAD, null, null))
+        }
+        reopenDocument()
+    }
+
+    /**
+     * Closes what is open and attaches whatever [LastOpen] now points at.
+     *
+     * The seal has to finish before the next document opens: the two can be the
+     * same database — the scratchpad and the index are — and a flush racing an
+     * open is how a page loses its last stroke.
+     */
+    private fun reopenDocument() {
+        val open = session ?: return
+        session = null
+        lifecycleScope.launch {
+            // Settled while the hooks are still on, and that order is the point:
+            // they carry each committed step into the document, and a stroke that
+            // finished baking after they came off would be folded into the picture
+            // and written down nowhere. The hooks hold the session they were made
+            // with, so clearing [session] above does not disturb them.
+            binding.canvas.settle()
+            detachCanvasHooks()
+            val paint = if (open.isDirty) binding.canvas.paintSnapshot() else null
+            val cover = if (open.isDirty) binding.canvas.coverSnapshot() else null
+            // The seal runs on the scope that outlives this screen and is *joined*
+            // rather than fired off: leaving mid-switch must not skip it, and the
+            // next document must not open on top of it.
+            applicationScope.launch { runCatching { open.close(paint, cover) } }.join()
+            attachDocument()
+        }
+    }
+
+    private fun detachCanvasHooks() {
+        binding.canvas.onOpCommitted = null
+        binding.canvas.onUndone = null
+        binding.canvas.onRedone = null
+        binding.canvas.onBrushLoadChanged = null
     }
 
     private fun updateRail() {
-        for ((t, b) in toolButtons) b.background = if (t == tool) selectedBg() else rippleBg()
+        val offered = Focus.toolsFor(isScratchpad)
+        for ((t, b) in toolButtons) {
+            // The scratchpad offers a subset, and so does the current scope; the
+            // buttons for the rest are not there rather than disabled, because a
+            // rail of greyed-out tools reads as something broken.
+            b.visibility = if (t in offered) View.VISIBLE else View.GONE
+            b.background = if (t == tool) selectedBg() else rippleBg()
+        }
+        scratchBtn.background = if (isScratchpad) selectedBg() else rippleBg()
+        // A scratch page is always the screen it is drawn on: there is no book for
+        // a print size to belong to, and nothing to print it at.
+        canvasSizeBtn.visibility = if (isScratchpad) View.GONE else View.VISIBLE
 
-        // The colour is moot while the brush carries clean water.
-        colorBtn.visibility =
-            if (tool == Tool.ERASER || (tool == Tool.WATERCOLOR && waterMode)) View.GONE else View.VISIBLE
+        // The colour is moot while the brush carries clean water — but the palette
+        // is not, and this is the only way to it, so with a tray to open the button
+        // stays. What you have on the brush is worth seeing while you erase; it is
+        // what you will be painting with next.
+        colorBtn.visibility = when {
+            Focus.SHOW_TRAY -> View.VISIBLE
+            tool == Tool.ERASER || (tool == Tool.WATERCOLOR && waterMode) -> View.GONE
+            else -> View.VISIBLE
+        }
+        colorBtn.background = if (trayOut) selectedBg() else rippleBg()
         colorBtn.setImageDrawable(swatchDrawable(color))
         // iconButton tints every icon slate so the tool glyphs match; the swatch
         // *is* the colour, so it must not be tinted or it always reads dark.
@@ -248,7 +1795,8 @@ class MainActivity : AppCompatActivity() {
         waterBtn.visibility = if (tool == Tool.WATERCOLOR) View.VISIBLE else View.GONE
         waterBtn.background = if (waterMode) selectedBg() else rippleBg()
 
-        sizeBtn.visibility = if (tool == Tool.WAND) View.GONE else View.VISIBLE
+        // Neither selector has a size; only the wand has a tolerance to set.
+        sizeBtn.visibility = if (tool.isSelector) View.GONE else View.VISIBLE
         sizeBtn.text = formatMm(sizes[tool] ?: tool.defaultSizeMm)
         toleranceBtn.visibility = if (tool == Tool.WAND) View.VISIBLE else View.GONE
         toleranceBtn.text = "${(wandTolerance * 100).roundToInt()}%"
@@ -259,6 +1807,10 @@ class MainActivity : AppCompatActivity() {
         fillBtn.visibility = selVis
         eraseBtn.visibility = selVis
         deselectBtn.visibility = selVis
+        copyBtn.visibility = selVis
+        // Paste does not need a selection — it needs something on the clipboard,
+        // which may have been put there in another book, or last week.
+        pasteBtn.visibility = if (clipboardCount > 0) View.VISIBLE else View.GONE
         fillBtn.imageTintList = android.content.res.ColorStateList.valueOf(color)
 
         lineDoneBtn.visibility =
@@ -267,6 +1819,7 @@ class MainActivity : AppCompatActivity() {
 
         setEnabled(undoBtn, binding.canvas.canUndo)
         setEnabled(redoBtn, binding.canvas.canRedo)
+        pagesBtn.text = pageLabel
     }
 
     private fun onToolChanged(t: Tool) {
@@ -281,6 +1834,11 @@ class MainActivity : AppCompatActivity() {
         val mm = sizes[tool] ?: tool.defaultSizeMm
         val ppi = Calibration.effectivePpi(this)
         binding.canvas.baseSize = Calibration.mmToPx(mm, ppi)
+        // The pen's eraser end is not on the rail and cannot be the chosen tool,
+        // but it still has a size — the eraser's own, whatever is in hand — so
+        // the canvas is given that one alongside.
+        val eraserMm = sizes[Tool.ERASER] ?: Tool.ERASER.defaultSizeMm
+        binding.canvas.eraserSize = Calibration.mmToPx(eraserMm, ppi)
         // The brush spends paint per real mm² covered, so it needs the same
         // physical scale the sizes use.
         binding.canvas.pxPerMm = Calibration.mmToPx(1f, ppi)
@@ -294,7 +1852,38 @@ class MainActivity : AppCompatActivity() {
             String.format("%.1f", mm)
         }
 
+    /**
+     * The colour, chosen outright: onto the palette, into the brush, onto the rail.
+     *
+     * What the wheel does. **The wheel is not a rival to the palette, it is another
+     * way of mixing on it** — so what it produces goes into the well like any other
+     * colour, and the palette can never sit there showing something that is not
+     * what is being painted with.
+     *
+     * It replaces the well rather than dabbing into it, because a colour dialled in
+     * on the wheel is a *specific* colour: added to whatever was already mixed it
+     * would come out as something else, which is not what was asked for. The brush
+     * is recharged flat for exactly the same reason, and has been all along.
+     */
     private fun onColorChanged(c: Int) {
+        useColor(c)
+        tray.clearMixture()
+        tray.dab(c)
+        binding.tray.invalidate()
+        binding.canvas.loadBrush(BrushLoad.of(c))
+        recordPalette()
+    }
+
+    /**
+     * The colour, changed — and the brush left holding whatever it holds.
+     *
+     * For colour arriving from the palette itself, where the brush's load is the
+     * palette's business and not this function's. Mixing in the well says what is
+     * being painted with; only the brush needs the extra touch to be *given* some,
+     * because only the brush spends it.
+     */
+    private fun useColor(c: Int) {
+        if (c == color) return
         color = c
         binding.canvas.strokeColor = c
         updateRail()
@@ -303,6 +1892,9 @@ class MainActivity : AppCompatActivity() {
     private fun setRailVisible(visible: Boolean) {
         binding.railCard.visibility = if (visible) View.VISIBLE else View.GONE
         binding.btnShowRail.visibility = if (visible) View.GONE else View.VISIBLE
+        // The palette hangs off a button on the rail. With the rail gone it would
+        // be floating beside nothing, and nothing left on screen would close it.
+        if (!visible && trayOut) setTrayOut(false)
     }
 
     // --- Mixing tray --------------------------------------------------------
@@ -313,85 +1905,125 @@ class MainActivity : AppCompatActivity() {
      * canvas away every time you reach for the palette.
      */
     private fun setupTray() {
+        if (!Focus.SHOW_TRAY) {
+            binding.trayCard.visibility = View.GONE
+            return
+        }
         binding.tray.tray = tray
         binding.tray.onLoadBrush = { load ->
             // Straight to the canvas, keeping the mixture: going via
             // onColorChanged would recharge the brush with one flat pigment and
             // discard the recipe just mixed.
             binding.canvas.loadBrush(load)
-            color = load.color
-            updateRail()
+            useColor(load.color)
+            recordPalette()
         }
         binding.tray.onAddPot = {
             pickColor("Add a pigment", color) { c ->
                 tray.addPot(Pot(namePot(c), c, custom = true))
                 binding.tray.tray = tray
+                recordPalette()
             }
         }
-
-        // Park the palette off-screen until it's pulled out, leaving the tab.
-        binding.trayPanel.doOnLayout {
-            trayHiddenX = binding.trayCard.width.toFloat() +
-                (binding.trayCard.layoutParams as? ViewGroup.MarginLayoutParams)?.marginEnd?.toFloat().orZero()
-            binding.trayPanel.translationX = trayHiddenX
-            updateTrayTab()
+        binding.tray.onMixtureChanged = {
+            // Mixing a colour *is* choosing it. The swatch and every dry tool take
+            // it the moment it appears in the well; the brush still has to be
+            // given some, because the brush is the only one that spends it.
+            //
+            // A wiped well leaves the colour where it was rather than blanking it:
+            // you cleaned the palette, you did not stop painting in that colour.
+            if (Focus.SHOW_COLOR) tray.mixedColor?.let { useColor(it) }
+            recordPalette()
         }
-
-        attachTrayTabGesture()
+        // Holding the well asks for a colour outright. Offered only where the
+        // rail would offer one anyway — the palette must not become a second door
+        // into a colour picker that [Focus] has closed.
+        binding.tray.onWellHold = if (Focus.SHOW_COLOR) {
+            { pickColor("Stroke color", color) { onColorChanged(it) } }
+        } else {
+            null
+        }
     }
 
     /**
-     * The tab both taps and drags: a tap toggles, a drag follows the finger and
-     * snaps to whichever side it was heading for.
+     * Puts the palette beside the colour swatch.
+     *
+     * Recomputed every time it opens rather than pinned once: the rail scrolls,
+     * what is on it changes with the tool, and the whole frame turns with the
+     * tablet. Beside rather than over, and clamped to the frame, so the palette
+     * never hangs off the glass or sits on top of the button that opened it.
+     *
+     * Everything here is in the frame's own coordinates, which is what makes it
+     * simple — [faceTheArtist] turns the card's face back afterwards, and the card
+     * is square, so that turn cannot move it.
+     *
+     * The card is INVISIBLE rather than GONE when it is away, and that is load
+     * bearing: a gone view is never measured, so this ran with a width of zero and
+     * left the palette parked in the frame's top corner, off the screen's edge.
      */
-    private fun attachTrayTabGesture() {
-        val slop = ViewConfiguration.get(this).scaledTouchSlop
-        var downX = 0f
-        var startX = 0f
-        var dragging = false
+    private fun placeTray() {
+        val frame = binding.deviceFrame
+        val card = binding.trayCard
+        if (card.width == 0 || frame.width == 0) return
+        val gap = dp(8)
+        val margin = dp(12)
 
-        binding.trayTab.setOnTouchListener { _, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    downX = event.rawX
-                    startX = binding.trayPanel.translationX
-                    dragging = false
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = event.rawX - downX
-                    if (!dragging && Math.abs(dx) > slop) dragging = true
-                    if (dragging) {
-                        binding.trayPanel.translationX = (startX + dx).coerceIn(0f, trayHiddenX)
-                    }
-                    true
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (dragging) {
-                        // Snap to whichever side it's closer to.
-                        setTrayOut(binding.trayPanel.translationX < trayHiddenX / 2f)
-                    } else {
-                        setTrayOut(!trayOut)
-                    }
-                    true
-                }
-                else -> false
-            }
-        }
+        val anchor = Rect(0, 0, colorBtn.width, colorBtn.height)
+        frame.offsetDescendantRectToMyCoords(colorBtn, anchor)
+
+        val restX = (binding.railCard.right + gap)
+            .coerceAtMost(frame.width - card.width - margin)
+            .coerceAtLeast(margin)
+        val restY = (anchor.centerY() - card.height / 2)
+            .coerceIn(margin, (frame.height - card.height - margin).coerceAtLeast(margin))
+
+        trayRestX = restX.toFloat()
+        trayRestY = restY.toFloat()
+        // Where it starts from: collapsed onto the swatch. Translation is applied
+        // after the card's own rotation, so this is unaffected by which way up the
+        // frame is — the palette grows out of the button in every orientation.
+        trayFromX = anchor.centerX() - card.width / 2f
+        trayFromY = anchor.centerY() - card.height / 2f
     }
 
+    /**
+     * Opens or closes the palette, growing it out of the swatch and back into it.
+     *
+     * A dialog was never right for this — you mix a colour *while* painting, and a
+     * modal puts the canvas away every time you reach for the paint. So it is a
+     * card that appears beside the button you pressed and leaves the sheet where
+     * it is.
+     */
     private fun setTrayOut(out: Boolean) {
+        if (!Focus.SHOW_TRAY) return
         trayOut = out
-        binding.trayPanel.animate()
-            .translationX(if (out) 0f else trayHiddenX)
-            .setDuration(180)
-            .start()
-        updateTrayTab()
-    }
-
-    private fun updateTrayTab() {
-        // Chevron points the way the palette will travel.
-        binding.trayTabIcon.setImageResource(if (trayOut) R.drawable.ic_show else R.drawable.ic_hide)
+        // Whichever of the two cards is being reached for is the one that gets the
+        // sheet. See [toggleLayerPanel].
+        if (out && layersShowing) toggleLayerPanel()
+        val card = binding.trayCard
+        card.animate().cancel()
+        if (out) {
+            placeTray()
+            card.translationX = trayFromX
+            card.translationY = trayFromY
+            card.scaleX = TRAY_POP_FROM
+            card.scaleY = TRAY_POP_FROM
+            card.alpha = 0f
+            card.visibility = View.VISIBLE
+            card.animate()
+                .translationX(trayRestX).translationY(trayRestY)
+                .scaleX(1f).scaleY(1f).alpha(1f)
+                .setDuration(TRAY_POP_MS)
+                .start()
+        } else {
+            card.animate()
+                .translationX(trayFromX).translationY(trayFromY)
+                .scaleX(TRAY_POP_FROM).scaleY(TRAY_POP_FROM).alpha(0f)
+                .setDuration(TRAY_POP_MS)
+                .withEndAction { if (!trayOut) card.visibility = View.INVISIBLE }
+                .start()
+        }
+        updateRail()
     }
 
     /** Labels a wheel colour by its nearest named pigment, so pots stay nameable. */
@@ -404,8 +2036,6 @@ class MainActivity : AppCompatActivity() {
         }
         return nearest?.let { "Mixed (near ${it.name})" } ?: "Mixed"
     }
-
-    private fun Float?.orZero(): Float = this ?: 0f
 
     // --- Pickers ------------------------------------------------------------
 
@@ -587,8 +2217,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** HSV colour wheel + brightness slider, with swatch quick-picks. */
+    /**
+     * One colour, and several ways to say it: the wheel by eye, R/G/B by number,
+     * or a hex code straight in.
+     *
+     * Every control holds the same colour, so moving any of them moves the rest,
+     * and [spread] is the only place that happens. It writes to everything **but**
+     * the control the change came from: a field that rewrites itself mid-keystroke
+     * fights whoever is typing in it, which is the rule `ColorFields.kt` inherited
+     * from the size fields. It also keeps a typed triple exact — the wheel holds
+     * HSV, and a round trip through hue and saturation can shift a channel by a
+     * unit. What you typed is what gets used.
+     */
     private fun pickColor(title: String, initial: Int, onUse: (Int) -> Unit) {
         var working = initial or (0xFF shl 24)
+        // Set while one control's value is being copied into the others, so that
+        // their listeners don't copy it straight back and chase it in a circle.
+        var syncing = false
+
         val preview = View(this)
         val wheel = ColorWheelView(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(240), dp(240)).apply {
@@ -599,37 +2245,106 @@ class MainActivity : AppCompatActivity() {
         val valueSlider = Slider(this).apply {
             valueFrom = 0f; valueTo = 1f
         }
-        fun show(c: Int) {
-            working = c
-            preview.background = previewSwatch(c)
+        val rSlider = channelSlider(Color.red(working))
+        val gSlider = channelSlider(Color.green(working))
+        val bSlider = channelSlider(Color.blue(working))
+        val rEntry = channelField(Color.red(working))
+        val gEntry = channelField(Color.green(working))
+        val bEntry = channelField(Color.blue(working))
+        val hexEntry = hexField(working)
+
+        /**
+         * Takes [c] as the colour and brings every control up to date except
+         * [source], which already holds it.
+         *
+         * The wheel stands for itself and for the brightness slider under it:
+         * between them they hold one HSV colour, and neither can move without the
+         * other having agreed already.
+         */
+        fun spread(c: Int, source: Any?) {
+            if (syncing) return
+            syncing = true
+            working = c or (0xFF shl 24)
+            val r = Color.red(working)
+            val g = Color.green(working)
+            val b = Color.blue(working)
+            preview.background = previewSwatch(working)
+            if (source !== wheel) {
+                wheel.setColor(working)
+                valueSlider.value = FloatArray(3).also { Color.colorToHSV(working, it) }[2]
+            }
+            if (source !== rSlider) rSlider.value = r.toFloat()
+            if (source !== gSlider) gSlider.value = g.toFloat()
+            if (source !== bSlider) bSlider.value = b.toFloat()
+            // The caret goes to the end of a value that was replaced wholesale,
+            // which is where it would be if it had just been typed.
+            if (source !== rEntry) rEntry.setTextKeepingCaretAtEnd(r.toString())
+            if (source !== gEntry) gEntry.setTextKeepingCaretAtEnd(g.toString())
+            if (source !== bEntry) bEntry.setTextKeepingCaretAtEnd(b.toString())
+            if (source !== hexEntry) hexEntry.setTextKeepingCaretAtEnd(hexOf(working))
+            syncing = false
         }
+
         wheel.setColor(working)
         valueSlider.value = FloatArray(3).also { Color.colorToHSV(working, it) }[2]
 
-        wheel.onColorChanged = { c -> show(c) }
+        wheel.onColorChanged = { c -> spread(c, wheel) }
         valueSlider.addOnChangeListener { _, v, _ ->
+            if (syncing) return@addOnChangeListener
             wheel.setValue(v)
-            show(wheel.color)
+            spread(wheel.color, wheel)
         }
+        // A channel moved, by whichever of its two controls: the colour is read
+        // off all three, since the other two are already holding what they hold.
+        // An empty field is mid-edit rather than a request for zero, so it reads
+        // as the channel that is there.
+        fun fromSliders(source: Slider) = spread(
+            rgbOf(rSlider.value.toInt(), gSlider.value.toInt(), bSlider.value.toInt()),
+            source,
+        )
+        fun fromFields(source: EditText) = spread(
+            rgbOf(
+                rEntry.channel(Color.red(working)),
+                gEntry.channel(Color.green(working)),
+                bEntry.channel(Color.blue(working)),
+            ),
+            source,
+        )
+        rSlider.addOnChangeListener { _, _, _ -> fromSliders(rSlider) }
+        gSlider.addOnChangeListener { _, _, _ -> fromSliders(gSlider) }
+        bSlider.addOnChangeListener { _, _, _ -> fromSliders(bSlider) }
+        rEntry.onEdit { fromFields(rEntry) }
+        gEntry.onEdit { fromFields(gEntry) }
+        bEntry.onEdit { fromFields(bEntry) }
+        // An unreadable hex code moves nothing: half of one is a moment in the
+        // middle of typing, not an instruction to go somewhere.
+        hexEntry.onEdit { parseHexColor(hexEntry.text.toString())?.let { spread(it, hexEntry) } }
 
         val grid = GridLayout(this).apply {
             columnCount = 9
             setPadding(0, dp(8), 0, dp(4))
         }
-        for (c in SWATCHES) {
-            grid.addView(swatchCell(c) {
-                wheel.setColor(c)
-                valueSlider.value = FloatArray(3).also { Color.colorToHSV(c, it) }[2]
-                show(c)
-            })
-        }
+        for (c in SWATCHES) grid.addView(swatchCell(c) { spread(c, null) })
         preview.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(28))
         preview.background = previewSwatch(working)
 
-        val content = vbox(wheel, labelled("V", valueSlider), preview, grid)
+        val content = vbox(
+            wheel,
+            labelled("V", valueSlider),
+            preview,
+            channelRow("R", rSlider, rEntry),
+            channelRow("G", gSlider, gEntry),
+            channelRow("B", bSlider, bEntry),
+            channelRow("#", View(this), hexEntry),
+            grid,
+        )
         MaterialAlertDialogBuilder(this)
             .setTitle(title)
-            .setView(content)
+            // Scrolled, because this is now taller than a dialog is allowed to be
+            // in landscape. The wheel already refuses to let a scroller steal its
+            // drags (`requestDisallowInterceptTouchEvent`), so dragging it still
+            // picks a colour rather than scrolling the dialog.
+            .setView(ScrollView(this).apply { addView(content) })
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Use") { _, _ -> onUse(working) }
             .show()
@@ -1028,6 +2743,16 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    /**
+     * Back to the library.
+     *
+     * The document seals itself on the way out — `onStop` does that — so there is
+     * nothing to save here beyond letting the screen go.
+     */
+    private fun openLibrary() {
+        startActivity(Intent(this@MainActivity, LibraryActivity::class.java))
+    }
+
     private fun save() {
         binding.canvas.savePng { result ->
             val msg = result.fold(
@@ -1038,31 +2763,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun openCalibration() {
-        calibrationLauncher.launch(Intent(this, CalibrationActivity::class.java))
-    }
-
     // --- Canvas size --------------------------------------------------------
 
-    /** Full screen + the print presets that fit the calibrated screen + Custom. */
+    /** Custom, then every size that fits the calibrated screen, then full screen. */
     private fun pickCanvasSize() {
         val ppi = Calibration.effectivePpi(this)
         val vw = binding.canvas.width
         val vh = binding.canvas.height
-        fun fits(p: CanvasSize.Print) =
-            Calibration.inToPx(p.wIn, ppi) <= vw && Calibration.inToPx(p.hIn, ppi) <= vh
-
-        val options = buildList<CanvasSize> {
-            add(CanvasSize.FullScreen)
-            addAll(CanvasSize.PRESETS.filter { fits(it) })
-        }
-        val labels = (options.map { it.label } + "Custom…").toTypedArray()
+        val options = CanvasSize.choices(
+            Calibration.pxToIn(vw.toFloat(), ppi),
+            Calibration.pxToIn(vh.toFloat(), ppi),
+        )
+        // Custom leads: it is the only entry that asks a question rather than
+        // answering one, and burying it under a list it does not belong to made it
+        // read as an afterthought.
+        val labels = (listOf("Custom…") + options.map { it.label }).toTypedArray()
+        val checked = options.indexOf(canvasSize).let { if (it < 0) -1 else it + 1 }
         MaterialAlertDialogBuilder(this)
             .setTitle("Canvas size")
-            .setSingleChoiceItems(labels, options.indexOf(canvasSize)) { dialog, which ->
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
                 dialog.dismiss()
-                if (which == options.size) pickCustomCanvasSize(ppi, vw, vh)
-                else chooseCanvasSize(options[which])
+                if (which == 0) pickCustomCanvasSize(ppi, vw, vh)
+                else chooseCanvasSize(options[which - 1])
             }
             .show()
     }
@@ -1090,38 +2812,32 @@ class MainActivity : AppCompatActivity() {
     private fun pickCustomCanvasSize(ppi: Float, vw: Int, vh: Int) {
         val maxW = Calibration.pxToIn(vw.toFloat(), ppi)
         val maxH = Calibration.pxToIn(vh.toFloat(), ppi)
-        var w = ((canvasSize as? CanvasSize.Print)?.wIn ?: 6f).coerceIn(1f, maxW)
-        var h = ((canvasSize as? CanvasSize.Print)?.hIn ?: 4f).coerceIn(1f, maxH)
+        val w = ((canvasSize as? CanvasSize.Print)?.wIn ?: 6f).coerceIn(1f, maxW)
+        val h = ((canvasSize as? CanvasSize.Print)?.hIn ?: 4f).coerceIn(1f, maxH)
         val label = TextView(this).apply { textSize = 22f; gravity = Gravity.CENTER }
-        fun refresh() { label.text = String.format("%.1f × %.1f in", w, h) }
+        val wField = inchField(w)
+        val hField = inchField(h)
+        fun typed() = CanvasSize.custom(wField.inches(w), hField.inches(h), maxW, maxH)
+        // The label is the size that will actually be made — clamped and truncated.
+        // A preview that rounds up, or that shows a number the screen will refuse,
+        // is a preview of a sheet you cannot have.
+        fun refresh() { label.text = typed().label }
         refresh()
-        val wSlider = Slider(this).apply {
-            valueFrom = 1f; valueTo = maxW; value = w
-            addOnChangeListener { _, v, _ -> w = v; refresh() }
-        }
-        val hSlider = Slider(this).apply {
-            valueFrom = 1f; valueTo = maxH; value = h
-            addOnChangeListener { _, v, _ -> h = v; refresh() }
-        }
+        wField.onEdit(::refresh)
+        hField.onEdit(::refresh)
         val content = vbox(
             label,
-            sliderRow("Width", wSlider),
-            sliderRow("Height", hSlider),
-            hint("Capped to what fits the screen (${String.format("%.1f × %.1f in", maxW, maxH)})."),
+            fieldRow("Width", wField),
+            fieldRow("Height", hField),
+            hint("Capped to what fits the screen (${CanvasSize.custom(maxW, maxH).label})."),
         )
         MaterialAlertDialogBuilder(this)
             .setTitle("Custom canvas")
             .setView(content)
             .setNegativeButton("Cancel", null)
-            .setPositiveButton("Use") { _, _ ->
-                val rw = round1(w)
-                val rh = round1(h)
-                chooseCanvasSize(CanvasSize.Print(rw, rh, String.format("%.1f × %.1f in", rw, rh)))
-            }
+            .setPositiveButton("Use") { _, _ -> chooseCanvasSize(typed()) }
             .show()
     }
-
-    private fun round1(x: Float): Float = (x * 10f).roundToInt() / 10f
 
     private fun applyWandSettings() {
         binding.canvas.wandTolerance = wandTolerance
@@ -1250,6 +2966,7 @@ class MainActivity : AppCompatActivity() {
         Tool.SPRAY -> R.drawable.ic_tool_spray
         Tool.ERASER -> R.drawable.ic_tool_eraser
         Tool.WAND -> R.drawable.ic_tool_wand
+        Tool.LASSO -> R.drawable.ic_tool_lasso
     }
 
     private fun surfaceIcon(s: SurfaceKind): Int = when (s) {
@@ -1268,6 +2985,19 @@ class MainActivity : AppCompatActivity() {
         // Brush/tool size range in millimetres (physical mark width).
         const val SIZE_MIN_MM = 0.1f
         const val SIZE_MAX_MM = 40f
+
+        /** How small the palette is as it leaves the swatch, and how long it takes. */
+        const val TRAY_POP_FROM = 0.35f
+        const val TRAY_POP_MS = 170L
+
+        /**
+         * How far in from each side the back gesture is asked to keep out.
+         *
+         * Comfortably wider than the strip any device actually reserves — the
+         * exclusion only ever applies where a system gesture already lives, so
+         * asking for more than there is costs nothing and misses nothing.
+         */
+        const val EDGE_GESTURE_DP = 48f
 
         // Material palette, matching the Flutter reference's swatch list.
         val SWATCHES = intArrayOf(

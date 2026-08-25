@@ -1,0 +1,16 @@
+<!-- A clipboard with a sheet on it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="#37474F">
+    <path android:fillColor="@android:color/transparent"
+        android:strokeColor="@android:color/white" android:strokeWidth="1.7"
+        android:strokeLineJoin="round"
+        android:pathData="M5.4,5.4h13.2v14.8h-13.2z"/>
+    <path android:fillColor="@android:color/white"
+        android:pathData="M9,3.2h6v3.4h-6z"/>
+    <path android:fillColor="@android:color/transparent"
+        android:strokeColor="@android:color/white" android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:pathData="M8.6,11.4h6.8M8.6,15h4.6"/>
+</vector>

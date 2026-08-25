@@ -12,6 +12,7 @@ by ordering. Add, split, and re-status freely.
 | 🚧 | In progress |
 | 🔬 | Prototyping / spike |
 | ⬜ | Not started |
+| 🐛 | Broken — something that shipped and no longer behaves |
 | ❄️ | Deferred — see [For consideration](#for-consideration-not-aligned-with-current-philosophy) |
 
 ## Guiding philosophy
@@ -31,17 +32,21 @@ physically rotate the tablet instead.
 - ✅ **Render styles:** solid, soft, grain, bristle, wash
 - ✅ **Surfaces (9):** Plain, Paper, Canvas, Watercolor, Wood, Stone, Concrete, Metal, Chalkboard — each with per-surface custom parameters + per-artwork seed, and a tooth field that breaks up strokes
 - ✅ **Pigment mixing:** spectral Kubelka-Munk (blue + yellow = green), on the GPU at stroke time and on the CPU (`Pigment.kt`) for the tray/brush
-- ✅ **Mixing tray:** a docked pull-out palette — named-pigment wells around the rim + a central mixing well, drag pigments in to mix them spectrally, tap to load the brush; add any wheel colour as a new well
+- ✅ **Mixing tray:** a palette that pops out of the colour swatch on the rail — named-pigment wells around the rim + a central mixing well, drag pigments in to mix them spectrally, tap the well to load the brush, hold it for the colour wheel; add any wheel colour as a new well
 - ✅ **Brush load:** the brush carries a finite load from the tray, spends it over the ground it covers (per real mm²) and fades as it runs dry, reload from the well
 - ✅ **Dirty brush:** dragging through paint on the canvas contaminates the load — a blue brush pulled across a yellow band comes out green and carries it forward
-- ✅ **Undo/redo:** unlimited, via replayable ops
-- ✅ **Magic-wand selection:** select, fill/erase, frisket-constrained painting, move/scale/rotate
+- ✅ **Undo/redo:** unlimited, via replayable ops — and it outlives the session: a page reopened days later still steps backwards through the marks that made it. Everything the sketchbook remembers is on that one timeline, so a renamed layer or a folder pulled shut undoes like a stroke does
+- ✅ **Selection:** magic wand and freehand lasso, both feeding the same actions — fill/erase, frisket-constrained painting, move/scale/rotate, copy and paste
 - ✅ **Watercolor interaction:** washes out existing paint
-- ✅ **Color:** HSV wheel + swatches
+- ✅ **Sketchbooks:** artwork is kept in `.soil` files on a shelf you can put in folders, pin, search and reopen where you left it. Multi-page books with thumbnails you can turn, add, duplicate, reorder and delete; a scratchpad off to the side to try something on; a clipboard that carries marks between pages and books; a whole sketchbook exported to hand to someone, or imported back. Encrypted from the first byte, with a per-sketchbook passphrase available on top
+- ✅ **Layers and folders:** up to eight paintable layers a page, nested freely in folders that pass their contents through rather than flattening them. Make, choose, name, reorder, hide, dial down; a deleted layer goes on a shelf, not in the bin
+- ✅ **Backup:** manual, incremental by what actually changed, to a local folder or to Google Drive — the copy is ciphertext, and it needs this install's recovery key to be read back
+- ✅ **Color:** HSV wheel + swatches + R/G/B sliders and typed fields + hex entry. One active colour, wherever it came from: mixing in the well, dialling the wheel and loading the brush all set the same value, and every tool that has a colour reads it
 - ✅ **Editable shape tools:** line, arc, polyline, polyarc (handle-edit before bake)
 - ✅ **Export:** PNG to device gallery
-- ✅ **True-size (1:1) output:** screen calibration to real PPI (physical-reference match), brush/tool sizes in millimetres, real-size canvas presets (drawn 1:1, centred in a mat), and DPI-stamped PNG that prints at the exact on-screen physical size — verified on paper
-- ✅ **Input:** pressure + tilt, palm rejection, stylus-only
+- ✅ **True-size (1:1) output:** screen calibration to real PPI (physical-reference match), brush/tool sizes in millimetres, real-size canvas presets (drawn 1:1, centred in a mat), and DPI-stamped PNG that prints at the exact on-screen physical size — verified on paper. E-ink frame canvases are the deliberate exception: pixel-exact to the frame's grid rather than true-size to the glass
+- ✅ **Input:** pressure + tilt, palm rejection, stylus-only; a pen arriving from off the sheet goes live the instant it crosses onto it, and the editor holds the screen so Android's own edge gestures stay out of a painting
+- ✅ **Both ends of the pen:** turn a stylus over and its eraser end rubs out at the eraser's own size, for that mark only, with nothing on the rail changing. How the rubber is held sets how much of it is touching — upright and bearing down is the full face, tipped over is the rim — so one eraser runs about six to one in width without going near a setting
 
 ---
 
@@ -80,7 +85,8 @@ physically rotate the tablet instead.
 | ⬜ | Dodge / Burn | |
 | ⬜ | Sponge (saturate/desaturate) | |
 | ⬜ | Kneaded eraser | Lifts partially rather than clearing to surface |
-| ⬜ | Pressure-sensitive eraser | |
+| ✅ | Pressure-sensitive eraser | Pressure is spent twice, as a real rubber spends it: on how much *lifts* (the ramp saturates at 0.45, so an ordinary pass removes fully and only a graze leaves a ghost) and on how much is *touching* — the rubber squashes, 0.72×–1.30× of the set size, landing at nominal for a measured normal hand. `eraserWidth` |
+| ✅ | Tilt-sensitive eraser | A pencil's rubber is a flat-faced plug: held upright the whole face is down and it rubs at full width; tipped over, only the rim touches. So leaning takes the patch down to 0.30× — about six to one across every hold, which is one rubber that both clears a passage and picks a corner out. An **oval** footprint that leant with the pen was built first and rejected: the shape of the mark is not what the hand is asking about, and it was wrong anyway, since a flat face on its rim meets paper as a thin sliver rather than a fatter oval |
 | ⬜ | Textured eraser | Respects current brush's texture |
 
 ### Brush engine
@@ -122,33 +128,34 @@ physically rotate the tablet instead.
 ---
 
 ## Selection
-The wand is the only selection today.
+Two selectors today, the magic wand and the freehand lasso, feeding one set of actions.
 | Status | Item | Notes |
 |--------|------|-------|
 | ⬜ | Rectangular / elliptical marquee | |
-| ⬜ | Freehand lasso | |
+| ✅ | Freehand lasso | Draw a loop around it and the loop closes itself; from there it does everything the wand's selection does |
 | ⬜ | Polygonal lasso | |
 | ⬜ | Boolean modes | Add, subtract, intersect |
 | ⬜ | Select all, invert | |
 | ⬜ | Edge ops | Feather, grow, shrink, smooth |
 | ⬜ | Select by color range | Global, non-contiguous — the wand's opposite |
-| ⬜ | Copy / cut / paste | No clipboard at all right now |
+| 🚧 | Copy / cut / paste | **Copy and paste ship.** The clipboard takes whole marks that lie inside the selection — so they stay editable and re-tooth to the surface they land on, and so a stroke crossing the boundary is left behind rather than sliced. It lives in the index, not the page, which is what lets it outlive the page, the book and the process. **Cut is the remainder** |
 | ⬜ | Richer transforms | Skew, distort, perspective, warp/liquify mesh, flip, numeric entry |
 | ⬜ | Save / restore a selection | |
 
 ---
 
 ## Layers
-Biggest structural gap. Two layers today (surface, paint); paint layer is flat raster.
+Up to eight paintable layers a page, nested in folders. What is left here is the
+compositing-and-masking half: how layers combine, not whether they exist.
 | Status | Item | Notes |
 |--------|------|-------|
-| ⬜ | Arbitrary layers | Reorder, rename, lock, hide, per-layer opacity |
+| 🚧 | Arbitrary layers | Make, choose, name, reorder, hide and dial down, eight to a page; a deleted layer goes to a shelf it can be taken back from, and every one of those edits is a step on the undo timeline. **Lock is the remainder** |
 | ⬜ | Blend modes | Multiply, screen, overlay, add, … |
 | ⬜ | Clipping masks | |
 | ⬜ | Alpha lock | Paint only where pixels already exist |
 | ⬜ | Layer masks | |
 | ⬜ | Adjustment layers | |
-| ⬜ | Groups / folders | Merge down, duplicate, flatten |
+| ✅ | Groups / folders | Nest freely; a folder passes its contents through rather than compositing them, so its eye and dial multiply onto each layer and two half-opaque layers in a half folder still darken where they cross. Make, name, fold shut, drag in and out; deleting one keeps the layers. Merge down, duplicate and flatten are still to come |
 | ⬜ | Reference layer | Line art the bucket respects while filling on a layer beneath |
 | ⬜ | Onion skinning | If animation is ever on the table |
 
@@ -168,7 +175,8 @@ Biggest structural gap. Two layers today (surface, paint); paint layer is flat r
 | ⬜ | Import an image | As a layer or reference |
 | ⬜ | Reference panel | Floating window with a source photo |
 | ✅ | Print-accurate export (1:1) | Tool sizes in mm + DPI-stamped PNG (pHYs) → prints at the exact on-screen physical size. Needs a calibrated screen |
-| ✅ | Canvas presets | Full screen + real-size print presets (4×4, 4×6, 5×5, 5×7, 8×10) filtered to what fits the calibrated screen, plus custom. Drawn 1:1 (no zoom), centred in a mat, drawing constrained to the sheet |
+| ✅ | Canvas presets | Custom, real-size print presets (4×4, 4×6, 5×7) filtered to what fits the calibrated screen, the largest 2:3 sheet that fits, and full screen. Drawn 1:1 (no zoom), centred in a mat, drawing constrained to the sheet |
+| ✅ | E-ink frame canvases | Spectra 6 7.3 (480×800) and 13.3 (1200×1600): the buffer is the frame's own pixel grid, the sheet is shown at the size it hangs (shrunk if the panel is too small), and the PNG carries the frame's DPI rather than the tablet's. Landscape like every other sheet, though the panels are specified portrait. The one canvas measured in pixels instead of inches |
 | ⬜ | Crop / resize / trim / straighten | |
 | ⬜ | Export formats | JPG/WebP, layered ORA/PSD, SVG for vector shapes |
 | ⬜ | Time-lapse recording | Procreate headline feature; people share the videos |
@@ -185,8 +193,8 @@ Biggest structural gap. Two layers today (surface, paint); paint layer is flat r
 | ⬜ | Palette from an image | Extract |
 | ⬜ | Recent colors history | |
 | ⬜ | Color harmony wheel | Complementary, triadic, analogous |
-| ⬜ | Numeric entry | Hex, RGB, HSL sliders |
-| ✅ | Physical mixing tray | Docked pull-out palette: named-pigment wells + a central mixing well, drag to mix spectrally *before* painting, tap to load the brush. Custom colours off the wheel become wells too |
+| 🚧 | Numeric entry | **Hex and RGB done** — each channel has a slider *and* a typed field, plus a hex field that takes `#RRGGBB`, `#RGB` or 8 digits with the alpha dropped. Every control syncs through one place and never rewrites the one being typed in (`ColorFields.kt`). HSL is the remainder |
+| ✅ | Physical mixing tray | A palette that pops out of the colour swatch on the rail: named-pigment wells + a central mixing well, drag to mix spectrally *before* painting, tap the well to load the brush, hold it for the colour wheel. Custom colours off the wheel become wells too |
 | 🚧 | Named real pigments | Ultramarine, Cadmium Yellow, Quinacridone Magenta, Phthalo Green, etc. shipped as the tray's wells — but curated **sRGB** with real names, NOT measured KM coefficients. Measured coefficients (truer mixing) remain the refinement |
 | ⬜ | Grayscale value preview | Check values |
 | ⬜ | Colorblind preview | |
@@ -241,13 +249,16 @@ Where Paintsprout could be genuinely unlike anything else — the hard parts are
 | Status | Item | Notes |
 |--------|------|-------|
 | ✅ | Screen calibration | Match a physical reference (ID card / business / index card / ruler) with the stylus to store true PPI per device; underpins 1:1 print |
+| ✅ | The screen belongs to the painting | Hiding the system bars never stopped the gestures that summon them, and a hand at the edge of the paper is exactly where they live — the status bar drops or the app switcher appears mid-stroke. The editor takes lock task mode (Android's own app pinning) on the way in. Taken **once and kept** — across the library, across page turns — because every request is a system dialog that cannot be suppressed: only a device-owner-allowlisted app skips it, and a tablet with accounts on it cannot be given a device owner. Given back only at the few doors that lead outside the app (import, share, backup folder pickers), which pinning otherwise refuses to open, silently. `ScreenLock.kt`. Separately, the back gesture is pushed off the left and right edges with `systemGestureExclusionRects`; the status-bar pull and the home/app-switch swipes are *mandatory* system gestures no app may exclude, which is why pinning is needed for those at all. Unpinning by hand drops the tablet to the lock screen unless `settings put secure lock_to_app_exit_locked 0` says otherwise — a device setting, not ours |
+| ✅ | The pen is live where it crosses onto the sheet | A press landing in the mat — or arriving already moving from off the panel — used to be thrown away, so a hand coming in from the side had to lift and start again over the paper. The press is now kept, and the mark begins at the first sample on paper, dispatched as a real pen-down built from *that* sample's own pressure and tilt rather than the end of whatever batch it arrived in. `PaintCanvasView.beginOnEntry` |
 | ⬜ | Stylus barrel-button mapping | Movink has buttons we're not using |
-| ⬜ | Eraser end of stylus | Flips to eraser tool automatically |
+| ✅ | Eraser end of stylus | Turn the pen over and it rubs out, whatever is in hand — including the wand, the lasso and a half-built shape, which simply wait for the tip. Scoped to the mark, not to a mode: set when the eraser end comes down (`TOOL_TYPE_ERASER`, which the Movink digitizer raises as `BTN_TOOL_RUBBER`), cleared when it lifts, and **nothing on the rail moves** — turning a pencil over is something the hand does mid-sentence, not a mode the app is put into. It erases at the eraser's *own* size rather than the size of the tool that happens to be selected, so the canvas carries that size alongside the chosen one. `PaintCanvasView.eraserEnd` / `effectiveTool` |
 | ⬜ | Speed → width tapering | For ink strokes |
 | ⬜ | Radial quick menu | Long-press or button |
 | ⬜ | Keyboard shortcuts | |
 | ⬜ | Left-handed UI mirroring | Rail is on one side |
 | ⬜ | Brush cursor outline | Shows actual tip shape + size before committing |
+| 🐛 | Page-turn swipe ignores how you're holding it | `PageTurn.of(dx, dy, …)` reads the sweep in the canvas's own coordinates, and since the orientation phase those are the *glass's* — the sheet is pinned there while the tablet turns around it. So the gesture turns with the tablet: hold it in portrait and a sideways sweep does nothing, while a sweep that looks vertical to you turns the page. Needs the sweep rotated into the viewer's frame (`MainActivity` already tracks the quarter-turn as `chromeQuarter`) before deciding forward or back — or a decision that the swipe belongs to the sheet rather than the reader, which is defensible but is not what it does today by intent |
 
 ---
 
