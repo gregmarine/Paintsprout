@@ -37,13 +37,25 @@ object Dialogs {
      * started before a back press, and a dialog attached to a finishing window is a crash rather than
      * a message anybody reads.
      */
-    fun problem(activity: Activity, title: CharSequence, message: CharSequence) {
-        if (activity.isFinishing || activity.isDestroyed) return
+    fun problem(
+        activity: Activity,
+        title: CharSequence,
+        message: CharSequence,
+        onDismiss: (() -> Unit)? = null,
+    ) {
+        // [onDismiss] still runs when the window has already gone. A screen that cannot open what it
+        // was launched for closes itself from here, and skipping that because the dialog could not be
+        // shown would leave it standing there blank with no message on it either.
+        if (activity.isFinishing || activity.isDestroyed) {
+            onDismiss?.invoke()
+            return
+        }
         style(
             AlertDialog.Builder(activity)
                 .setTitle(title)
                 .setMessage(message)
                 .setPositiveButton(R.string.ok, null)
+                .setOnDismissListener { onDismiss?.invoke() }
                 .create()
         ).show()
     }
@@ -51,8 +63,12 @@ object Dialogs {
     fun problem(activity: Activity, @StringRes titleRes: Int, message: CharSequence) =
         problem(activity, activity.getString(titleRes), message)
 
-    fun problem(activity: Activity, @StringRes titleRes: Int, @StringRes messageRes: Int) =
-        problem(activity, activity.getString(titleRes), activity.getString(messageRes))
+    fun problem(
+        activity: Activity,
+        @StringRes titleRes: Int,
+        @StringRes messageRes: Int,
+        onDismiss: (() -> Unit)? = null,
+    ) = problem(activity, activity.getString(titleRes), activity.getString(messageRes), onDismiss)
 
     /**
      * A destructive question: title, body, a named verb on the affirmative button, Cancel.

@@ -102,8 +102,8 @@ dependencies {
     // is exercised by a real dependency rather than sitting here as untested
     // boilerplate. It re-pins to 0.1.7 when g-paper's Phase 10 publishes the
     // textured PENCIL renderer, which is what G3 waits on.
-    implementation("com.symmetricalpalmtree.gpaper:gpaper-core:0.1.6")
-    implementation("com.symmetricalpalmtree.gpaper:gpaper-onyx:0.1.6")
+    implementation("com.symmetricalpalmtree.gpaper:gpaper-core:0.1.7")
+    implementation("com.symmetricalpalmtree.gpaper:gpaper-onyx:0.1.7")
 
     // Room — the ORM over both SQLCipher databases, paintsprout.db and every
     // .soil. ktx is here because index and soil access are coroutine-first from
@@ -143,4 +143,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
     testImplementation("junit:junit:4.13.2")
+    // The mark ↔ row mapping is the one part of the page that can be checked with no tablet in the
+    // room, and it speaks g-paper's Stroke on one side. Core only: gpaper-onyx would drag the BOOX
+    // SDK onto the JVM test classpath, where none of it can run.
+    testImplementation("com.symmetricalpalmtree.gpaper:gpaper-core:0.1.7")
 }

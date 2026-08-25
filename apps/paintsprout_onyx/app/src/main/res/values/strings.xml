@@ -176,6 +176,25 @@
     <string name="debug_forget_body">Clears the cached recovery key and closes the app. The next launch will ask for the key. Your sketchbooks are untouched — but have the key to hand before you do this.</string>
     <string name="debug_forget_confirm">Forget and close</string>
     <string name="debug_forgotten">Forgotten — launch again</string>
+
+    <!-- The page. Nothing here is a label the artist reads while drawing: the
+         name and the page count are for glancing at between marks, and the rest
+         are content descriptions, sheet titles, and the two things a sketchbook
+         that will not open has to be able to say. -->
+    <string name="cd_sketchbook_back">Back to the shelf</string>
+    <string name="cd_sketchbook_pencil">Pencil</string>
+    <string name="cd_sketchbook_eraser">Eraser</string>
+    <string name="sketchbook_opening">Opening\u2026</string>
+    <string name="sketchbook_page_of">%1$d / %2$d</string>
+    <string name="lead_sheet_title">Pencil</string>
+    <string name="lead_fine">Fine</string>
+    <string name="lead_medium">Medium</string>
+    <string name="lead_broad">Broad</string>
+    <string name="sketchbook_missing_title">This sketchbook is not here</string>
+    <string name="sketchbook_missing_body">The card is on the shelf but the sketchbook it points to is missing. Nothing has been deleted \u2014 the file may be on another device, or may not have finished being made.</string>
+    <string name="sketchbook_open_failed_title">This sketchbook would not open</string>
+    <string name="sketchbook_open_failed_body">Something in the file could not be read. It has been left exactly as it is \u2014 nothing was changed and nothing was deleted.</string>
+
     <string name="close">Close</string>
     <string name="cancel">Cancel</string>
 </resources>

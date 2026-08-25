@@ -105,6 +105,17 @@
             android:exported="false"
             android:screenOrientation="portrait" />
 
+        <!--
+          The page. No windowSoftInputMode here because there is no text on this
+          screen to type — and that is worth stating rather than leaving as an
+          omission, since a keyboard appearing over a drawing would resize the
+          paper, and the paper is a fixed page recorded at the panel's own size.
+        -->
+        <activity
+            android:name=".sketchbook.SketchbookActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
     </application>
 
 </manifest>

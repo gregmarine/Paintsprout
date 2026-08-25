@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The page, and the little that sits over it.
+
+  The paper is full-bleed: it fills the window corner to corner and the chrome
+  overlays it, rather than the two sharing the height between them. That is not
+  a style choice — a page in this app *is* the panel, recorded at the panel's
+  own size when the sketchbook was made and never rescaled, so anything that
+  took a strip of height away from it would be drawing a page that no longer
+  matches the one on disk. The Kotlin hands the bars' rectangles to
+  setExclusionRects so the pen cannot ink underneath them.
+
+  Tools at the top, information at the bottom. The top bar is where a tappable
+  thing can safely live: the bottom edge of a tablet held in the hand is where
+  the heel of the drawing hand rests, and a tool that changes when you lean on
+  the paper is a tool that changes by itself. The bottom strip is therefore not
+  tappable at all — a name and a page count, nothing to hit.
+
+  BOOX draws a real status bar over the top of the window, so the top bar takes
+  the system-bar inset as padding (TopGuard, in the Kotlin) and nothing tappable
+  ever sits against the very top edge — tapping there pulls the shade down
+  instead of firing the button.
+
+  The empty right end of the top bar is a gap on purpose: G4's add-page and
+  delete-page controls go there, the same way G2 left the left end of the
+  shelf's bottom bar empty for the pins and recents that land in G5.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/paperWhite">
+
+    <!-- The paper view is added here at runtime: which engine builds it is
+         GPaper's decision, not a layout's, and naming a class in XML would
+         hardwire the BOOX one into a screen that also has to come up on a
+         desk. -->
+    <FrameLayout
+        android:id="@+id/paperContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <LinearLayout
+        android:id="@+id/topBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:orientation="vertical"
+        android:background="@drawable/toolbar_background_top">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/toolbar_bar_thickness"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <!-- Back at the far left, flush to the edge, exactly where Up sits
+                 on the shelf's breadcrumb bar. The same gesture in the same
+                 place across both screens. -->
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/btnBack"
+                style="@style/Widget.Paintsprout.ToolbarButton"
+                android:src="@drawable/ic_arrow_left"
+                android:contentDescription="@string/cd_sketchbook_back" />
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/btnPencil"
+                style="@style/Widget.Paintsprout.ToolbarButton"
+                android:src="@drawable/ic_pencil"
+                android:contentDescription="@string/cd_sketchbook_pencil" />
+
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/btnEraser"
+                style="@style/Widget.Paintsprout.ToolbarButton"
+                android:src="@drawable/ic_eraser"
+                android:contentDescription="@string/cd_sketchbook_eraser" />
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/bottomStrip"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="@dimen/screen_margin"
+        android:paddingEnd="@dimen/screen_margin"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:background="@drawable/toolbar_background_bottom">
+
+        <TextView
+            android:id="@+id/sketchbookName"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:maxLines="1"
+            android:ellipsize="end"
+            style="@style/TextAppearance.Paintsprout.Caption" />
+
+        <TextView
+            android:id="@+id/pageIndicator"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingStart="12dp"
+            style="@style/TextAppearance.Paintsprout.Caption" />
+
+    </LinearLayout>
+
+    <!--
+      Opening a sketchbook means deriving a key and reading a page, and on this
+      panel that is long enough that a bare white screen reads as a crash. It
+      sits over the paper and goes when the page is on it.
+    -->
+    <TextView
+        android:id="@+id/openingOverlay"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:text="@string/sketchbook_opening"
+        style="@style/TextAppearance.Paintsprout.BodyLarge" />
+
+</FrameLayout>

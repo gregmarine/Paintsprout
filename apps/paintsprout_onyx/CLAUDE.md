@@ -55,6 +55,21 @@ not apply here. Plus:
   the index. **Never delete a DB on corruption.**
 - **`IndexGuard.ready(this)` first thing in every index-touching `onCreate`**; `BootstrapActivity`
   is the only index opener and is `noHistory`.
+- **The write queue must outlive the screen.** `SoilWriter`'s pump runs on
+  `PaintsproutApplication.scope`, never an Activity's `lifecycleScope` — that one is cancelled the
+  instant `onDestroy` returns, which is exactly when `SketchbookSession.close()` is draining it, so
+  the call written to save the last marks drawn would be the call that threw them away. Anything else
+  that must finish after a screen goes belongs on that scope too, and nothing else does yet.
+- **Turning the pen over erases, and there is no code here to find.** The BOOX SDK intercepts the
+  stylus eraser end at hardware level and g-paper's Onyx engine erases with it whichever tool is
+  armed (`onBeginRawErasing`). Worth knowing precisely because someone will go looking for the host
+  code that does it.
+- **Graphite lives in g-paper, and its grain is seeded from the stroke id.** `StrokeStyle.PENCIL`
+  (0.1.7) draws flecks on the paper's tooth — pressure fills in more of the tooth and darkens what
+  lands, the width never moves, tilt is unread. A mark's apparent width is about `width + 2 px`, the
+  bleed of one fleck, so **pencil sizes must be spaced by more than that** or they look like one
+  pencil in disguises. Never add a host-side pencil renderer: a gap in how graphite looks is a
+  g-paper phase.
 - **Frame-silence rule:** never present an app frame while `paper.isPenActive` — route chrome text
   and updates through a pen-idle gate. Frames presented during a live raw contact are withheld from
   the panel, and a pen-up `invalidate()` of identical content is damage-free, so a careless chrome
@@ -104,6 +119,11 @@ not apply here. Plus:
 - **A view's `width` includes its own padding.** Measuring a grid against it on a screen with a
   screen margin overflows the last column off the panel, and it reads as a card that is merely too
   big — the wrong thing to go and fix. Subtract the padding where the measurement is taken.
+- **`releaseForHandoff()` has no caller in arc 1 and that is deliberate.** It belongs immediately
+  before launching, or finishing back to, *another* paper-hosting screen — and there is none. Adding
+  a second one means adding the call: without it the departing screen's teardown lands ~200 ms after
+  the arriving screen reclaimed, and the arriving screen's ink stays invisible until the tool is
+  flipped.
 - **A device agent's failures need reproducing before they are believed**, exactly like its passes.
   G1's first walk reported a critical defect in a flow that works, and diagnosed it in a class this
   app does not contain. Reproduce by hand before changing code.

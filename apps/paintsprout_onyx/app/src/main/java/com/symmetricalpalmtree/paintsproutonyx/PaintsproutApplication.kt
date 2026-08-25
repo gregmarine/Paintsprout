@@ -2,9 +2,14 @@ package com.symmetricalpalmtree.paintsproutonyx
 
 import android.app.Application
 import android.util.Log
+import com.symmetricalpalmtree.gpaper.onyx.OnyxEngine
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /**
- * Process start. Today it does exactly one thing, and it has to happen here.
+ * Process start. Two things happen here, and both have to happen here rather than anywhere
+ * a screen could put them.
  *
  * SQLCipher's native library must be loaded before anything opens a database, and every
  * database this app has is encrypted — including the index, which the launcher opens before
@@ -15,18 +20,20 @@ import android.util.Log
  * native layer with a message about a missing symbol, on a device, with no hint that the
  * library is fine and only the loading order is wrong.
  *
- * **G3 adds `OnyxEngine.register(this)` here**, and that call belongs in this method too and
- * for a related reason — besides registering the engine it installs the hidden-API bypass
- * the BOOX SDK needs and heals EPD state left behind by a process killed mid-pen-stroke.
- * That state is keyed by name rather than by process, so a stroke interrupted by a crash
- * ghosts the whole panel until the tablet is rebooted. It is not here yet because there is
- * nothing to draw on until G3, and an engine registered for a view that does not exist is a
- * device SDK holding the panel open for no reason.
+ * **`OnyxEngine.register(this)` joined it in G3**, and it belongs in this method for a
+ * related reason. Besides registering the engine it installs the hidden-API bypass the BOOX
+ * SDK needs on Android 14 and up, and it heals EPD state left behind by a process killed
+ * mid-pen-stroke. That state is keyed by *name* rather than by process, so a stroke
+ * interrupted by a crash ghosts the whole panel — every app on the device, until it is
+ * rebooted — and the only thing that can undo it is the next start of a process with the
+ * same name. It has to be given the `Application` rather than any other Context: it outlives
+ * every screen, and an Activity handed to it would be leaked for the life of the process.
  */
 class PaintsproutApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        OnyxEngine.register(this)
         try {
             System.loadLibrary("sqlcipher")
         } catch (e: UnsatisfiedLinkError) {
@@ -41,5 +48,19 @@ class PaintsproutApplication : Application() {
 
     companion object {
         private const val TAG = "PaintsproutApplication"
+
+        /**
+         * For work that has to finish after the screen that asked for it is gone.
+         *
+         * There is exactly one such job in arc 1 and it is the important one: closing a sketchbook
+         * drains its write queue first, and the marks in that queue are the last ones the artist
+         * drew. An Activity's own scope is cancelled the moment `onDestroy` returns, so a close
+         * running on it would abandon precisely the strokes the artist most expects to find when
+         * they open the page again.
+         *
+         * A [SupervisorJob] so one failed close cannot take the scope down with it, and IO because
+         * everything on it is a database.
+         */
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
 }

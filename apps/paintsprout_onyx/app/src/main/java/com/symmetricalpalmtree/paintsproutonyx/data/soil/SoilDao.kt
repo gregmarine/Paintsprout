@@ -87,6 +87,16 @@ interface SoilDao {
     @Query("UPDATE sketchbook SET text = :text, updatedAt = :at WHERE id = :id")
     suspend fun setText(id: String, text: String?, at: Long)
 
+    /**
+     * Mark a row as having changed, without changing it.
+     *
+     * The sketchbook row is what a file says about itself when it turns up on its own with no index
+     * to explain it, and "when was this last drawn in" is part of that. Every mark and every erase
+     * bumps it, so the answer is the truth even for a sketchbook that was never closed properly.
+     */
+    @Query("UPDATE sketchbook SET updatedAt = :at WHERE id = :id")
+    suspend fun touch(id: String, at: Long)
+
     @Query("UPDATE sketchbook SET `order` = :order, updatedAt = :at WHERE id = :id")
     suspend fun setOrder(id: String, order: Int, at: Long)
 

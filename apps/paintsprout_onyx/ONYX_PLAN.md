@@ -203,7 +203,8 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
 
 ## Dependency — g-paper Phase 10 "Graphite"
 
-**Status:** ⬜ Not started · **Repo:** `~/git/g-paper` · **Tracked in that repo's `PLAN.md`.**
+**Status:** 🧪 Built and published as **0.1.7**, commit `7239366` in `~/git/g-paper`, awaiting the
+same device pass as G3 · **Tracked in that repo's `PLAN.md`.**
 
 Arc 1 cannot start drawing until this lands. It is a g-paper phase, run under g-paper's own
 protocol, and it publishes **0.1.7**. Summary of what it owes us:
@@ -510,7 +511,7 @@ the phase and the one thing here that was settled by looking at the panel rather
 ---
 
 ### G3 — Paper and pencil
-**Status:** ⬜ Not started · **Blocked on g-paper Phase 10 (0.1.7).**
+**Status:** 🧪 Awaiting device verification · **g-paper Phase 10 (0.1.7) ran inside this phase.**
 
 The first mark. `PaintsproutApplication` with `OnyxEngine.register(this)`; `SketchbookActivity` —
 full-bleed white paper, chrome overlaid and declared via `setExclusionRects`, a pencil/eraser
@@ -531,6 +532,89 @@ on the panel; marks survive close and reopen; `dumpsys gfxinfo` shows no frame s
 2. Pencil sizes: a fixed set of widths, or one pencil whose width comes only from pressure?
 3. Eraser size, and whether the pen's own eraser end is read (the Wacom app does; whether the BOOX
    SDK surfaces it needs checking on-device).
+
+**Answers.** Four questions were put, because the first of them turned out to be about g-paper
+rather than about this app.
+
+1. **Tilt stays at zero** — g-paper's fleet decision stands and this arc does not reopen it. The
+   premise needed correcting first: BOOX is *not* deaf to tilt. It delivers `tiltX`/`tiltY` on every
+   raw point and the NA5C's spans are sane (`-43..55` / `-13..38`). g-paper discards them because a
+   five-device survey found one model reporting roughly 100× the others with no `getMaxTilt()` to
+   normalize against, so a fleet library publishing a tilt number would be publishing a different
+   unit per model. Characterizing it per model is **a candidate later g-paper phase**, and it is what
+   the pencil's missing half — the side-of-lead regime, lighter and broader and streakier as the pen
+   lays over — would need.
+2. **Pressure moves darkness; the width never moves.** One variable on a panel that cannot show two,
+   and it keeps the verdict attributable.
+3. **Graphite is broken coverage, not tonal shading** — flecks on the paper's tooth with bare paper
+   between them, denser under pressure. Chosen over carrying the Wacom app's tonal five-lane mesh
+   across for two reasons: an e-ink panel with a handful of grey levels dithers any continuous grey
+   it is handed and invents a texture on top of ours, and the Wacom mesh was judged right *beside a
+   surface model supplying the gaps* — this arc's paper is plain white with nothing behind it, so the
+   pencil has to carry the tooth itself.
+4. **Chrome follows Paper's arrangement**: a top bar of tool buttons below the status-bar inset, and
+   a bottom strip carrying the sketchbook's name and page count that is not tappable at all. Proven
+   on this exact panel, and it keeps every target away from the bottom edge where the heel of a
+   drawing hand rests.
+5. **Three discrete leads** behind the pencil button — tap it when it is already in hand and the tin
+   opens, the same idiom as the shelf's sort sheet. Real pencils come in sizes; you pick one up, you
+   do not dial one.
+6. **One fixed eraser radius, no control.** Worth being precise about what the control would have
+   done: arc 1 uses g-paper's *stroke* eraser, so the radius is "how near you have to pass", not "how
+   much rubber is on the paper" — a bigger one does not take more off a mark, it takes marks that
+   were not aimed at. There is no setting there an artist would want, and offering one would promise
+   a rubbing eraser this is not. **The pen's eraser end needed no work at all**: the BOOX SDK
+   intercepts it at hardware level and g-paper's Onyx engine erases with it whichever tool is armed,
+   so turning the pencil over erases and nothing on the toolbar moves — the same behaviour the Wacom
+   app builds by hand, here for free.
+
+**Outcome (code complete; the pencil has not been drawn with yet).** **111 JVM tests** (98 after G2),
+`assembleDebug` and `assembleRelease` green, installed on the NA5C, and every step adb can reach
+walked: the shelf opens a sketchbook, creating one lands straight on its page, the lead sheet ticks
+the lead in hand, the tool ring moves between pencil and eraser, back returns to the shelf, and
+`GPaperOnyx: openRawDrawing: pipeline claimed (1860x2480)` says the engine took the panel at full
+resolution. Empty crash buffer throughout.
+
+- **g-paper Phase 10 was built first and published as 0.1.7** (`~/git/g-paper`, commit `7239366`) —
+  `geometry/GraphiteGrain.kt` decides which specks of tooth caught the lead,
+  `StrokeRenderer.drawPencil` puts them down, 15 new JVM tests hold the determinism. The engine gap
+  was fixed in the engine, exactly as the standing rule says; nothing about graphite lives in this
+  app. Its own outcome note is in that repo's `PLAN.md`.
+- **The determinism constraint turned out to be stronger than g-paper's plan had asked for.** The
+  plan wanted no reshuffle on reload; a grain must also not reshuffle at **pen-up**, or every mark
+  ends in a flinch. So `CanvasPaperView` now mints a stroke's id when the contact *starts* rather
+  than at commit, and the live preview seeds off the id the stroke is about to get.
+- **Two flaws an offline preview caught that no test would have.** Rendering the grain to a PNG
+  before ever touching the device showed the lanes of tooth spread endpoint-to-endpoint, so the two
+  outermost lanes sat exactly on the lead's rim and took the full edge falloff — ruinous on a fine
+  lead, where those two lanes *are* two thirds of the mark, which came out patchy grey instead of a
+  firm dark line. And the fleck diameter floors the apparent width: a mark measures about
+  `width + 2 px` however fine the lead. That second one is why the three leads are 3 / 6.5 / 12 px
+  and not evenly spaced — closer together they would look like one pencil in three disguises.
+- **The write queue outlives the screen, and that was a real bug caught before it shipped.**
+  `SoilWriter`'s pump was first given the Activity's `lifecycleScope`, which is cancelled the instant
+  `onDestroy` returns — so `close()`'s drain, the call written specifically to save the last marks
+  drawn, would have been the call that threw them away. It runs on the application scope now.
+- **`releaseForHandoff()` is deliberately called nowhere**, and the comment in `SketchbookActivity`
+  says so rather than claiming otherwise. There is no second paper-hosting screen in arc 1; when
+  there is, that is where the call goes.
+- **The frame-silence rule arrived with a ledger and the ledger is empty on purpose.**
+  `sketchbook/PenIdleGate.kt` and `docs/sketchbook.md` — G3's chrome is static by construction (the
+  toolbar changes only on a tap, a tap is a finger, and a finger while the pen is active is a palm
+  the component has already refused), so there are no exceptions to record. The gate is built and
+  wired anyway so G4's page turns and undo counters land in a screen that already obeys the rule.
+- **`docs/` starts here rather than in G6**, holding only `sketchbook.md`, because the plan named
+  that file as the home for the frame-silence justifications and a ledger written later is a ledger
+  nobody kept. G6 grows it.
+- **Not done, on purpose:** no undo/redo and no page turning (G4 — the page indicator reads `1 / 1`
+  and means it); no covers, pins or recents (G5); no `SoilDao.restore`/`setOrder`/`liveChildIds`
+  callers yet, and `incremental_vacuum` is still owed by G4 as G2 recorded.
+- **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
+  injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are
+  invisible to `screencap`, so how graphite reads on this Kaleido panel, whether pressure spans
+  usefully from ghost to solid, whether the pen-up pop between the firmware's live CHARCOAL and our
+  baked grain is visible, whether the eraser end behaves, and whether marks survive a close and
+  reopen are all Greg's eye and nobody else's.
 
 ---
 

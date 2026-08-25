@@ -28,6 +28,7 @@ import com.symmetricalpalmtree.paintsproutonyx.data.prefs.LibraryPrefs
 import com.symmetricalpalmtree.paintsproutonyx.data.sidecarsOf
 import com.symmetricalpalmtree.paintsproutonyx.data.soilFile
 import com.symmetricalpalmtree.paintsproutonyx.databinding.ActivityLibraryBinding
+import com.symmetricalpalmtree.paintsproutonyx.sketchbook.SketchbookActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -83,9 +84,14 @@ class LibraryActivity : AppCompatActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            // G3 opens the new sketchbook straight from here. Until there is a screen to open it on,
-            // the honest thing is to come back to the shelf with the new card on it.
+            // Straight onto the page. Making a sketchbook is not an act of filing — it is the first
+            // half of sitting down to draw — so landing back on the shelf and asking the artist to
+            // find the card they just made would be the shelf getting in its own way. The refresh
+            // still happens, so the card is there behind them when they come back.
             lifecycleScope.launch { refresh() }
+            result.data?.getStringExtra(NewSketchbookActivity.EXTRA_SKETCHBOOK_ID)
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { startActivity(SketchbookActivity.intent(this, it)) }
         }
     }
 
@@ -295,9 +301,7 @@ class LibraryActivity : AppCompatActivity() {
     private fun onCardTap(item: CardItem) {
         when (item) {
             is CardItem.Folder -> navigateTo(item.summary.id)
-            // G3 gives a sketchbook somewhere to open. Until it does, tapping one is not a failure
-            // worth a dialog — there is simply nothing on the other side of it yet.
-            is CardItem.Sketchbook -> Unit
+            is CardItem.Sketchbook -> startActivity(SketchbookActivity.intent(this, item.summary.id))
         }
     }
 
