@@ -12,8 +12,8 @@ the artist powers they would not have with real media on a real surface is a
 candidate for deferral, not for the backlog. Canvas zoom/pan/rotate are deferred
 on exactly this ground — you turn the tablet instead.
 
-`docs/tool-ideas.md` is the status-tracked backlog (✅ / 🚧 / ⬜ / 🐛 / ❄️) and
-carries the "For consideration" list of things held back by that philosophy.
+`docs/tool-ideas.md` is the status-tracked backlog and carries the "For
+consideration" list of things held back by that philosophy.
 
 ## Repository layout
 
@@ -40,18 +40,16 @@ All Gradle work happens in `apps/paintsprout_android`.
 ```bash
 ./gradlew :app:assembleDebug          # debug APK -> app/build/outputs/apk/debug/
 ./gradlew :app:testDebugUnitTest      # the whole JVM unit-test suite
-./gradlew :app:testDebugUnitTest --tests "*.StrokeGeometryTest"
-./gradlew :app:testDebugUnitTest --tests "*.StrokeGeometryTest.someTestMethod"
 ```
 
 - There is **no lint, detekt or ktlint config** — `assembleDebug` plus the unit
   tests are the whole automated check. There are no instrumented tests either;
   everything under `app/src/test` runs on the JVM.
-- JDK 17 is pinned in `gradle.properties` (`org.gradle.java.home`). AGP 8.11.1 ·
-  Kotlin 2.2.20 · KSP and the serialization plugin are pinned to the Kotlin
-  version and move together with it.
-- compileSdk/targetSdk 35, **minSdk 33** (hard floor — AGSL `RuntimeShader` is
-  foundational, not an enhancement), arm64-v8a only.
+- JDK 17 is pinned in `gradle.properties` (`org.gradle.java.home`). KSP and the
+  serialization plugin are pinned to the Kotlin version and move together with
+  it.
+- **minSdk 33** (hard floor — AGSL `RuntimeShader` is foundational, not an
+  enhancement), arm64-v8a only.
 - `DRIVE_CLIENT_ID` / `DRIVE_CLIENT_SECRET` come from the environment at build
   time for the Google Drive backup destination. Building without them is fine;
   the Drive slot just reports itself unconfigured.
@@ -86,10 +84,10 @@ kicks `IndexGate.ensureReady` off without waiting for it.
 
 ### The editor
 
-`MainActivity` (~3k lines) is chrome: it builds the floating tool rail in code,
-owns the tray/layers/pages panels, and holds the `DocumentSession`.
-`PaintCanvasView` (~6k lines) is everything about marks — input, live preview,
-bake, undo, selection, layer folding.
+`MainActivity` is chrome: it builds the floating tool rail in code, owns the
+tray/layers/pages panels, and holds the `DocumentSession`. `PaintCanvasView`
+is everything about marks — input, live preview, bake, undo, selection, layer
+folding.
 
 **`Focus.kt` is the switchboard.** It names the small set of tools and rail
 controls the current work actually calls for; everything else stays built but
