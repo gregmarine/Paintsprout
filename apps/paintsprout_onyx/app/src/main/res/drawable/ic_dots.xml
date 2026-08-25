@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The debug overflow. The release build hides the control this glyph sits on
+  (see src/release/…/library/DebugMenu.kt), so this file exists only for the
+  debug variant's toolbar — it is not a placeholder waiting for a release
+  feature to grow into it.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <path
+        android:pathData="M5,12 m-1,0 a1,1,0,1,0,2,0 a1,1,0,1,0,-2,0"
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="@color/inkBlack"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+    <path
+        android:pathData="M12,12 m-1,0 a1,1,0,1,0,2,0 a1,1,0,1,0,-2,0"
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="@color/inkBlack"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+    <path
+        android:pathData="M19,12 m-1,0 a1,1,0,1,0,2,0 a1,1,0,1,0,-2,0"
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="@color/inkBlack"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+</vector>

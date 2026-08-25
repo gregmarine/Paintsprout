@@ -53,39 +53,25 @@
          cards, the pager, and the actions that create, rename, move and
          delete both kinds of thing. library_empty is worded as an instruction
          now rather than a plain observation, because G2 is the phase where
-         there is finally something the reader can do about it. -->
-    <string name="library_overflow">⋯</string>
+         there is finally something the reader can do about it. The chrome
+         speaks in Tabler outline icons throughout this screen and the two it
+         hands off to — every button here draws a glyph, not a word — so a
+         content description is not a courtesy label, it is the only place an
+         icon button says what it is, and it is what a long-press reads out. -->
     <string name="cd_library_overflow">More</string>
     <string name="library_empty">Nothing here yet. Tap New sketchbook to start one.</string>
-    <string name="library_up">↑</string>
     <string name="cd_library_up">Up one folder</string>
-    <string name="library_sort">Sort</string>
     <string name="cd_library_sort">Sort</string>
-    <string name="library_new_folder">New folder</string>
-    <string name="library_new_sketchbook">New sketchbook</string>
+    <string name="cd_library_new_folder">New folder</string>
+    <string name="cd_library_new_sketchbook">New sketchbook</string>
     <string name="library_root">Library</string>
 
-    <!-- U+25C4 and U+25BA, and specifically not the transport glyphs (⏮ ◀ ▶ ⏭)
-         these started out as. Those four all carry emoji presentation in
-         Unicode, and Android will happily satisfy them from the colour emoji
-         font — which on this panel would be accidental colour in the chrome of
-         an app whose whole palette is black and white, arriving through a
-         string nobody would think to look at. These two pointers have no emoji
-         mapping at all, so there is only ever one thing they can be drawn as.
-         Doubling them for first and last reads as rewind and fast-forward,
-         which is what they are. -->
-    <string name="pager_first">◄◄</string>
-    <string name="pager_prev">◄</string>
-    <string name="pager_next">►</string>
-    <string name="pager_last">►►</string>
     <string name="cd_pager_first">First page</string>
     <string name="cd_pager_prev">Previous page</string>
     <string name="cd_pager_next">Next page</string>
     <string name="cd_pager_last">Last page</string>
 
-    <string name="nav_back">←</string>
     <string name="cd_nav_back">Back</string>
-    <string name="nav_up">↑</string>
     <string name="cd_nav_up">Up one folder</string>
 
     <string name="sort_title">Sort by</string>

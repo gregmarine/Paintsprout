@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  On a panel with no shadow, a 1 dp line is the only thing that separates a
+  toolbar from the page it sits over. The stroke item is inset -2dp on the
+  left, right and bottom so only its top edge shows — a plain stroke here
+  would box the bar in on all four sides, and a box the width of the screen
+  reads as a button, not a bar.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/paperWhite" />
+        </shape>
+    </item>
+
+    <item
+        android:left="-2dp"
+        android:right="-2dp"
+        android:bottom="-2dp">
+        <shape android:shape="rectangle">
+            <stroke
+                android:width="1dp"
+                android:color="@color/inkBlack" />
+        </shape>
+    </item>
+
+</layer-list>

@@ -29,12 +29,22 @@
     android:paddingTop="@dimen/toolbar_top_guard">
 
     <LinearLayout
+        android:id="@+id/breadcrumbBar"
         android:layout_width="match_parent"
         android:layout_height="@dimen/toolbar_bar_thickness"
         android:orientation="horizontal"
-        android:gravity="center_vertical"
-        android:paddingStart="@dimen/screen_margin"
-        android:paddingEnd="@dimen/screen_margin">
+        android:gravity="center_vertical">
+
+        <!-- No horizontal padding on this bar: the buttons sit flush at the
+             screen edge, matching the sibling app's chrome, and the toolbar
+             button's own padding is what keeps a fingertip off the glyph. -->
+
+        <androidx.appcompat.widget.AppCompatImageButton
+            android:id="@+id/btnUp"
+            style="@style/Widget.Paintsprout.ToolbarButton"
+            android:src="@drawable/ic_arrow_left"
+            android:contentDescription="@string/cd_library_up"
+            android:visibility="gone" />
 
         <!-- The Kotlin builds the crumb buttons at runtime, one per folder from
              the library root down to the current one — a fixed set of views
@@ -56,52 +66,24 @@
                 android:layout_width="wrap_content"
                 android:layout_height="match_parent"
                 android:orientation="horizontal"
-                android:gravity="center_vertical" />
+                android:gravity="center_vertical"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp" />
 
         </HorizontalScrollView>
 
-        <androidx.appcompat.widget.AppCompatButton
-            android:id="@+id/btnUp"
-            style="@style/Widget.Paintsprout.TextButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/bg_toolbar_button"
-            android:minWidth="0dp"
-            android:minHeight="0dp"
-            android:text="@string/library_up"
-            android:contentDescription="@string/cd_library_up" />
-
-        <androidx.appcompat.widget.AppCompatButton
-            android:id="@+id/btnSort"
-            style="@style/Widget.Paintsprout.TextButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/bg_toolbar_button"
-            android:minWidth="0dp"
-            android:minHeight="0dp"
-            android:text="@string/library_sort"
-            android:contentDescription="@string/cd_library_sort" />
-
-        <!-- Text, not an icon — there are no icon assets on this screen, and a
-             glyph the font already knows how to draw is one less asset to keep
-             legible at every density this panel could be. bg_toolbar_button gives
-             it the same pressed/selected ring every other toolbar control uses,
-             so it does not read as a different kind of thing. -->
-        <androidx.appcompat.widget.AppCompatButton
+        <androidx.appcompat.widget.AppCompatImageButton
             android:id="@+id/overflowButton"
-            style="@style/Widget.Paintsprout.TextButton"
-            android:layout_width="@dimen/toolbar_button_size"
-            android:layout_height="@dimen/toolbar_button_size"
-            android:background="@drawable/bg_toolbar_button"
-            android:padding="0dp"
-            android:minWidth="0dp"
-            android:minHeight="0dp"
-            android:gravity="center"
-            android:text="@string/library_overflow"
-            android:textSize="20sp"
+            style="@style/Widget.Paintsprout.ToolbarButton"
+            android:src="@drawable/ic_dots"
             android:contentDescription="@string/cd_library_overflow" />
 
     </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/inkBlack" />
 
     <FrameLayout
         android:id="@+id/gridContainer"
@@ -123,67 +105,37 @@
 
     </FrameLayout>
 
+    <!-- The pager takes the weight so it centres in whatever room the other
+         buttons leave rather than sitting pinned to one side. The empty
+         stretch to its left is not slack to tidy away — it is where Pinned
+         and Recents land in G5, and closing it now would mean reopening it
+         under a different layout later. -->
     <LinearLayout
+        android:id="@+id/bottomBar"
         android:layout_width="match_parent"
         android:layout_height="@dimen/toolbar_bar_thickness"
         android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:paddingStart="@dimen/screen_margin"
-        android:paddingEnd="@dimen/screen_margin">
-
-        <androidx.appcompat.widget.AppCompatButton
-            android:id="@+id/btnNewFolder"
-            style="@style/Widget.Paintsprout.OutlinedButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/library_new_folder" />
-
-        <!-- The one filled black control on this screen — the house rule is
-             that white-on-black is spent once per screen or it stops meaning
-             anything, and making a sketchbook is the one action here worth
-             spending it on. -->
-        <androidx.appcompat.widget.AppCompatButton
-            android:id="@+id/btnNewSketchbook"
-            style="@style/Widget.Paintsprout.FilledButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
-            android:text="@string/library_new_sketchbook" />
-
-        <Space
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1" />
+        android:background="@drawable/toolbar_background_bottom">
 
         <LinearLayout
             android:id="@+id/pager"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
             android:orientation="horizontal"
-            android:gravity="center_vertical">
+            android:gravity="center">
 
-            <androidx.appcompat.widget.AppCompatButton
+            <androidx.appcompat.widget.AppCompatImageButton
                 android:id="@+id/btnFirst"
-                style="@style/Widget.Paintsprout.TextButton"
-                android:layout_width="@dimen/toolbar_button_size"
-                android:layout_height="@dimen/toolbar_button_size"
-                android:background="@drawable/bg_toolbar_button"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:textSize="18sp"
-                android:text="@string/pager_first"
+                style="@style/Widget.Paintsprout.ToolbarButton"
+                android:src="@drawable/ic_page_first"
                 android:contentDescription="@string/cd_pager_first" />
 
-            <androidx.appcompat.widget.AppCompatButton
+            <androidx.appcompat.widget.AppCompatImageButton
                 android:id="@+id/btnPrev"
-                style="@style/Widget.Paintsprout.TextButton"
-                android:layout_width="@dimen/toolbar_button_size"
-                android:layout_height="@dimen/toolbar_button_size"
-                android:background="@drawable/bg_toolbar_button"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:textSize="18sp"
-                android:text="@string/pager_prev"
+                style="@style/Widget.Paintsprout.ToolbarButton"
+                android:src="@drawable/ic_page_prev"
                 android:contentDescription="@string/cd_pager_prev" />
 
             <TextView
@@ -192,33 +144,39 @@
                 android:layout_height="wrap_content"
                 android:minWidth="72dp"
                 android:gravity="center"
-                android:textAppearance="@style/TextAppearance.Paintsprout.BodyLarge" />
+                android:textAppearance="@style/TextAppearance.Paintsprout.BodyMedium" />
 
-            <androidx.appcompat.widget.AppCompatButton
+            <androidx.appcompat.widget.AppCompatImageButton
                 android:id="@+id/btnNext"
-                style="@style/Widget.Paintsprout.TextButton"
-                android:layout_width="@dimen/toolbar_button_size"
-                android:layout_height="@dimen/toolbar_button_size"
-                android:background="@drawable/bg_toolbar_button"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:textSize="18sp"
-                android:text="@string/pager_next"
+                style="@style/Widget.Paintsprout.ToolbarButton"
+                android:src="@drawable/ic_page_next"
                 android:contentDescription="@string/cd_pager_next" />
 
-            <androidx.appcompat.widget.AppCompatButton
+            <androidx.appcompat.widget.AppCompatImageButton
                 android:id="@+id/btnLast"
-                style="@style/Widget.Paintsprout.TextButton"
-                android:layout_width="@dimen/toolbar_button_size"
-                android:layout_height="@dimen/toolbar_button_size"
-                android:background="@drawable/bg_toolbar_button"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:textSize="18sp"
-                android:text="@string/pager_last"
+                style="@style/Widget.Paintsprout.ToolbarButton"
+                android:src="@drawable/ic_page_last"
                 android:contentDescription="@string/cd_pager_last" />
 
         </LinearLayout>
+
+        <androidx.appcompat.widget.AppCompatImageButton
+            android:id="@+id/btnSort"
+            style="@style/Widget.Paintsprout.ToolbarButton"
+            android:src="@drawable/ic_filter"
+            android:contentDescription="@string/cd_library_sort" />
+
+        <androidx.appcompat.widget.AppCompatImageButton
+            android:id="@+id/btnNewFolder"
+            style="@style/Widget.Paintsprout.ToolbarButton"
+            android:src="@drawable/ic_folder_plus"
+            android:contentDescription="@string/cd_library_new_folder" />
+
+        <androidx.appcompat.widget.AppCompatImageButton
+            android:id="@+id/btnNewSketchbook"
+            style="@style/Widget.Paintsprout.ToolbarButton"
+            android:src="@drawable/ic_plus"
+            android:contentDescription="@string/cd_library_new_sketchbook" />
 
     </LinearLayout>
 

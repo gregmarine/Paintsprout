@@ -146,7 +146,7 @@ class FolderPickerActivity : AppCompatActivity() {
             }
             binding.breadcrumbScroll.post { binding.breadcrumbScroll.fullScroll(View.FOCUS_RIGHT) }
         }
-        binding.btnBack.visibility = if (folderId == null) View.INVISIBLE else View.VISIBLE
+        binding.btnBack.visibility = if (folderId == null) View.GONE else View.VISIBLE
     }
 
     private fun crumb(label: String, onClick: () -> Unit): AppCompatTextView = AppCompatTextView(this).apply {

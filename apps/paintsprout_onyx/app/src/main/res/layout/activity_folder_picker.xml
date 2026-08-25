@@ -21,20 +21,14 @@
         android:layout_width="match_parent"
         android:layout_height="@dimen/toolbar_bar_thickness"
         android:orientation="horizontal"
-        android:gravity="center_vertical"
-        android:paddingStart="@dimen/screen_margin"
-        android:paddingEnd="@dimen/screen_margin">
+        android:gravity="center_vertical">
 
-        <androidx.appcompat.widget.AppCompatButton
+        <androidx.appcompat.widget.AppCompatImageButton
             android:id="@+id/btnBack"
-            style="@style/Widget.Paintsprout.TextButton"
-            android:layout_width="@dimen/toolbar_button_size"
-            android:layout_height="@dimen/toolbar_button_size"
-            android:background="@drawable/bg_toolbar_button"
-            android:minWidth="0dp"
-            android:minHeight="0dp"
-            android:text="@string/nav_up"
-            android:contentDescription="@string/cd_nav_up" />
+            style="@style/Widget.Paintsprout.ToolbarButton"
+            android:src="@drawable/ic_arrow_left"
+            android:contentDescription="@string/cd_nav_up"
+            android:visibility="gone" />
 
         <HorizontalScrollView
             android:id="@+id/breadcrumbScroll"
@@ -49,11 +43,25 @@
                 android:layout_width="wrap_content"
                 android:layout_height="match_parent"
                 android:orientation="horizontal"
-                android:gravity="center_vertical" />
+                android:gravity="center_vertical"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp" />
 
         </HorizontalScrollView>
 
+        <androidx.appcompat.widget.AppCompatButton
+            android:id="@+id/btnCancel"
+            style="@style/Widget.Paintsprout.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/cancel" />
+
     </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/inkBlack" />
 
     <TextView
         android:id="@+id/movingLabel"
@@ -61,6 +69,7 @@
         android:layout_height="wrap_content"
         android:paddingStart="@dimen/screen_margin"
         android:paddingEnd="@dimen/screen_margin"
+        android:paddingTop="12dp"
         android:paddingBottom="8dp"
         android:maxLines="1"
         android:ellipsize="end"
@@ -91,50 +100,27 @@
         android:layout_height="@dimen/toolbar_bar_thickness"
         android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:paddingStart="@dimen/screen_margin"
+        android:background="@drawable/toolbar_background_bottom"
         android:paddingEnd="@dimen/screen_margin">
-
-        <androidx.appcompat.widget.AppCompatButton
-            android:id="@+id/btnCancel"
-            style="@style/Widget.Paintsprout.OutlinedButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/cancel" />
-
-        <Space
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1" />
 
         <LinearLayout
             android:id="@+id/pager"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
             android:orientation="horizontal"
-            android:gravity="center_vertical">
+            android:gravity="center">
 
-            <androidx.appcompat.widget.AppCompatButton
+            <androidx.appcompat.widget.AppCompatImageButton
                 android:id="@+id/btnFirst"
-                style="@style/Widget.Paintsprout.TextButton"
-                android:layout_width="@dimen/toolbar_button_size"
-                android:layout_height="@dimen/toolbar_button_size"
-                android:background="@drawable/bg_toolbar_button"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:textSize="18sp"
-                android:text="@string/pager_first"
+                style="@style/Widget.Paintsprout.ToolbarButton"
+                android:src="@drawable/ic_page_first"
                 android:contentDescription="@string/cd_pager_first" />
 
-            <androidx.appcompat.widget.AppCompatButton
+            <androidx.appcompat.widget.AppCompatImageButton
                 android:id="@+id/btnPrev"
-                style="@style/Widget.Paintsprout.TextButton"
-                android:layout_width="@dimen/toolbar_button_size"
-                android:layout_height="@dimen/toolbar_button_size"
-                android:background="@drawable/bg_toolbar_button"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:textSize="18sp"
-                android:text="@string/pager_prev"
+                style="@style/Widget.Paintsprout.ToolbarButton"
+                android:src="@drawable/ic_page_prev"
                 android:contentDescription="@string/cd_pager_prev" />
 
             <TextView
@@ -143,38 +129,21 @@
                 android:layout_height="wrap_content"
                 android:minWidth="72dp"
                 android:gravity="center"
-                android:textAppearance="@style/TextAppearance.Paintsprout.BodyLarge" />
+                android:textAppearance="@style/TextAppearance.Paintsprout.BodyMedium" />
 
-            <androidx.appcompat.widget.AppCompatButton
+            <androidx.appcompat.widget.AppCompatImageButton
                 android:id="@+id/btnNext"
-                style="@style/Widget.Paintsprout.TextButton"
-                android:layout_width="@dimen/toolbar_button_size"
-                android:layout_height="@dimen/toolbar_button_size"
-                android:background="@drawable/bg_toolbar_button"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:textSize="18sp"
-                android:text="@string/pager_next"
+                style="@style/Widget.Paintsprout.ToolbarButton"
+                android:src="@drawable/ic_page_next"
                 android:contentDescription="@string/cd_pager_next" />
 
-            <androidx.appcompat.widget.AppCompatButton
+            <androidx.appcompat.widget.AppCompatImageButton
                 android:id="@+id/btnLast"
-                style="@style/Widget.Paintsprout.TextButton"
-                android:layout_width="@dimen/toolbar_button_size"
-                android:layout_height="@dimen/toolbar_button_size"
-                android:background="@drawable/bg_toolbar_button"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:textSize="18sp"
-                android:text="@string/pager_last"
+                style="@style/Widget.Paintsprout.ToolbarButton"
+                android:src="@drawable/ic_page_last"
                 android:contentDescription="@string/cd_pager_last" />
 
         </LinearLayout>
-
-        <Space
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1" />
 
         <androidx.appcompat.widget.AppCompatButton
             android:id="@+id/btnMoveHere"

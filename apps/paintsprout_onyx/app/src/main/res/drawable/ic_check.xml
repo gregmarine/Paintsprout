@@ -1,10 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  The chrome speaks Tabler outline throughout now, and this is the same folder
-  mark the toolbar's "new folder" button carries — the card just draws it much
-  larger, so the stroke has to hold up at 64dp on the shelf as well as at
-  34dp in a toolbar.
--->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -12,7 +6,7 @@
     android:viewportHeight="24">
 
     <path
-        android:pathData="M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2"
+        android:pathData="M5 12l5 5l10 -10"
         android:fillColor="@android:color/transparent"
         android:strokeColor="@color/inkBlack"
         android:strokeWidth="2"

@@ -157,10 +157,13 @@ class LibraryActivity : AppCompatActivity() {
         binding.btnNext.setOnClickListener { goToPage(pageIndex + 1) }
         binding.btnLast.setOnClickListener { goToPage(pageCount - 1) }
 
-        // The panel has no hover and no ripple, so a control that is only a glyph has no other way of
-        // saying what it does. A long press reads it out.
+        // Every control in both bars is an icon and nothing else, and the panel has no hover and no
+        // ripple to explain one. A long press reads the content description out, which is the only
+        // way an icon button here can say what it is — so every one of them gets it, and any button
+        // added later has to join this list or it is a mark with no name.
         listOf(
-            binding.btnUp, binding.btnSort, binding.overflowButton,
+            binding.btnUp, binding.overflowButton,
+            binding.btnSort, binding.btnNewFolder, binding.btnNewSketchbook,
             binding.btnFirst, binding.btnPrev, binding.btnNext, binding.btnLast,
         ).forEach { TooltipCompat.setTooltipText(it, it.contentDescription) }
     }
@@ -228,7 +231,9 @@ class LibraryActivity : AppCompatActivity() {
             // not where you started.
             binding.breadcrumbScroll.post { binding.breadcrumbScroll.fullScroll(View.FOCUS_RIGHT) }
         }
-        binding.btnUp.visibility = if (folderId == null) View.INVISIBLE else View.VISIBLE
+        // GONE rather than INVISIBLE: at the root the trail should start at the edge of the panel,
+        // not a button's width in from it, with nothing standing there to explain the gap.
+        binding.btnUp.visibility = if (folderId == null) View.GONE else View.VISIBLE
     }
 
     private fun crumb(label: String, onClick: () -> Unit): AppCompatTextView = AppCompatTextView(this).apply {
@@ -300,9 +305,9 @@ class LibraryActivity : AppCompatActivity() {
         val s = item.summary
         ActionSheetDialog(this)
             .title(s.name)
-            .addAction(getString(R.string.action_rename)) { showRenameDialog(s) }
-            .addAction(getString(R.string.action_move)) { showMovePicker(s) }
-            .addAction(getString(R.string.action_delete)) {
+            .addAction(getString(R.string.action_rename), R.drawable.ic_edit) { showRenameDialog(s) }
+            .addAction(getString(R.string.action_move), R.drawable.ic_move_page) { showMovePicker(s) }
+            .addAction(getString(R.string.action_delete), R.drawable.ic_trash) {
                 if (item is CardItem.Folder) confirmDeleteFolder(s) else confirmDeleteSketchbook(s)
             }
             .show()
@@ -450,7 +455,7 @@ class LibraryActivity : AppCompatActivity() {
         )
         val sheet = ActionSheetDialog(this).title(getString(R.string.sort_title))
         for ((label, f, o) in rows) {
-            sheet.addAction(label, ticked = field == f && order == o) {
+            sheet.addAction(label, if (field == f && order == o) R.drawable.ic_check else null) {
                 prefs.sortField = f
                 prefs.sortOrder = o
                 // Back to the front of the shelf: the sketchbook that was on page three under the old

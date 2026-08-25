@@ -457,8 +457,8 @@ file count matching the shelf at every step and an empty crash buffer throughout
   cover the whole create — the file was made outside the `try` — and that a comment claimed otherwise;
   that a slow refresh could land after a newer one and bind a shelf assembled out of two folders,
   now fenced with a generation counter; and that the pager's ⏮ ◀ ▶ ⏭ carry emoji presentation and
-  would have arrived as accidental colour on a Kaleido panel, now U+25C4/25BA which have no emoji
-  mapping at all. Two smaller things came out of it: name rules moved from hardcoded English into
+  would have arrived as accidental colour on a Kaleido panel — moot now the pager is drawn, but the
+  trap is real and worth knowing for any future glyph. Two smaller things came out of it: name rules moved from hardcoded English into
   `strings.xml` (returning a resource id keeps them testable without a Context), and the duplicate
   check is `COLLATE NOCASE`, since the shelf already sorts case-insensitively and "Studies" beside
   "studies" is the exact confusion that check exists to prevent.
@@ -473,6 +473,25 @@ file count matching the shelf at every step and an empty crash buffer throughout
   opening a sketchbook — tapping a card does nothing at all yet, and G3 is what it is waiting for;
   no `docs/` (G6). `IndexRepository.setCover`/`cover`/`pin`/`unpin`/`pinnedSketchbookIds` stay
   written and uncalled, as G1 left them.
+
+**Follow-up after the phase closed — the chrome speaks in icons.** G2 shipped its toolbars as words
+and typographic glyphs, with a comment arguing that one folder mark was the only icon this app should
+own. That was a **deviation from G0's locked answer**, which adopts Notesprout's e-ink system whole,
+Tabler outline vocabulary included — so it was corrected rather than defended, and the comments that
+had argued the other way were rewritten rather than left contradicting the rest of the app.
+
+What landed: fourteen Tabler outline drawables at stroke 2 on a 24 viewport; `ic_folder` redrawn to
+match them; `toolbar_background_bottom`, whose 1 dp top edge is the only thing that can separate a
+toolbar from the page on a panel with no shadow to give; and **Paper's arrangement**, not merely its
+icons — Up at the far left of the breadcrumb bar and `GONE` at the root so the trail starts at the
+panel's edge, Sort down beside New folder and New sketchbook, the pager taking the weight between
+them so it centres in whatever room they leave. **The empty left end of the bottom bar is where
+Pinned and Recents go in G5**; it is a gap on purpose, not one to tidy away. The long-press and sort
+sheets took icons too, with the icon column reserved on every row so a sort sheet's labels stay in
+one line and the tick is the thing that stands out.
+
+`Widget.Paintsprout.ToolbarButton` and `bg_toolbar_button` needed no change at all — G0 had written
+them to match, and the shelf simply had not been using them.
 
 **Checked by the user on the panel:** the back gesture walks up a folder at a time and leaves the app
 only at the root; the long-press to open a card's action sheet is right as it is. The cards were
