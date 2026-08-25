@@ -297,7 +297,7 @@ installs and launches on the NA5C with a clean crash buffer.
 ---
 
 ### G1 — Crypto + data core
-**Status:** 🧪 Awaiting the commit hash
+**Status:** ✅ Complete (commit 6bd0f69)
 
 The `crypto/` stack (GlobalKey with the `PSPT-` prefix, SecurePrefs, PassphraseStore, AttemptLimiter,
 DerivedKeyStore, RawKeyDerivation, KeyMaterial, KeySession, KeyOpener, SoilCrypto) and
