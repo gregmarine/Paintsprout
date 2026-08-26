@@ -78,6 +78,11 @@ not apply here. Plus:
   stored rows on open, so reopening an old drawing and running `adb exec-out screencap` gives a
   pixel-exact image of what the *current* renderer makes of it. Reach for that before asking for a
   photograph; the camera is only needed for live ink.
+- **Noise that becomes SHAPE must be smoothed; noise that becomes TONE need not be.** Raw digitizer
+  tilt jitters several degrees sample to sample; driving width from it fringes both edges of a mark
+  with fine hairs (the "pipe cleaner"). g-paper smooths the lean causally over ~40 px of arc;
+  pressure stays raw because it sets darkness and darkness noise reads as grain. **When a rendering
+  fault survives redesigning the renderer, suspect the input.**
 - **Graphite drawn as connected geometry looks like hair** ("pipe cleaner"). A grain fleck wider than
   the lattice spacing it must touch its neighbours and the specks become worms. g-paper 0.1.14 sizes
   the fleck against the pitch and ramps it by darkness — separate specks pale, flooded solid dark.

@@ -203,8 +203,8 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
 
 ## Dependency — g-paper Phase 10 "Graphite"
 
-**Status:** 🧪 Published as **0.1.14** (`7239366` → `4e36ae5` in `~/git/g-paper`; its Phase 10 *and*
-Phase 11) — seven device findings folded back in · **Tracked in that repo's `PLAN.md`.**
+**Status:** 🧪 Published as **0.1.15** (`7239366` → `995c5c7` in `~/git/g-paper`; its Phase 10 *and*
+Phase 11) — eight device findings folded back in · **Tracked in that repo's `PLAN.md`.**
 
 Arc 1 cannot start drawing until this lands. It is a g-paper phase, run under g-paper's own
 protocol, and it publishes **0.1.7**. Summary of what it owes us:
@@ -727,6 +727,24 @@ between, under the eye's reach. It carries pressure too, which is welcome: cover
 the tooth is full, so past that a growing fleck is the only thing left to darken with. Ink mass per
 tone was held within ~10% end to end while all of this moved, checked by simulation before shipping,
 so this is a change of *texture* and not of density.
+
+**Eighth finding, and the "pipe cleaner" actually solved: noise that becomes shape.** Two releases
+had each removed something real about the grain — its direction, then its connectedness — and
+neither touched what Greg was seeing. **That a rendering fault survives redesigning the renderer is
+itself the finding: suspect the input.** The clue that cracked it was his, offered rounds earlier and
+not used hard enough — *the Wacom app has always looked like this too* — and those two renderers
+share almost nothing except that **both drive pencil width from raw tilt.**
+
+A digitizer's tilt jitters several degrees sample to sample and a hand cannot roll a pencil that
+fast. G3's own tilt log had already recorded it: the flat stroke swung 65.7°–85.6° along its length,
+which through the width curve is a 9×–13× swing in how broad the mark should be. Fed in raw that
+becomes *geometry* — both edges ripple at the sample rate and the stroke grows a fringe of fine
+hairs. Rendering one stroke twice, raw against smoothed, settled it in a single image.
+
+g-paper 0.1.15 averages the lean over ~40 px of arc, **causally**, so a prefix still renders like the
+whole stroke. **Pressure stays raw on purpose: noise that becomes *shape* must be smoothed, noise
+that becomes *tone* need not be** — there it is doing the same job the tooth is. **The Wacom app
+needs this same fix whenever its pencil is next opened.**
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are
