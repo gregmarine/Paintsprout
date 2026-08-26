@@ -203,8 +203,8 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
 
 ## Dependency — g-paper Phase 10 "Graphite"
 
-**Status:** 🧪 Published as **0.1.15** (`7239366` → `995c5c7` in `~/git/g-paper`; its Phase 10 *and*
-Phase 11) — eight device findings folded back in · **Tracked in that repo's `PLAN.md`.**
+**Status:** 🧪 Published as **0.1.16** (`7239366` → `3de2585` in `~/git/g-paper`; its Phase 10 *and*
+Phase 11) — nine device findings folded back in · **Tracked in that repo's `PLAN.md`.**
 
 Arc 1 cannot start drawing until this lands. It is a g-paper phase, run under g-paper's own
 protocol, and it publishes **0.1.7**. Summary of what it owes us:
@@ -745,6 +745,28 @@ g-paper 0.1.15 averages the lean over ~40 px of arc, **causally**, so a prefix s
 whole stroke. **Pressure stays raw on purpose: noise that becomes *shape* must be smoothed, noise
 that becomes *tone* need not be** — there it is doing the same job the tooth is. **The Wacom app
 needs this same fix whenever its pencil is next opened.**
+
+**Ninth finding — the "pipe cleaner", solved, and it was never the grain.** Three releases each
+removed something real about the texture and Greg reported *no change at all* from any of them. That
+was itself the finding and it took too long to read: **when a rendering fault survives redesigning
+the renderer three times, stop working on the renderer.**
+
+The search failed on **scale**. The defect was inspected at 10× pixel zoom, where a bristle is one
+pixel wide and reads as ordinary speckle. Viewing the same stroke at **1× and 2×** showed it
+instantly — transverse striations combing the mark. *Inspect a texture at the size it will be looked
+at.*
+
+The cause: a cross-section of grain is laid perpendicular to the pen's direction, and that direction
+came from **one adjacent pair of raw samples**. At 2 px spacing, 0.35 px of digitizer jitter swings
+the computed angle with ~14° of standard deviation, past ±35°. Every comb of flecks is rotated by
+that much — and **the error is multiplied by the half-width of the mark**, so on a lead laid over at
+80-odd px it throws grain tens of pixels out of line. Bristles radiating from a core. Rendering one
+clean path beside the same path with 0.35 px of jitter produced a textbook pipe cleaner and settled
+it in one image. g-paper 0.1.16 smooths the travelled direction over ~10 px of arc, causally, exactly
+as 0.1.15 does the lean. Verified on the panel: the combing is gone.
+
+**Greg offered his remaining weekly Fable budget for this and it was not needed** — the synthetic
+jitter test was decisive on its own.
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are
