@@ -12,10 +12,17 @@ package com.symmetricalpalmtree.paintsproutonyx.sketchbook
  * **The numbers are px, and they are px for good.** Arc 1 has no millimetres and no calibration, so
  * nothing here is converted from a physical size at runtime and nothing asks the panel how big it is.
  * They were *chosen* against the one panel this app runs on, which measured ≈ 304.8 dpi in G0 — so a
- * millimetre is about twelve of these px, and the three leads land near 0.4 mm, 0.7 mm and 1.2 mm:
+ * millimetre is about twelve of these px, and the three leads land near 0.32 mm, 0.7 mm and 1.28 mm:
  * a fine mechanical lead, a sharpened HB, and a blunt soft one. That reasoning is written down here
  * rather than built into the app, because building it in is calibration, and calibration is a later
  * arc.
+ *
+ * **These are the widths of the mark, not the number the panel is handed.** They went up by a third
+ * in the same change that taught g-paper the firmware's charcoal *overdraws* — its stamps overhang,
+ * so it draws about 1.3× the width it is given. The engine now divides before asking, which means it
+ * receives exactly the number it received before these went up: **the live ink is unchanged, and it
+ * is the bake that grew to meet it.** Scaling these and the engine's correction together is what
+ * kept that true, so they move together or not at all.
  *
  * The odd-looking gaps between them are deliberate. Graphite is laid down as flecks of a fixed size,
  * so a mark comes out about two px wider than its lead — which means two leads three px apart look
@@ -28,9 +35,9 @@ package com.symmetricalpalmtree.paintsproutonyx.sketchbook
  * setting: the tin picks how sharp the lead is, the hand picks how much of it meets the paper.
  */
 enum class Lead(val widthPx: Float) {
-    FINE(3f),
-    MEDIUM(6.5f),
-    BROAD(12f),
+    FINE(3.9f),
+    MEDIUM(8.45f),
+    BROAD(15.6f),
     ;
 
     companion object {

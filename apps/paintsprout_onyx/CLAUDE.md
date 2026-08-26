@@ -84,6 +84,10 @@ not apply here. Plus:
   the device before explaining it**: an inference from `CHARCOAL_STROKE_WIDTH_EXTRA_SCALE` — a
   constant BOOX's own app applies, on a different code path from the overlay we use — cost a round
   trip by being stated as if it had been measured.
+- **`Lead`'s widths and g-paper's `CHARCOAL_V2_OVERDRAW` move together or not at all.** The firmware
+  overdraws ~1.3×, the engine divides before asking for it, and the leads are scaled up by the same
+  factor — so the panel receives the number it always did and the leads mean *the width of the mark*.
+  Change one without the other and either the live ink or the bake silently shifts by a third.
 - **Tilt must stay in the mark blob.** It decides how wide a mark is, so a file that drops the
   channel reopens with every shading stroke narrowed to a line.
 - **Graphite lives in g-paper, and its grain is seeded from the stroke id.** `StrokeStyle.PENCIL`

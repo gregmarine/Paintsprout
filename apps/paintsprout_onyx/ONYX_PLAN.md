@@ -203,8 +203,8 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
 
 ## Dependency — g-paper Phase 10 "Graphite"
 
-**Status:** 🧪 Published as **0.1.11** (`7239366` → `e9598ea` in `~/git/g-paper`; its Phase 10 *and*
-Phase 11) — four device findings folded back in · **Tracked in that repo's `PLAN.md`.**
+**Status:** 🧪 Published as **0.1.12** (`7239366` → `65481b6` in `~/git/g-paper`; its Phase 10 *and*
+Phase 11) — five device findings folded back in · **Tracked in that repo's `PLAN.md`.**
 
 Arc 1 cannot start drawing until this lands. It is a g-paper phase, run under g-paper's own
 protocol, and it publishes **0.1.7**. Summary of what it owes us:
@@ -675,6 +675,19 @@ comparing them that looking could not have given:
   **flat across the whole pressure range** — the light-to-hard response was already approved and must
   not move while something else is being fixed. Most of the shortfall was the rim: a mark giving up
   half its coverage at the edge spends a lot of its width on almost nothing.
+
+**Fifth finding: the firmware overdraws, and the leads moved to meet it.** A second photo pair, after
+the density fix, put the bake at a uniform **0.76× the live width** — stable across every sensible
+threshold and the same at all three angles, which exonerates the tilt curve again and points at the
+base width. `CHARCOAL_V2`'s stamps overhang: it draws about 1.3× the width it is handed.
+
+Both paths run through one `penWidth`, so they can only be decoupled inside g-paper, and **which side
+to correct was the decision.** Widening the bake to meet the firmware would have made `Stroke.width`
+a per-device fiction — a host compositing its own ink through `StrokeRasterizer` would then get a
+different answer from the one on screen. So g-paper 0.1.12 divides the width the *engine* asks for,
+and the three leads here went up by the same 1.3 in the same change. The two move together or not at
+all: scaled together, the firmware receives exactly the number it received before, so **the EPD's
+appearance is untouched and it is the bake that grew to meet it** — which is what was asked for.
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are
