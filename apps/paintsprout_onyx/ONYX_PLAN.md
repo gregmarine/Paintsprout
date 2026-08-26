@@ -203,8 +203,8 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
 
 ## Dependency — g-paper Phase 10 "Graphite"
 
-**Status:** 🧪 Published as **0.1.18** (`7239366` → `HEAD` in `~/git/g-paper`; its Phase 10 *and*
-Phase 11) — eleven device findings folded back in · **Tracked in that repo's `PLAN.md`.**
+**Status:** 🧪 Published as **0.1.20** (`7239366` → `HEAD` in `~/git/g-paper`; its Phase 10 *and*
+Phase 11) — thirteen device findings folded back in · **Tracked in that repo's `PLAN.md`.**
 
 Arc 1 cannot start drawing until this lands. It is a g-paper phase, run under g-paper's own
 protocol, and it publishes **0.1.7**. Summary of what it owes us:
@@ -791,6 +791,24 @@ all — the seed is already where the filter would settle. Fixed in 0.1.18 with 
 
 **Worth carrying: a filter added to remove noise brings a transient of its own, and a stroke's start
 puts it on display.** Check the beginning of a mark whenever smoothing is added anywhere.
+
+**Twelfth and thirteenth: stroke ends.** Greg compared ours against BOOX Notes (both apps'
+committed marks are screencap-visible, so no camera was needed) — theirs finish in a rounded dome,
+ours in a straight cut with corners. 0.1.17 caps each end with a half-round of the mark's own
+half-width. Then a dark bead appeared around the cap's outline: `laneCount` rounds a lane count up so
+a hairline still gets grain, which is invisible in a body of dozens of lanes and doubles the density
+of a cap's narrowing strips, the excess landing on the outline because the outermost lanes sit there
+by construction. 0.1.19 asks for coverage per unit *area* instead. And 0.1.20 seeds the **lean**
+filter from the smoothing window's mean rather than `points[0].tilt` — the same seed bug 0.1.18 fixed
+for the tangent and left unfixed here, showing up as a wedge instead of a hook. **Fix a class of bug
+everywhere it lives, not where it was found.**
+
+**Still open — and it is an aesthetic call, not a defect.** A compact dark nub remains at the start
+of laid-over strokes. It **predates all the cap work** (present in 0.1.16, verified by thresholding),
+and it is the roll-in rendering exactly as the model says it should: as the pen comes up towards
+upright the mark is ~10× narrower *and* ~1.6× denser, because tilt drives width and tilt-lightening
+drives coverage in opposite directions. Physically defensible; whether an artist wants to see it is
+Greg's call.
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are
