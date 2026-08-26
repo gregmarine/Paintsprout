@@ -74,6 +74,10 @@ not apply here. Plus:
   the tin, so tuning the flank must leave 1× at upright alone. Don't reintroduce a fixed-width
   pencil, and don't reach for the plain even line (style 0) — it was tried, and its preview is too
   plain.
+- **Magnify the texture before tuning any number about it.** Mass, extent and coverage all matched
+  the panel's ink while the grain was combed into dashes running along the stroke — an aggregate
+  statistic cannot see structure. And a combed texture does not look like an even scatter at the same
+  coverage, so density judged over a structurally wrong grain is not worth acting on.
 - **Comparing live EPD ink against the bake is a photo measurement, not an eyeball one** — and a
   binary threshold cannot do it: it discards the bake's pale outer flecks, narrowing the band and
   inflating the coverage inside it at once, so width and density come out entangled. Use

@@ -203,8 +203,8 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
 
 ## Dependency — g-paper Phase 10 "Graphite"
 
-**Status:** 🧪 Published as **0.1.12** (`7239366` → `65481b6` in `~/git/g-paper`; its Phase 10 *and*
-Phase 11) — five device findings folded back in · **Tracked in that repo's `PLAN.md`.**
+**Status:** 🧪 Published as **0.1.13** (`7239366` → `2aecdba` in `~/git/g-paper`; its Phase 10 *and*
+Phase 11) — six device findings folded back in · **Tracked in that repo's `PLAN.md`.**
 
 Arc 1 cannot start drawing until this lands. It is a g-paper phase, run under g-paper's own
 protocol, and it publishes **0.1.7**. Summary of what it owes us:
@@ -688,6 +688,23 @@ different answer from the one on screen. So g-paper 0.1.12 divides the width the
 and the three leads here went up by the same 1.3 in the same change. The two move together or not at
 all: scaled together, the firmware receives exactly the number it received before, so **the EPD's
 appearance is untouched and it is the bake that grew to meet it** — which is what was asked for.
+
+**Sixth finding, and the one no measurement had caught: the grain had a direction.** Greg's words
+were that the mark "looks like it is made up of a ton of tiny lines". Magnifying the same photo pair
+showed it at once — our flecks combed into short dashes running *along* the stroke, where the panel's
+speckle is fine and isotropic. Structural, not statistical: a fleck is wider than the lattice pitch
+that spaces it, so the same lane recurring at the same offset station after station fuses its flecks
+into a line. Fixed by sliding the whole comb sideways a random fraction of a lane at every station.
+The grain came finer in the same release too (the panel's speckle is visibly smaller-grained), and
+[LEVELS] went 3 → 6 because coverage saturates once the tooth is full, so past that point the
+darkness ramp is the only thing still carrying pressure and three steps could not carry it.
+
+**The lesson worth more than the fix: an aggregate statistic cannot see structure.** Mass, extent and
+coverage had all been matched while the texture was plainly wrong — and a combed texture does not
+*look* like an even scatter at the same coverage, so the "density still a little off" reported
+alongside it may well have been the streaking rather than the density. **Magnify and compare before
+tuning a number.** Density is deliberately unchanged in this round so it can be judged over an even
+grain.
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are
