@@ -203,8 +203,8 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
 
 ## Dependency — g-paper Phase 10 "Graphite"
 
-**Status:** 🧪 Published as **0.1.8** (`7239366` then `8002efa` in `~/git/g-paper`) — 0.1.8 is the
-first device finding folded back in · **Tracked in that repo's `PLAN.md`.**
+**Status:** 🧪 Published as **0.1.9** (`7239366`, `8002efa`, `72bfa81` in `~/git/g-paper`; its
+Phase 10 *and* Phase 11) — two device findings folded back in · **Tracked in that repo's `PLAN.md`.**
 
 Arc 1 cannot start drawing until this lands. It is a g-paper phase, run under g-paper's own
 protocol, and it publishes **0.1.7**. Summary of what it owes us:
@@ -624,6 +624,29 @@ which is what the bake already did, so the whole change is the one-line remap in
 where the standing rule says an engine gap gets fixed. The general lesson is bigger than the fix: **a
 preview that lies about width is far worse than one that lies about texture**, because width is what
 the hand aims with.
+
+**Second device finding, and it reversed the morning's answer: tilt is back, because the panel can
+actually supply it.** With charcoal armed, the collapse was worst when the pen was laid over — so the
+extra width was tilt, not a constant to divide out, and `TouchHelper` has no tilt control (its whole
+pen surface is style/colour/width, verified by `javap` on the AAR). A textured live style therefore
+cannot be had without its tilt response. Greg's call: **keep the texture and make the bake match** —
+`CHARCOAL_V2`, whose EPD look he called spot on, with pressure → darkness and tilt → width.
+
+Measuring it settled the question the morning had guessed at. Per-stroke tilt logging over three
+deliberate angles, 1300–1600 samples each, found **`hypot(tiltX, tiltY)` is degrees from vertical,
+directly** on this panel: upright read 9.2, a deliberate 45° read 44.3, flat read 75.2. No scale
+factor. The fleet survey's fear is true *across* models and false *within* one that has been
+measured — so g-paper Phase 11 supplies tilt for a measured allowlist (`NoteAir5C`) and zero for
+everyone else, and `GraphiteGrain` widens the mark on a curve fitted to what this firmware does
+(≈1× / 2.5× / 5.5×), read per station because a shading stroke is a hand rolling the pencil over as
+it travels.
+
+**The mark format changed with it, and that was the easy thing to miss.** `MarkRows` now writes the
+tilt channel. It had been deliberately left out, with a comment arguing tilt was never measured — but
+tilt is now what decides a mark's width, so dropping it would have let a page reopen with every
+shading stroke narrowed to a line. Not a mark drawn slightly wrong: a different drawing. Format B
+reserved the flag from the start, so it cost no version bump and no migration, and files written
+before this reopen as the upright marks they were recorded as.
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are

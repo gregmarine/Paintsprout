@@ -18,12 +18,14 @@ import com.symmetricalpalmtree.paintsproutonyx.data.soil.SoilSchema
  *
  * Two decisions are worth stating.
  *
- * **Tilt is not written.** The Onyx engine reports tilt as zero on every sample — a fleet decision
- * in g-paper, because BOOX scales it differently per model with nothing to normalize against — so
- * storing it would mean four bytes per sample of nothing, forever, in every file. Worse, the codec
- * distinguishes a channel that is absent from one recorded as zeroes, and writing zeroes would tell
- * a later reader that this app measured the pen's angle and found it upright. It did not measure it.
- * Leaving the channel out says so.
+ * **Tilt is written, and it has to be.** It was left out at first, when the engine reported zero on
+ * every sample. It does not any more: the NoteAir5C's digitizer turns out to report the pen's lean
+ * in degrees from vertical, and **tilt is what decides how wide a mark is** — a pencil laid over
+ * draws with the flank of the lead instead of its point. Drop the channel and a page would reopen
+ * with every shading stroke narrowed to a line, which is not a mark drawn slightly wrong but a
+ * different drawing. The blob format reserved a flag for it from the start, so carrying it costs no
+ * version bump and no migration; files written before this simply have no tilt channel and reopen
+ * as the upright marks they were recorded as.
  *
  * **A row that cannot be read is skipped, not guessed at.** A mark whose blob is damaged has no
  * honest fallback: an empty mark drawn on a page is indistinguishable from a mark nobody ever made,
@@ -43,11 +45,13 @@ object MarkRows {
         val x = FloatArray(n)
         val y = FloatArray(n)
         val pressure = FloatArray(n)
+        val tilt = FloatArray(n)
         for (i in 0 until n) {
             val p = stroke.points[i]
             x[i] = p.x
             y[i] = p.y
             pressure[i] = p.pressure
+            tilt[i] = p.tilt
         }
         return SoilObjectEntity(
             id = stroke.id,
@@ -59,7 +63,7 @@ object MarkRows {
             color = InkColorCodec.encode(stroke.color),
             strokeWidth = stroke.width,
             style = stroke.style.name,
-            blob = MarkCodec.encode(x, y, pressure = pressure),
+            blob = MarkCodec.encode(x, y, pressure = pressure, tilt = tilt),
         )
     }
 
@@ -70,6 +74,11 @@ object MarkRows {
      * talk about the same mark. A pressure channel that was never recorded becomes g-paper's own
      * default of full pressure rather than zero — a mark drawn with no weight at all is invisible,
      * and "we did not record this" must never render as "the artist pressed with nothing".
+     *
+     * A missing **tilt** channel takes the opposite default, zero, and for the same kind of reason:
+     * zero tilt is a pencil held upright, which is an ordinary way to hold one. Marks from a file
+     * written before this app read the pen's angle therefore reopen at the width they were drawn at,
+     * which is exactly what they were.
      *
      * An unknown style name falls back to `PENCIL` rather than to the engine's `PEN`: everything
      * this arc can draw is a pencil, so a name from a build that knew about some other tool is far
@@ -88,6 +97,7 @@ object MarkRows {
                     x = pts.x[i],
                     y = pts.y[i],
                     pressure = pts.pressure?.get(i) ?: 1f,
+                    tilt = pts.tilt?.get(i) ?: 0f,
                 )
             )
         }

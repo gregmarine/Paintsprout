@@ -21,6 +21,11 @@ package com.symmetricalpalmtree.paintsproutonyx.sketchbook
  * so a mark comes out about two px wider than its lead — which means two leads three px apart look
  * nearly identical on paper, and the tin would appear to hold one pencil in three disguises. These
  * are spaced to be told apart at a glance.
+ *
+ * **These are the widths a lead draws held upright.** Laying the pencil over draws with the flank of
+ * the lead rather than its point, and the mark broadens several times over — so the broad lead laid
+ * flat is far wider than any number here. That is the pencil behaving like a pencil and not a
+ * setting: the tin picks how sharp the lead is, the hand picks how much of it meets the paper.
  */
 enum class Lead(val widthPx: Float) {
     FINE(3f),

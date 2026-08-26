@@ -64,13 +64,20 @@ not apply here. Plus:
   stylus eraser end at hardware level and g-paper's Onyx engine erases with it whichever tool is
   armed (`onBeginRawErasing`). Worth knowing precisely because someone will go looking for the host
   code that does it.
-- **The pencil is three fixed widths and pressure, and nothing else.** No tilt anywhere — not in the
-  bake, and not in the live ink either: the live style is g-paper's `STROKE_STYLE_PENCIL` (0), a plain
-  even line, *not* the firmware's textured charcoal (4). Charcoal is a stamp pen whose width BOOX
-  multiplies by 5 before rendering, so it previewed a 6.5 px lead at ~32 px and committed 8 — the
-  mark collapsing to a fifth of itself at pen-up, which reads as the bake being broken rather than
-  the preview. Fixed in g-paper 0.1.8. **A preview that lies about width is far worse than one that
-  lies about texture.**
+- **The pencil is three leads, pressure → darkness, tilt → width.** The three leads are the widths
+  drawn *upright*; laying the pencil over draws with the flank of the lead and broadens the mark
+  several times over. Live ink is the firmware's `STROKE_STYLE_CHARCOAL_V2` (6) and the bake is
+  fitted to match its tilt response, so the two agree at every angle and a stroke gains its tooth at
+  pen-up rather than changing size. **Measured on this panel: `hypot(tiltX, tiltY)` is degrees from
+  vertical, directly** (a deliberate 45° reads ≈44). Don't reintroduce a fixed-width pencil, and
+  don't reach for the plain even line (style 0) — it was tried, and its preview is too plain.
+- **A preview that lies about WIDTH is far worse than one that lies about texture**, because width is
+  what the hand aims with and the artist reads the collapse as the *bake* being broken. And **measure
+  the device before explaining it**: an inference from `CHARCOAL_STROKE_WIDTH_EXTRA_SCALE` — a
+  constant BOOX's own app applies, on a different code path from the overlay we use — cost a round
+  trip by being stated as if it had been measured.
+- **Tilt must stay in the mark blob.** It decides how wide a mark is, so a file that drops the
+  channel reopens with every shading stroke narrowed to a line.
 - **Graphite lives in g-paper, and its grain is seeded from the stroke id.** `StrokeStyle.PENCIL`
   (0.1.7) draws flecks on the paper's tooth — pressure fills in more of the tooth and darkens what
   lands, the width never moves, tilt is unread. A mark's apparent width is about `width + 2 px`, the

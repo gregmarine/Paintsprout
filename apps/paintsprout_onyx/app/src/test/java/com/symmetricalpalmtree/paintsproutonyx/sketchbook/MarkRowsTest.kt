@@ -32,7 +32,12 @@ class MarkRowsTest {
     ) = Stroke(
         id = id,
         points = (0 until n).map {
-            StrokePoint(x = 10f + it * 3.5f, y = 20f - it * 1.25f, pressure = 0.2f + it * 0.05f)
+            StrokePoint(
+                x = 10f + it * 3.5f,
+                y = 20f - it * 1.25f,
+                pressure = 0.2f + it * 0.05f,
+                tilt = 0.1f + it * 0.03f,
+            )
         },
         color = color,
         width = width,
@@ -54,6 +59,7 @@ class MarkRowsTest {
             assertEquals(original.points[i].x, back.points[i].x, 0f)
             assertEquals(original.points[i].y, back.points[i].y, 0f)
             assertEquals(original.points[i].pressure, back.points[i].pressure, 0f)
+            assertEquals(original.points[i].tilt, back.points[i].tilt, 0f)
         }
     }
 
@@ -69,14 +75,26 @@ class MarkRowsTest {
     }
 
     @Test
-    fun `tilt is not written, so a reader is never told the pen was upright`() {
-        // The engine reports tilt as zero on every sample here, and the codec distinguishes a
-        // channel that is absent from one recorded as zeroes. Writing zeroes would claim this app
-        // measured the pen's angle. It did not.
+    fun `tilt is written, because tilt is what decides a mark's width`() {
+        // Drop this channel and a page reopens with every shading stroke narrowed to a line —
+        // not a mark drawn slightly wrong, a different drawing.
         val row = MarkRows.toRow(stroke(), pageId, order = 0, now = 0L)
         val decoded = MarkCodec.decode(row.blob!!)
-        assertNull("tilt channel must be absent", decoded.tilt)
+        assertNotNull("tilt channel must be present", decoded.tilt)
         assertNotNull("pressure channel must be present", decoded.pressure)
+    }
+
+    @Test
+    fun `a mark from before the pen's angle was read reopens upright, not flat`() {
+        // Zero tilt is a pencil held upright, which is an ordinary way to hold one — so a file
+        // written before this app read tilt reopens at the width its marks were drawn at.
+        val blob = MarkCodec.encode(
+            floatArrayOf(1f, 2f, 3f),
+            floatArrayOf(4f, 5f, 6f),
+            pressure = floatArrayOf(0.5f, 0.5f, 0.5f),
+        )
+        val row = MarkRows.toRow(stroke(), pageId, 0, 0L).copy(blob = blob)
+        assertTrue(MarkRows.toStroke(row)!!.points.all { it.tilt == 0f })
     }
 
     @Test
