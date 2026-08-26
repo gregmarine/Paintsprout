@@ -203,8 +203,8 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
 
 ## Dependency — g-paper Phase 10 "Graphite"
 
-**Status:** 🧪 Published as **0.1.17** (`7239366` → `HEAD` in `~/git/g-paper`; its Phase 10 *and*
-Phase 11) — ten device findings folded back in · **Tracked in that repo's `PLAN.md`.**
+**Status:** 🧪 Published as **0.1.18** (`7239366` → `HEAD` in `~/git/g-paper`; its Phase 10 *and*
+Phase 11) — eleven device findings folded back in · **Tracked in that repo's `PLAN.md`.**
 
 Arc 1 cannot start drawing until this lands. It is a g-paper phase, run under g-paper's own
 protocol, and it publishes **0.1.7**. Summary of what it owes us:
@@ -779,6 +779,18 @@ Ordering carries a real guarantee: the touch-down cap is laid **before** the bod
 the paper keeps its place as the stroke grows, and only the lifting cap travels with the pen — which
 is what the real tip does. The prefix-stability test was **tightened rather than loosened** to say
 exactly that: the guarantee covers ink already laid down, and stops at the pen.
+
+**Eleventh finding, and one this work introduced: broad strokes began with a hook.** A defect of
+0.1.16's own making, spotted on the panel. Only the widest strokes did it — the signature of an error
+multiplied by the half-width. The tangent smoother was **seeded from the first pair of samples**, the
+noisiest direction measurement in a stroke, and two things hang on that seed: the touch-down dome is
+thrown backwards along it (a half-disc of the mark's half-width, aimed tens of degrees wrong) and the
+filter then swings for a window's worth of travel as it converges, sweeping the first cross-sections
+through a curve. Seeded from a **chord across the whole smoothing window** there is no transient at
+all — the seed is already where the filter would settle. Fixed in 0.1.18 with a regression test.
+
+**Worth carrying: a filter added to remove noise brings a transient of its own, and a stroke's start
+puts it on display.** Check the beginning of a mark whenever smoothing is added anywhere.
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are

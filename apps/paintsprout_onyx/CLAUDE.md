@@ -78,6 +78,10 @@ not apply here. Plus:
   stored rows on open, so reopening an old drawing and running `adb exec-out screencap` gives a
   pixel-exact image of what the *current* renderer makes of it. Reach for that before asking for a
   photograph; the camera is only needed for live ink.
+- **A filter added to remove noise brings a transient, and a stroke's start puts it on display.**
+  The tangent smoother began broad marks with a hook until it was seeded from a chord across its own
+  window rather than from the first pair of samples. Check the beginning of a mark whenever any
+  smoothing is added.
 - **Inspect a texture at the size it will be looked at.** The "pipe cleaner" is invisible at 10×
   pixel zoom and obvious at 1×; three wrong diagnoses came from magnifying past the scale the defect
   lives at. And **when a rendering fault survives redesigning the renderer, the renderer is not the
