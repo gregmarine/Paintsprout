@@ -819,10 +819,16 @@ solid black. Reproduced synthetically, it draws the same Y-shaped knot the panel
 **Damping the path does not fix it**, and the attempt is recorded in g-paper's `PLAN.md` so nobody
 repeats it: a plain average lags (shortening every stroke, caught by the end-shape test), and a trend
 term that cancels the lag makes the filter *track* the excursion instead of absorbing it — pile-up
-unchanged at every strength tried, clean baseline worse. Reverted. The real cure is architectural: a
-single continuous stroke should deposit **once** on any paper, one alpha mask per stroke rather than
-fleck by fleck, since a lead drags rather than stamping twice. Crossings *between* strokes would
-still darken, which is right. Not attempted — it changes how every style renders.
+unchanged at every strength tried, clean baseline worse. Reverted.
+
+**g-paper 0.1.22 fixes it by dropping the arrival rather than smoothing it.** Whatever the hand did
+while landing is not a mark, so the renderer starts after the last sample within 25 px of arc at
+which the pen was travelling more than 60° off the direction the stroke turned out to go. A clean
+touch-down never travels off-course and is trimmed by nothing — pinned by a test. **Trimming only the
+*backward* steps was not enough:** the kink where the path rejoins the stroke's line folds the mark
+just as badly (pile-up 10 per pixel against 4 clean, against 13 before). The rule has to catch the
+corner as well as the reversal. On Greg's own stroke the darkest connected knot went from 124 px to
+52 px and the Y-shape cleared entirely.
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are
