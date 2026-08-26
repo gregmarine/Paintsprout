@@ -64,13 +64,16 @@ not apply here. Plus:
   stylus eraser end at hardware level and g-paper's Onyx engine erases with it whichever tool is
   armed (`onBeginRawErasing`). Worth knowing precisely because someone will go looking for the host
   code that does it.
-- **The pencil is three leads, pressure → darkness, tilt → width.** The three leads are the widths
+- **The pencil is three leads, pressure → darkness, tilt → width *and* paler.** The three leads are the widths
   drawn *upright*; laying the pencil over draws with the flank of the lead and broadens the mark
   several times over. Live ink is the firmware's `STROKE_STYLE_CHARCOAL_V2` (6) and the bake is
   fitted to match its tilt response, so the two agree at every angle and a stroke gains its tooth at
   pen-up rather than changing size. **Measured on this panel: `hypot(tiltX, tiltY)` is degrees from
-  vertical, directly** (a deliberate 45° reads ≈44). Don't reintroduce a fixed-width pencil, and
-  don't reach for the plain even line (style 0) — it was tried, and its preview is too plain.
+  vertical, directly** (a deliberate 45° reads ≈44), and the width curve is ≈1× / 4.9× / 10.9× at
+  9° / 44° / 75°. **The upright anchor is not negotiable** — that is the width the artist picked from
+  the tin, so tuning the flank must leave 1× at upright alone. Don't reintroduce a fixed-width
+  pencil, and don't reach for the plain even line (style 0) — it was tried, and its preview is too
+  plain.
 - **A preview that lies about WIDTH is far worse than one that lies about texture**, because width is
   what the hand aims with and the artist reads the collapse as the *bake* being broken. And **measure
   the device before explaining it**: an inference from `CHARCOAL_STROKE_WIDTH_EXTRA_SCALE` — a

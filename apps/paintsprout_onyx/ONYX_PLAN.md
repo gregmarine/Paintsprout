@@ -203,8 +203,9 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
 
 ## Dependency — g-paper Phase 10 "Graphite"
 
-**Status:** 🧪 Published as **0.1.9** (`7239366`, `8002efa`, `72bfa81` in `~/git/g-paper`; its
-Phase 10 *and* Phase 11) — two device findings folded back in · **Tracked in that repo's `PLAN.md`.**
+**Status:** 🧪 Published as **0.1.10** (`7239366`, `8002efa`, `72bfa81`, `2dbbbbf` in `~/git/g-paper`;
+its Phase 10 *and* Phase 11) — three device findings folded back in · **Tracked in that repo's
+`PLAN.md`.**
 
 Arc 1 cannot start drawing until this lands. It is a g-paper phase, run under g-paper's own
 protocol, and it publishes **0.1.7**. Summary of what it owes us:
@@ -647,6 +648,16 @@ tilt is now what decides a mark's width, so dropping it would have let a page re
 shading stroke narrowed to a line. Not a mark drawn slightly wrong: a different drawing. Format B
 reserved the flag from the start, so it cost no version bump and no migration, and files written
 before this reopen as the upright marks they were recorded as.
+
+**Third finding, on the same look: the flank was too narrow and too dark.** Upright was right, so
+the correction was to the tilted end alone — refitting with the origin pinned (which moved the
+exponent, not just the gain) gave **1× at 9°, ≈4.9× at 44°, ≈10.9× at 75°**, about twice the girth
+of the first fit. Pinning upright is not negotiable: it is the width the artist picked from the tin,
+and a pencil that will not draw the width it was set to is a broken tool rather than a differently
+tuned one. And the flank now deposits **paler** as well as broader, which is why real side-of-lead
+shading comes out grey however hard you lean — it reduces *coverage* rather than fleck darkness,
+because tone in this renderer is meant to come from how many specks of tooth catch, and darkening
+the flecks instead would have quietly turned a spatial texture back into a tonal one. g-paper 0.1.10.
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are
