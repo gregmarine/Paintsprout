@@ -78,6 +78,10 @@ not apply here. Plus:
   stored rows on open, so reopening an old drawing and running `adb exec-out screencap` gives a
   pixel-exact image of what the *current* renderer makes of it. Reach for that before asking for a
   photograph; the camera is only needed for live ink.
+- **Inspect a texture at the size it will be looked at.** The "pipe cleaner" is invisible at 10×
+  pixel zoom and obvious at 1×; three wrong diagnoses came from magnifying past the scale the defect
+  lives at. And **when a rendering fault survives redesigning the renderer, the renderer is not the
+  problem** — the input, or the frame the output is laid in, is.
 - **Noise that becomes SHAPE must be smoothed; noise that becomes TONE need not be.** Raw digitizer
   tilt jitters several degrees sample to sample; driving width from it fringes both edges of a mark
   with fine hairs (the "pipe cleaner"). g-paper smooths the lean causally over ~40 px of arc;
