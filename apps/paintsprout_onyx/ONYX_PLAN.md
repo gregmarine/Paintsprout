@@ -203,8 +203,8 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
 
 ## Dependency — g-paper Phase 10 "Graphite"
 
-**Status:** 🧪 Published as **0.1.16** (`7239366` → `3de2585` in `~/git/g-paper`; its Phase 10 *and*
-Phase 11) — nine device findings folded back in · **Tracked in that repo's `PLAN.md`.**
+**Status:** 🧪 Published as **0.1.17** (`7239366` → `HEAD` in `~/git/g-paper`; its Phase 10 *and*
+Phase 11) — ten device findings folded back in · **Tracked in that repo's `PLAN.md`.**
 
 Arc 1 cannot start drawing until this lands. It is a g-paper phase, run under g-paper's own
 protocol, and it publishes **0.1.7**. Summary of what it owes us:
@@ -767,6 +767,18 @@ as 0.1.15 does the lean. Verified on the panel: the combing is gone.
 
 **Greg offered his remaining weekly Fable budget for this and it was not needed** — the synthetic
 jitter test was decisive on its own.
+
+**Tenth finding: the ends were chisels.** With the texture finally right, Greg compared our ends
+against BOOX's own Notes app — screencapped side by side, since committed marks in either app are
+screencap-visible. Theirs finish in a rounded dome; ours stopped at the last cross-section, leaving
+a straight cut clean across the mark with corners on it. **A lead meets the paper as a disc**, so the
+ink ends in a half-round of the mark's own half-width. g-paper 0.1.17 walks out past each end,
+shrinking the half-width along a circle.
+
+Ordering carries a real guarantee: the touch-down cap is laid **before** the body so ink already on
+the paper keeps its place as the stroke grows, and only the lifting cap travels with the pen — which
+is what the real tip does. The prefix-stability test was **tightened rather than loosened** to say
+exactly that: the guarantee covers ink already laid down, and stops at the pen.
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are
