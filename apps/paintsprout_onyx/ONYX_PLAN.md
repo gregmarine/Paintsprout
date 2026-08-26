@@ -803,12 +803,26 @@ filter from the smoothing window's mean rather than `points[0].tilt` — the sam
 for the tangent and left unfixed here, showing up as a wedge instead of a hook. **Fix a class of bug
 everywhere it lives, not where it was found.**
 
-**Still open — and it is an aesthetic call, not a defect.** A compact dark nub remains at the start
-of laid-over strokes. It **predates all the cap work** (present in 0.1.16, verified by thresholding),
-and it is the roll-in rendering exactly as the model says it should: as the pen comes up towards
-upright the mark is ~10× narrower *and* ~1.6× denser, because tilt drives width and tilt-lightening
-drives coverage in opposite directions. Physically defensible; whether an artist wants to see it is
-Greg's call.
+**Fourteenth: the two tilt effects were compounding.** Greg chose to soften it, so darkness now
+follows a much slower lean (150 px) than width does (40 px) — g-paper 0.1.21. Shape belongs to the
+instant, tone belongs to the grip. A stroke held flat is still paler than one held upright, so the
+lightening he asked for earlier is intact, but a stroke no longer flashes dark where the pen passes
+through vertical.
+
+**Still open, and now understood: a small black knot at the start of broad strokes.** Not the caps
+(it predates them — verified by thresholding a 0.1.16 build) and not the roll-in (0.1.21 changed his
+stroke by two pixels out of a thousand). It is the **path**: the pen touches down, the hand settles,
+and a few pixels' excursion follows before the stroke sets off. Invisible on a fine lead; on a lead
+laid over — ten times broader — the mark folds across itself and graphite laid twice composites to
+solid black. Reproduced synthetically, it draws the same Y-shaped knot the panel shows.
+
+**Damping the path does not fix it**, and the attempt is recorded in g-paper's `PLAN.md` so nobody
+repeats it: a plain average lags (shortening every stroke, caught by the end-shape test), and a trend
+term that cancels the lag makes the filter *track* the excursion instead of absorbing it — pile-up
+unchanged at every strength tried, clean baseline worse. Reverted. The real cure is architectural: a
+single continuous stroke should deposit **once** on any paper, one alpha mask per stroke rather than
+fleck by fleck, since a lead drags rather than stamping twice. Crossings *between* strokes would
+still darken, which is right. Not attempted — it changes how every style renders.
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are
