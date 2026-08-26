@@ -74,6 +74,14 @@ not apply here. Plus:
   the tin, so tuning the flank must leave 1× at upright alone. Don't reintroduce a fixed-width
   pencil, and don't reach for the plain even line (style 0) — it was tried, and its preview is too
   plain.
+- **The bake is `screencap`-visible even though live EPD ink is not** — and marks re-render from
+  stored rows on open, so reopening an old drawing and running `adb exec-out screencap` gives a
+  pixel-exact image of what the *current* renderer makes of it. Reach for that before asking for a
+  photograph; the camera is only needed for live ink.
+- **Graphite drawn as connected geometry looks like hair** ("pipe cleaner"). A grain fleck wider than
+  the lattice spacing it must touch its neighbours and the specks become worms. g-paper 0.1.14 sizes
+  the fleck against the pitch and ramps it by darkness — separate specks pale, flooded solid dark.
+  The Wacom app has the same fault from the other direction (continuous lanes along the stroke).
 - **Magnify the texture before tuning any number about it.** Mass, extent and coverage all matched
   the panel's ink while the grain was combed into dashes running along the stroke — an aggregate
   statistic cannot see structure. And a combed texture does not look like an even scatter at the same

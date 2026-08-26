@@ -203,8 +203,8 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
 
 ## Dependency — g-paper Phase 10 "Graphite"
 
-**Status:** 🧪 Published as **0.1.13** (`7239366` → `2aecdba` in `~/git/g-paper`; its Phase 10 *and*
-Phase 11) — six device findings folded back in · **Tracked in that repo's `PLAN.md`.**
+**Status:** 🧪 Published as **0.1.14** (`7239366` → `4e36ae5` in `~/git/g-paper`; its Phase 10 *and*
+Phase 11) — seven device findings folded back in · **Tracked in that repo's `PLAN.md`.**
 
 Arc 1 cannot start drawing until this lands. It is a g-paper phase, run under g-paper's own
 protocol, and it publishes **0.1.7**. Summary of what it owes us:
@@ -705,6 +705,28 @@ coverage had all been matched while the texture was plainly wrong — and a comb
 alongside it may well have been the streaking rather than the density. **Magnify and compare before
 tuning a number.** Density is deliberately unchanged in this round so it can be judged over an even
 grain.
+
+**Seventh finding — "pipe cleaner", and it was in the Wacom app all along.** 0.1.13 took the
+*direction* out of the grain but not its *connectedness*. Greg named it exactly, and added that the
+original Paintsprout has always looked like this too. A pixel-level `screencap` of the re-baked
+strokes showed why — and note that it needed **no camera at all**: the bake is screencap-visible, and
+marks re-render from stored data on open, so an old drawing can be photographed through a *new*
+renderer with one `adb exec-out screencap`. That instrument should have been reached for several
+rounds earlier.
+
+**A fleck wider than the lattice that spaces it cannot help but touch its neighbours**, and touching
+flecks stop being specks: they become worms a fleck thick and several long — half a millimetre of
+connected bristle at this density. The panel's own charcoal, magnified, is essentially a one-pixel
+dither with nothing connected in it. The Wacom app fails the same way from the other direction, its
+grain being continuous *lanes* along the stroke: **graphite laid down as connected geometry looks
+like hair, whichever way the geometry runs.**
+
+The fleck is now sized against the pitch and **ramped by darkness** — about one pitch at the pale
+end so specks stand alone, over two at the dark end so they flood into solid ink, and ~1 px chains in
+between, under the eye's reach. It carries pressure too, which is welcome: coverage saturates once
+the tooth is full, so past that a growing fleck is the only thing left to darken with. Ink mass per
+tone was held within ~10% end to end while all of this moved, checked by simulation before shipping,
+so this is a change of *texture* and not of density.
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are
