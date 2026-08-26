@@ -203,9 +203,8 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
 
 ## Dependency — g-paper Phase 10 "Graphite"
 
-**Status:** 🧪 Published as **0.1.10** (`7239366`, `8002efa`, `72bfa81`, `2dbbbbf` in `~/git/g-paper`;
-its Phase 10 *and* Phase 11) — three device findings folded back in · **Tracked in that repo's
-`PLAN.md`.**
+**Status:** 🧪 Published as **0.1.11** (`7239366` → `e9598ea` in `~/git/g-paper`; its Phase 10 *and*
+Phase 11) — four device findings folded back in · **Tracked in that repo's `PLAN.md`.**
 
 Arc 1 cannot start drawing until this lands. It is a g-paper phase, run under g-paper's own
 protocol, and it publishes **0.1.7**. Summary of what it owes us:
@@ -658,6 +657,24 @@ tuned one. And the flank now deposits **paler** as well as broader, which is why
 shading comes out grey however hard you lean — it reduces *coverage* rather than fleck darkness,
 because tone in this renderer is meant to come from how many specks of tooth catch, and darkening
 the flecks instead would have quietly turned a spatial texture back into a tonal one. g-paper 0.1.10.
+
+**Fourth finding, and the first one settled by measurement rather than by eye.** Greg photographed
+the same three strokes live on the panel and again after they baked. Two things came out of
+comparing them that looking could not have given:
+
+- **The width was already right, and the first reading said otherwise.** Thresholding the photos
+  high enough to segment cleanly made the baked bands read ~30% narrower — but that was the
+  threshold throwing away the bake's pale outer flecks, while inflating the coverage measured inside
+  the band, so width and density came out entangled and both wrong. **A binary threshold cannot
+  measure a texture whose whole nature is partial coverage.** At a threshold low enough to keep the
+  pale flecks, the extents match within 4% at all three angles. The tilt width curve was left alone.
+- **The bake was laying down ~30% less graphite, and by the same amount at every angle.** Flat
+  across tilt is what identified the cause: the upright stroke gets no tilt-lightening at all and was
+  still 0.68×, so this was baseline coverage rather than the lightening being too strong. The rim
+  falloff, the skate and the fleck size came up together (g-paper 0.1.11), chosen so the factor is
+  **flat across the whole pressure range** — the light-to-hard response was already approved and must
+  not move while something else is being fixed. Most of the shortfall was the rim: a mark giving up
+  half its coverage at the edge spends a lot of its width on almost nothing.
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are

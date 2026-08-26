@@ -74,6 +74,11 @@ not apply here. Plus:
   the tin, so tuning the flank must leave 1× at upright alone. Don't reintroduce a fixed-width
   pencil, and don't reach for the plain even line (style 0) — it was tried, and its preview is too
   plain.
+- **Comparing live EPD ink against the bake is a photo measurement, not an eyeball one** — and a
+  binary threshold cannot do it: it discards the bake's pale outer flecks, narrowing the band and
+  inflating the coverage inside it at once, so width and density come out entangled. Use
+  threshold-free statistics (total ink mass per unit length). Live ink needs a camera; the bake can
+  be `screencap`ed exactly.
 - **A preview that lies about WIDTH is far worse than one that lies about texture**, because width is
   what the hand aims with and the artist reads the collapse as the *bake* being broken. And **measure
   the device before explaining it**: an inference from `CHARCOAL_STROKE_WIDTH_EXTRA_SCALE` — a
