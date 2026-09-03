@@ -860,8 +860,10 @@ the pencil button no longer opens a sheet while the tin holds one pencil; stored
 tin reopen at the widths they were drawn at. The first capture of the hairline (2026-09-03) showed
 width holding and pressure carrying tone, but the heavy end read as a fine pen — because the ink was
 black. Greg: "lighten up the color, like a #2 pencil". The pencil now inks in `GRAPHITE`
-(`#505050`), a starting point to be judged on the panel, set in `SketchbookActivity`; marks already
-on a page keep the colour they were drawn in.
+(`#505050`), set in `SketchbookActivity`; marks already on a page keep the colour they were drawn in.
+Greg drew a tree with it and compared the captures: **"I like this."** — the first pencil on this
+panel he has approved. Hairline, upright, plain line live, graphite grey, pressure carrying tone.
+That is the reference everything after it is judged against, not the firmware's charcoal.
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are
