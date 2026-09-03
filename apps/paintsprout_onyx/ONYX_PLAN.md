@@ -203,7 +203,7 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
 
 ## Dependency — g-paper Phase 10 "Graphite"
 
-**Status:** 🧪 Published as **0.1.24** (`7239366` → `HEAD` in `~/git/g-paper`; its Phases 10, 11
+**Status:** ✅ Published as **0.1.24** and approved on the panel 2026-09-03 (`7239366` → `HEAD` in `~/git/g-paper`; its Phases 10, 11
 and 12) — fourteen device findings folded back in, then the pencil reset to an upright hairline ·
 **Tracked in that repo's `PLAN.md`.**
 
@@ -512,7 +512,7 @@ the phase and the one thing here that was settled by looking at the panel rather
 ---
 
 ### G3 — Paper and pencil
-**Status:** 🧪 Awaiting device verification · **g-paper Phase 10 (0.1.7) ran inside this phase.**
+**Status:** ✅ Complete (commits `db6ef2e` → `87107d2`; gate passed by Greg's hand 2026-09-03: the hairline approved, marks survive close and reopen, the eraser end works) · **g-paper Phases 10–12 ran inside this phase.**
 
 The first mark. `PaintsproutApplication` with `OnyxEngine.register(this)`; `SketchbookActivity` —
 full-bleed white paper, chrome overlaid and declared via `setExclusionRects`, a pencil/eraser
@@ -863,7 +863,9 @@ black. Greg: "lighten up the color, like a #2 pencil". The pencil now inks in `G
 (`#505050`), set in `SketchbookActivity`; marks already on a page keep the colour they were drawn in.
 Greg drew a tree with it and compared the captures: **"I like this."** — the first pencil on this
 panel he has approved. Hairline, upright, plain line live, graphite grey, pressure carrying tone.
-That is the reference everything after it is judged against, not the firmware's charcoal.
+That is the reference everything after it is judged against, not the firmware's charcoal. He then
+confirmed the last two items on the gate by hand: **strokes survive a close and reopen, and the
+eraser end works.** G3 closed 2026-09-03.
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are
