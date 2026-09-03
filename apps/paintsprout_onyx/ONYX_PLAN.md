@@ -857,7 +857,11 @@ the 1.6 px darkest flecks baking it at more than twice the live line's width, th
 caught the first tin's flaws. Here, `Lead` is one entry, `HAIRLINE(1.2f)` = 0.10 mm at ≈12 px/mm;
 the pencil button no longer opens a sheet while the tin holds one pencil; stored `FINE`/`MEDIUM`/
 `BROAD` names read back as the hairline; tilt stays in the mark blob so pages from the three-lead
-tin reopen at the widths they were drawn at.
+tin reopen at the widths they were drawn at. The first capture of the hairline (2026-09-03) showed
+width holding and pressure carrying tone, but the heavy end read as a fine pen — because the ink was
+black. Greg: "lighten up the color, like a #2 pencil". The pencil now inks in `GRAPHITE`
+(`#505050`), a starting point to be judged on the panel, set in `SketchbookActivity`; marks already
+on a page keep the colour they were drawn in.
 
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are

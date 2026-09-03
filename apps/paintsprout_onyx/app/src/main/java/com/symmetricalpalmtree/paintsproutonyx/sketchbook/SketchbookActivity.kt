@@ -2,7 +2,6 @@ package com.symmetricalpalmtree.paintsproutonyx.sketchbook
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
 import android.graphics.Rect
 import android.os.Bundle
 import android.view.View
@@ -105,7 +104,7 @@ class SketchbookActivity : AppCompatActivity() {
         binding.paperContainer.addView(paper.asView())
         gate = PenIdleGate(paper)
 
-        paper.penColor = Color.BLACK
+        paper.penColor = GRAPHITE
         paper.penStyle = StrokeStyle.PENCIL
         paper.penWidth = lead.widthPx
         paper.eraserRadius = ERASER_RADIUS_PX
@@ -281,6 +280,20 @@ class SketchbookActivity : AppCompatActivity() {
 
     companion object {
         private const val EXTRA_SKETCHBOOK_ID = "sketchbookId"
+
+        /**
+         * The colour of the graphite. A #2 pencil pressed as hard as it will go is a dark grey with
+         * a sheen on it, never black — black is ink, and the first hairline capture read as a fine
+         * pen at the heavy end for exactly that reason. This is where the tone of the whole tin is
+         * set: the grain's own darkness levels fall away from it towards the paper, so a barely
+         * touched stroke lands paler than this and nothing lands darker.
+         *
+         * A starting point, not a measurement, and on a Kaleido panel it is what the panel makes of
+         * it: sixteen greys behind a colour filter, so the number that looks like HB here is found by
+         * looking, not by reading it off a chart. The live line is the firmware's plain line in this
+         * same colour; whether the panel draws a grey hairline live or dithers it is the panel's call.
+         */
+        private const val GRAPHITE = 0xFF505050.toInt()
 
         /**
          * How near the sweep has to pass for a mark to come out, in px.
