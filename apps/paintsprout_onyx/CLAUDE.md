@@ -131,6 +131,10 @@ not apply here. Plus:
   the panel, and a pen-up `invalidate()` of identical content is damage-free, so a careless chrome
   update is not merely wasteful — it is invisible until something else damages the region. Every
   exception needs a written justification in `docs/sketchbook.md`.
+- **Toolbar buttons carry no enabled/disabled state.** While the pen is armed for writing the panel
+  does not update the display, so a button whose state changes when a mark is made cannot be
+  redrawn at the moment it changes — the undo arrows were faded once and read as broken. Always
+  bright, tap does nothing when there is nothing to do, as BOOX's own apps do it.
 - **Toast vs. dialog:** a toast only confirms something that already happened; anything explaining
   why a tap *didn't* work is a problem dialog. On e-ink a missed toast reads as "broken".
 - **BOOX has a real status bar overlaying the window top** — apply system-bar insets, and no

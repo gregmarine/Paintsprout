@@ -34,9 +34,10 @@ import kotlinx.coroutines.withContext
  * chrome was static by construction — the toolbar changed only on a tap, and a finger arriving
  * while the pen is active is a palm the component has already refused. G4 brought the two things
  * that genuinely move on their own: a page swap, which repaints the whole panel, and a page
- * indicator and a pair of undo buttons that change every time a mark is made. Both go through here.
- * The swap waits on [awaitIdle] before it touches the paper at all; the chrome goes through [run]
- * exactly as G3's one label did.
+ * indicator that changes on every turn. Both go through here. The swap waits on [awaitIdle] before
+ * it touches the paper at all; the label goes through [run] exactly as G3's one label did. The undo
+ * arrows carry no state at all — see `SketchbookActivity.refreshChrome` for why a button that
+ * changes when a mark is made cannot be drawn on this panel.
  */
 class PenIdleGate(private val paper: PaperView) {
 

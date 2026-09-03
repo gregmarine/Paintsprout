@@ -174,11 +174,6 @@ class SketchbookActivity : AppCompatActivity() {
         TooltipCompat.setTooltipText(binding.btnRedo, getString(R.string.cd_sketchbook_redo))
         TooltipCompat.setTooltipText(binding.btnTrash, getString(R.string.cd_sketchbook_delete_page))
         selectTool(Tool.PEN)
-        // Nothing has been drawn yet, so both arrows open greyed rather than opening bright and
-        // dimming a moment later — a control that changes on its own the first time you look at it
-        // reads as a control you missed pressing.
-        setEnabled(binding.btnUndo, false)
-        setEnabled(binding.btnRedo, false)
 
         // The bars' rectangles are not known until they have been laid out, and they move when the
         // status-bar inset arrives — which is a second pass, after the first. Listening for layout
@@ -271,44 +266,36 @@ class SketchbookActivity : AppCompatActivity() {
     }
 
     /**
-     * The page number and the two arrows, brought up to date — through the gate, like all chrome.
+     * The page number, brought up to date — through the gate, like all chrome.
      *
      * **Nothing is drawn while an operation is in flight.** Every state the bar could show mid-flip
      * is about to be replaced a fraction of a second later, and on this panel showing it and then
      * correcting it spends two full refreshes of the top bar saying nothing. So this stands aside
      * while [busy] and each operation calls it once at the end, when the answer has settled. What
      * makes that safe is that the buttons are protected by refusing the tap rather than by being
-     * greyed out and back again — including the trash, which is the one control here with no other
-     * disabled state to show.
+     * greyed out and back again.
+     *
+     * **Undo and redo are never greyed, and that is a fact about the panel, not an oversight.** The
+     * moment there is something to undo is the moment a mark has just been made — and while the
+     * pen is armed for writing this device does not update the display at all, so the button
+     * cannot brighten when the stack fills and cannot dim when it empties. The first version of
+     * this screen faded the arrows at 0.3 alpha, and Greg's verdict on the panel was that a state
+     * which cannot be redrawn when it changes is a state that lies: an arrow still dim after the
+     * first stroke reads as undo being broken, not as the panel being slow. BOOX's own apps draw
+     * these as plain black glyphs with no state, for the same reason. So the arrows are always
+     * bright, a tap with nothing behind it does nothing, and the page number is the one thing on
+     * this bar that changes.
      */
     private fun refreshChrome() {
         // A replay cancelled by the screen closing still runs its `finally`, and a label set on a
         // window that is going away is at best a wasted frame.
         if (busy || isFinishing || isDestroyed) return
         val label = getString(R.string.sketchbook_page_of, pagePosition, pageTotal)
-        val canUndo = stack.canUndo()
-        val canRedo = stack.canRedo()
         gate.run(CHROME_KEY) {
-            // Assigning identical text still lays the label out again; the enabled and alpha
-            // setters return early by themselves. One comparison keeps a no-op refresh a no-op.
+            // Assigning identical text still lays the label out again. One comparison keeps a
+            // no-op refresh a no-op.
             if (binding.pageIndicator.text != label) binding.pageIndicator.text = label
-            setEnabled(binding.btnUndo, canUndo)
-            setEnabled(binding.btnRedo, canRedo)
         }
-    }
-
-    /**
-     * A button with nothing behind it, said without colour.
-     *
-     * `bg_toolbar_button` has no disabled state to draw — it is a ring that appears when pressed
-     * and stays when selected, and there is no colour anywhere in this app's chrome to spend on a
-     * third meaning. Alpha is the panel's one honest way to say "this is here but there is nothing
-     * for it to do": the glyph fades towards the paper rather than changing into a different glyph,
-     * which is what greying out means to a hand and needs no vocabulary to read.
-     */
-    private fun setEnabled(button: View, enabled: Boolean) {
-        button.isEnabled = enabled
-        button.alpha = if (enabled) 1f else DISABLED_ALPHA
     }
 
     private val listener = object : PaperListener {
@@ -709,14 +696,6 @@ class SketchbookActivity : AppCompatActivity() {
 
         /** One key for the whole bar: it says one thing, and the newest version of it is the one. */
         private const val CHROME_KEY = "chrome"
-
-        /**
-         * How faded a button with nothing to do is. Far enough down that the glyph reads as absent
-         * at a glance on a panel with sixteen greys, far enough up that it is still legible when
-         * looked at directly — the artist should be able to see that undo *exists* before there is
-         * anything to undo.
-         */
-        private const val DISABLED_ALPHA = 0.3f
 
         /**
          * The colour of the graphite. A #2 pencil pressed as hard as it will go is a dark grey with

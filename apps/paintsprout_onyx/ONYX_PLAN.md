@@ -882,7 +882,7 @@ eraser end works.** G3 closed 2026-09-03.
 ---
 
 ### G4 — Pages
-**Status:** 🧪 Awaiting device verification (code complete 2026-09-03; every adb-reachable step walked green; undo by hand, the finger taps and the pen-during-swap behaviour are Greg's)
+**Status:** ✅ Complete (commits `9e5967b` → the arrows-always-bright follow-up; gate passed by Greg's hand 2026-09-03 — all six checklist items, including both finger taps and the pen-hovering swap)
 
 Multi-page sketchbooks: palm-gated finger swipe left/right to turn, add page, delete page, page
 order, and last-open page restored on reopen. Page swap follows the documented contract exactly —
@@ -966,6 +966,20 @@ lands on the last page shown, and so does a force-stop and relaunch. Empty crash
   on page 2 after a swipe and a reopen; and whether a swipe or an undo landing while the pen is
   hovering waits rather than dropping ink. The test sketchbook "G4walk" is on the shelf with three
   blank pages for exactly this.
+
+**Closed by Greg's hand, 2026-09-03: all six passed** — undo and redo of a drawn mark by button and
+by the two- and three-finger taps (so the BOOX cancel rule holds on the real SDK), undo of an erase,
+a mark staying on the page it was drawn on across a swipe and a reopen, a swipe under a hovering pen
+waiting rather than dropping ink, and a drawn-on page coming back whole from a delete.
+
+**One thing settled on the panel afterwards: the undo arrows carry no state.** The first build faded
+them at 0.3 alpha when there was nothing to undo. But the moment there *is* something to undo is the
+moment a mark was just made, and while the pen is armed for writing this device does not update the
+display at all — so the arrow cannot brighten when the stack fills or dim when it empties, and an
+arrow still dim after the first stroke reads as undo being broken rather than as the panel being
+slow. Greg's call, matching BOOX's own apps: always bright, plain black glyphs, a tap with nothing
+behind it does nothing. Recorded as a standing rule in `CLAUDE.md`, because every toolbar button
+that would change state on a pen event has the same problem.
 
 ---
 

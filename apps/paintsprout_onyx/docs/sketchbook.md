@@ -39,8 +39,12 @@ obeys the rule rather than one that has to be taught it afterwards.
 
 G4 is the phase that could most easily have spent an exception and did not. It brought the two
 things on this screen that move on their own — a page swap, which repaints the entire panel, and a
-page indicator and a pair of undo arrows that change every time a mark is made — and both are
-behind the gate. The chrome goes through `PenIdleGate.run` exactly as G3's one label did. The swap
+page indicator that changes on every turn — and both are behind the gate. The undo and redo arrows
+carry **no state**: the moment there is something to undo is the moment a mark was just made, and
+while the pen is armed for writing this device does not update the display at all, so an arrow
+cannot brighten when the stack fills or dim when it empties. A first version faded them, and on the
+panel a state that cannot be redrawn when it changes read as undo being broken. They are always
+bright, as in BOOX's own apps; a tap with nothing behind it does nothing. The chrome goes through `PenIdleGate.run` exactly as G3's one label did. The swap
 goes through `PenIdleGate.awaitIdle`, which is the same rule expressed as a wait rather than as a
 deferred block: a page swap is three calls into the component that have to happen *together*, so
 there is no block to hand a gate, only a moment the sequence must not start before.
