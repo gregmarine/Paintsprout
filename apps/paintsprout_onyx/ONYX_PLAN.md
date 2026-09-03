@@ -984,7 +984,7 @@ that would change state on a pen event has the same problem.
 ---
 
 ### G5 — Covers, pins and recents
-**Status:** 🧪 Awaiting device verification (code complete 2026-09-03; the adb-reachable gate passed in full; three items for Greg's hand below)
+**Status:** ✅ Complete (commit `32796a4`; gate passed by Greg's hand 2026-09-03 — all three checklist items)
 
 `CoverSnapshot` on sketchbook close, written to the index as WEBP q100 and drawn on the library
 card; the pinned overlay (sentinel list id, `ensurePinnedListExists` on library launch — never a
@@ -1085,6 +1085,10 @@ throughout.
      card just the same.
   3. Whether the cover reads as the page at card size on this panel: the hairline is a faint grey
      line at a third scale, and whether that is legible or too pale is a matter for the eye.
+
+**Closed by Greg's hand, 2026-09-03: all three passed** — the last stroke drawn is in the cover on
+an immediate back, the system back gesture writes the card just as the arrow does, and the
+third-scale cover reads as the page on the panel. G6 is next.
 
 ---
 
