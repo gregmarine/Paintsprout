@@ -1,47 +1,41 @@
 package com.symmetricalpalmtree.paintsproutonyx.sketchbook
 
 /**
- * The pencils in the tin.
+ * The pencil in the tin. One, for now, and the thinnest one there is.
  *
- * Three leads, and discrete on purpose: real pencils come in sizes and you pick one up, you do not
- * dial one. A slider would give the artist a width no hand holding a real pencil has, which is the
- * kind of power this app defers rather than backlogs. The range that matters most is the one inside
- * a single lead anyway — pressing harder darkens a mark all the way from a ghost to solid black
- * without the width moving at all.
+ * There were three — a fine mechanical lead, a sharpened HB and a blunt soft one, at 3.9, 8.45 and
+ * 15.6 px — each the width drawn upright, with the flank of the lead broadening the mark several
+ * times over as the pencil was laid down. An evening's sketching with that tin rejected it whole:
+ * the marks were far too broad in an ordinary grip, the lean was named as part of the cause, and
+ * neither the live ink nor the bake read as pencil. The artist's request was to step back to the
+ * basics of pencil sketching on this panel — no tilt, a stroke as thin as it will go, pressure kept
+ * — and find out whether there is a happy middle ground there at all.
  *
- * **The numbers are px, and they are px for good.** Arc 1 has no millimetres and no calibration, so
- * nothing here is converted from a physical size at runtime and nothing asks the panel how big it is.
- * They were *chosen* against the one panel this app runs on, which measured ≈ 304.8 dpi in G0 — so a
- * millimetre is about twelve of these px, and the three leads land near 0.32 mm, 0.7 mm and 1.28 mm:
- * a fine mechanical lead, a sharpened HB, and a blunt soft one. That reasoning is written down here
- * rather than built into the app, because building it in is calibration, and calibration is a later
- * arc.
+ * So the tin holds the hairline. **1.2 px is 0.10 mm on this panel** (≈304.8 dpi, measured in G0,
+ * so a millimetre is about twelve px), and 0.10 mm is the setting the artist reads off BOOX's own
+ * Notes app for the width wanted. Whether the firmware will draw 1.2 px as thin as that is for the
+ * panel to show.
  *
- * **These are the widths of the mark, not the number the panel is handed.** They went up by a third
- * in the same change that taught g-paper the firmware's charcoal *overdraws* — its stamps overhang,
- * so it draws about 1.3× the width it is given. The engine now divides before asking, which means it
- * receives exactly the number it received before these went up: **the live ink is unchanged, and it
- * is the bake that grew to meet it.** Scaling these and the engine's correction together is what
- * kept that true, so they move together or not at all.
+ * It is the width of the mark, and since g-paper 0.1.24 it is also exactly the number the panel is
+ * handed: the live style is the firmware's plain even line, which draws what it is given, so the
+ * 1.3× charcoal overdraw and the leads' matching scale-up are both gone. A fleck of graphite is
+ * capped at the lead's width in the same release, so the bake is a hairline too and not a hairline
+ * wearing a 1.6 px coat — that one was caught by rendering the lead to a PNG before it went near the
+ * panel, the same way the first tin's flaws were.
  *
- * The odd-looking gaps between them are deliberate. Graphite is laid down as flecks of a fixed size,
- * so a mark comes out about two px wider than its lead — which means two leads three px apart look
- * nearly identical on paper, and the tin would appear to hold one pencil in three disguises. These
- * are spaced to be told apart at a glance.
+ * Still px, and px for good: arc 1 has no millimetres and no calibration, so the physical reasoning
+ * lives in this comment and nothing here asks the panel how big it is.
  *
- * **These are the widths a lead draws held upright.** Laying the pencil over draws with the flank of
- * the lead rather than its point, and the mark broadens several times over — so the broad lead laid
- * flat is far wider than any number here. That is the pencil behaving like a pencil and not a
- * setting: the tin picks how sharp the lead is, the hand picks how much of it meets the paper.
+ * Kept as an enum with one entry rather than a constant, because the tin is a decision about
+ * *which pencils exist*, and a shelf of them may come back once the hairline has been judged.
+ * `ToolPrefs` still stores the name; a name stored by the three-lead build reads back as this one.
  */
 enum class Lead(val widthPx: Float) {
-    FINE(3.9f),
-    MEDIUM(8.45f),
-    BROAD(15.6f),
+    HAIRLINE(1.2f),
     ;
 
     companion object {
-        val DEFAULT = MEDIUM
+        val DEFAULT = HAIRLINE
 
         /** A stored name that no longer exists reads back as the default rather than throwing. */
         fun byName(name: String?): Lead =

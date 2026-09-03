@@ -64,16 +64,18 @@ not apply here. Plus:
   stylus eraser end at hardware level and g-paper's Onyx engine erases with it whichever tool is
   armed (`onBeginRawErasing`). Worth knowing precisely because someone will go looking for the host
   code that does it.
-- **The pencil is three leads, pressure → darkness, tilt → width *and* paler.** The three leads are the widths
-  drawn *upright*; laying the pencil over draws with the flank of the lead and broadens the mark
-  several times over. Live ink is the firmware's `STROKE_STYLE_CHARCOAL_V2` (6) and the bake is
-  fitted to match its tilt response, so the two agree at every angle and a stroke gains its tooth at
-  pen-up rather than changing size. **Measured on this panel: `hypot(tiltX, tiltY)` is degrees from
-  vertical, directly** (a deliberate 45° reads ≈44), and the width curve is ≈1× / 4.9× / 10.9× at
-  9° / 44° / 75°. **The upright anchor is not negotiable** — that is the width the artist picked from
-  the tin, so tuning the flank must leave 1× at upright alone. Don't reintroduce a fixed-width
-  pencil, and don't reach for the plain even line (style 0) — it was tried, and its preview is too
-  plain.
+- **The pencil is one hairline lead, 1.2 px (0.10 mm at ≈12 px/mm), pressure → darkness, no tilt.**
+  Live ink is the firmware's plain even line (style 0); the bake adds grain and pressure-darkness at
+  pen-up and never changes size. It was three leads driven by tilt against the firmware's
+  `CHARCOAL_V2` for fourteen g-paper releases (0.1.9 → 0.1.23); Greg sketched with that for an
+  evening on 2026-09-02 and rejected it whole — not a pencil live or baked, far too broad in an
+  ordinary grip, tilt part of the cause. **Don't bring back tilt-driven width or the charcoal live
+  style without him asking**; both were drawn with and rejected, and `TouchHelper` cannot give you
+  the texture without the tilt. The three-lead tin (3.9 / 8.45 / 15.6 px), the 1× / 4.9× / 10.9×
+  curve at 9° / 44° / 75° and the NoteAir5C tilt measurement (`hypot(tiltX, tiltY)` is degrees) are
+  all still in git and in g-paper's `PLAN.md` Phases 11–12. **A firmware style is a target only if
+  the artist has approved the firmware style** — every one of those fourteen rounds was measured
+  against a charcoal stamp nobody had asked about.
 - **The bake is `screencap`-visible even though live EPD ink is not** — and marks re-render from
   stored rows on open, so reopening an old drawing and running `adb exec-out screencap` gives a
   pixel-exact image of what the *current* renderer makes of it. Reach for that before asking for a
@@ -109,18 +111,21 @@ not apply here. Plus:
   the device before explaining it**: an inference from `CHARCOAL_STROKE_WIDTH_EXTRA_SCALE` — a
   constant BOOX's own app applies, on a different code path from the overlay we use — cost a round
   trip by being stated as if it had been measured.
-- **`Lead`'s widths and g-paper's `CHARCOAL_V2_OVERDRAW` move together or not at all.** The firmware
-  overdraws ~1.3×, the engine divides before asking for it, and the leads are scaled up by the same
-  factor — so the panel receives the number it always did and the leads mean *the width of the mark*.
-  Change one without the other and either the live ink or the bake silently shifts by a third.
-- **Tilt must stay in the mark blob.** It decides how wide a mark is, so a file that drops the
-  channel reopens with every shading stroke narrowed to a line.
+- **`Lead.widthPx` is the number the panel is handed and the width of the bake, since g-paper
+  0.1.24.** The 1.3× `CHARCOAL_V2` overdraw correction and the leads' matching scale-up left together
+  with the charcoal live style. If a textured live style ever comes back, so does the rule: its
+  overdraw is corrected in the engine, never by widening the renderer, and the leads move with it.
+- **Tilt stays in the mark blob even though the engine now reports zero.** The renderer still
+  honours a lean when it sees one, so pages drawn under the three-lead tin reopen at the widths they
+  were drawn at rather than narrowing to lines, and a future pencil that reads the lean finds a
+  format that already carries it.
 - **Graphite lives in g-paper, and its grain is seeded from the stroke id.** `StrokeStyle.PENCIL`
   (0.1.7) draws flecks on the paper's tooth — pressure fills in more of the tooth and darkens what
   lands, the width never moves, tilt is unread. A mark's apparent width is about `width + 2 px`, the
   bleed of one fleck, so **pencil sizes must be spaced by more than that** or they look like one
-  pencil in disguises. Never add a host-side pencil renderer: a gap in how graphite looks is a
-  g-paper phase.
+  pencil in disguises — except that since 0.1.24 **a fleck is never wider than the lead that lays
+  it**, so a hairline bakes as a hairline. Never add a host-side pencil renderer: a gap in how
+  graphite looks is a g-paper phase.
 - **Frame-silence rule:** never present an app frame while `paper.isPenActive` — route chrome text
   and updates through a pen-idle gate. Frames presented during a live raw contact are withheld from
   the panel, and a pen-up `invalidate()` of identical content is damage-free, so a careless chrome

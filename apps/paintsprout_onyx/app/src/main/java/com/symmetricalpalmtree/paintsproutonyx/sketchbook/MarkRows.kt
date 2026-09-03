@@ -18,14 +18,15 @@ import com.symmetricalpalmtree.paintsproutonyx.data.soil.SoilSchema
  *
  * Two decisions are worth stating.
  *
- * **Tilt is written, and it has to be.** It was left out at first, when the engine reported zero on
- * every sample. It does not any more: the NoteAir5C's digitizer turns out to report the pen's lean
- * in degrees from vertical, and **tilt is what decides how wide a mark is** — a pencil laid over
- * draws with the flank of the lead instead of its point. Drop the channel and a page would reopen
- * with every shading stroke narrowed to a line, which is not a mark drawn slightly wrong but a
- * different drawing. The blob format reserved a flag for it from the start, so carrying it costs no
- * version bump and no migration; files written before this simply have no tilt channel and reopen
- * as the upright marks they were recorded as.
+ * **Tilt is written, and stays written.** It was left out at first, when the engine reported zero
+ * on every sample; it went in when the NoteAir5C's digitizer turned out to report the pen's lean in
+ * degrees and the lean decided how wide a mark was. The engine reports zero again since g-paper
+ * 0.1.24 — the tilt-driven pencil was drawn with and rejected — but the channel does not come out:
+ * the renderer still honours a lean when it sees one, so pages drawn under the three-lead tin reopen
+ * at the widths they were drawn at instead of every shading stroke silently narrowing to a line,
+ * and a pencil that reads the lean again someday finds a format that already carries it. The blob
+ * format reserved a flag for it from the start, so carrying it costs no version bump and no
+ * migration; files written before it simply have no tilt channel and reopen as upright marks.
  *
  * **A row that cannot be read is skipped, not guessed at.** A mark whose blob is damaged has no
  * honest fallback: an empty mark drawn on a page is indistinguishable from a mark nobody ever made,

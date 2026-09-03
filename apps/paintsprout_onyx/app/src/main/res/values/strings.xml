@@ -187,9 +187,7 @@
     <string name="sketchbook_opening">Opening\u2026</string>
     <string name="sketchbook_page_of">%1$d / %2$d</string>
     <string name="lead_sheet_title">Pencil</string>
-    <string name="lead_fine">Fine</string>
-    <string name="lead_medium">Medium</string>
-    <string name="lead_broad">Broad</string>
+    <string name="lead_hairline">Hairline (0.10 mm)</string>
     <string name="sketchbook_missing_title">This sketchbook is not here</string>
     <string name="sketchbook_missing_body">The card is on the shelf but the sketchbook it points to is missing. Nothing has been deleted \u2014 the file may be on another device, or may not have finished being made.</string>
     <string name="sketchbook_open_failed_title">This sketchbook would not open</string>

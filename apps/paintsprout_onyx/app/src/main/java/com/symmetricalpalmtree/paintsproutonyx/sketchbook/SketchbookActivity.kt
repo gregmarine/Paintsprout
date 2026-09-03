@@ -192,6 +192,10 @@ class SketchbookActivity : AppCompatActivity() {
             selectTool(Tool.PEN)
             return
         }
+        // A tin with one pencil in it has nothing to choose. Opening a sheet to show the pencil
+        // already in hand would be a menu with no decision on it, and on e-ink every needless
+        // sheet is a flash. The sheet comes back by itself the moment the tin holds two.
+        if (Lead.entries.size < 2) return
         val sheet = ActionSheetDialog(this).title(getString(R.string.lead_sheet_title))
         for (candidate in Lead.entries) {
             sheet.addAction(
@@ -272,9 +276,7 @@ class SketchbookActivity : AppCompatActivity() {
     }
 
     private fun labelOf(l: Lead): Int = when (l) {
-        Lead.FINE -> R.string.lead_fine
-        Lead.MEDIUM -> R.string.lead_medium
-        Lead.BROAD -> R.string.lead_broad
+        Lead.HAIRLINE -> R.string.lead_hairline
     }
 
     companion object {

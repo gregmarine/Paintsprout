@@ -26,7 +26,7 @@ class MarkRowsTest {
     private fun stroke(
         id: String = "mark-1",
         n: Int = 12,
-        width: Float = Lead.MEDIUM.widthPx,
+        width: Float = Lead.DEFAULT.widthPx,
         style: StrokeStyle = StrokeStyle.PENCIL,
         color: Int = 0xFF000000.toInt(),
     ) = Stroke(

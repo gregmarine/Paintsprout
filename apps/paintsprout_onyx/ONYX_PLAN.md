@@ -203,8 +203,9 @@ filesystem), `data/SoilFile.kt` as the **only** path constructor, every SQLCiphe
 
 ## Dependency — g-paper Phase 10 "Graphite"
 
-**Status:** 🧪 Published as **0.1.20** (`7239366` → `HEAD` in `~/git/g-paper`; its Phase 10 *and*
-Phase 11) — thirteen device findings folded back in · **Tracked in that repo's `PLAN.md`.**
+**Status:** 🧪 Published as **0.1.24** (`7239366` → `HEAD` in `~/git/g-paper`; its Phases 10, 11
+and 12) — fourteen device findings folded back in, then the pencil reset to an upright hairline ·
+**Tracked in that repo's `PLAN.md`.**
 
 Arc 1 cannot start drawing until this lands. It is a g-paper phase, run under g-paper's own
 protocol, and it publishes **0.1.7**. Summary of what it owes us:
@@ -830,12 +831,44 @@ just as badly (pile-up 10 per pixel against 4 clean, against 13 before). The rul
 corner as well as the reversal. On Greg's own stroke the darkest connected knot went from 124 px to
 52 px and the Y-shape cleared entirely.
 
+**Fifteenth, and it reset the pencil (2026-09-02).** Greg came back to the device after the knot fix,
+sketched with the tilt pencil for an evening, and rejected it whole: "Both the EPD and the baked
+strokes don't look like pencil", the marks far too broad in an ordinary grip, and the tilt named as
+part of the problem. His call was to step back to the basics of pencil sketching on this panel: **no
+tilt, the stroke as thin as it will go, pressure kept**, one lead only, at what BOOX Notes labels
+0.10 mm — and see whether a happy middle ground exists there at all.
+
+Why fourteen measured findings converged on the wrong pencil is the thing worth keeping. Every one of
+them measured the bake against the firmware's charcoal stamp — width curve fitted to it, overdraw
+measured on it, density photographed against it — and each came out measurably right while the whole
+came out wrong, because nobody had asked whether the charcoal stamp itself looked like a pencil.
+**A firmware style is a target only if the artist has approved the firmware style.** The tilt curve
+made it worse than it looked on paper: 1× was anchored at 9° from vertical, and nobody sketches at
+9°, so an ordinary 30–45° grip drew every lead at three to five times its width from the tin.
+
+The constraint that shaped the change: `TouchHelper`'s pen surface is style/colour/width and both
+charcoal styles broaden with the lean inside the firmware, so tilt cannot come out of the live ink
+without the texture coming out with it. Greg chose the plain even line (style 0) live, with the bake
+supplying grain and pressure → darkness at pen-up — the pen-up change is now tone and texture, never
+size. **g-paper 0.1.24** arms style 0 for `PENCIL`, gates tilt to zero on every model (`REPORT_TILT`,
+the NoteAir5C measurement kept in the source), drops the 1.3× overdraw divide with the style it
+corrected for, and caps a fleck at the lead's width — rendering a 1.2 px lead offline first showed
+the 1.6 px darkest flecks baking it at more than twice the live line's width, the same PNG habit that
+caught the first tin's flaws. Here, `Lead` is one entry, `HAIRLINE(1.2f)` = 0.10 mm at ≈12 px/mm;
+the pencil button no longer opens a sheet while the tin holds one pencil; stored `FINE`/`MEDIUM`/
+`BROAD` names read back as the hairline; tilt stays in the mark blob so pages from the three-lead
+tin reopen at the widths they were drawn at.
+
 - **Left for the user's hand, which is the whole gate:** every mark. adb cannot inject stylus ink —
   injected events carry toolType UNKNOWN and the engine drops them — and EPD pen overlays are
   invisible to `screencap`, so how graphite reads on this Kaleido panel, whether pressure spans
   usefully from ghost to solid, whether the pen-up pop between the firmware's live CHARCOAL and our
   baked grain is visible, whether the eraser end behaves, and whether marks survive a close and
-  reopen are all Greg's eye and nobody else's.
+  reopen are all Greg's eye and nobody else's. After the reset, three more: whether the firmware's
+  plain line draws 1.2 px as thin as BOOX Notes' 0.10 mm or has a floor of its own; whether a pale,
+  pressure-carried hairline reads as pencil on this Kaleido panel; and whether a live line that is
+  uniform black turning grained and pressure-toned at pen-up is acceptable now that it never changes
+  size.
 
 ---
 
