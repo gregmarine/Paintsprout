@@ -53,6 +53,40 @@ class SoilWriter(scope: CoroutineScope) {
         }
     }
 
+    /**
+     * Put a write on the end of the queue, wait for it, and hand back what it returned.
+     *
+     * The difference from [submit] is the honesty about failure, and it is why this exists. A mark
+     * that fails to save is logged and dropped because there is nothing to say to an artist
+     * mid-stroke — but an undo is not mid-stroke. It is a thing the artist asked for and is
+     * watching for, and an undo that did not reach the file must never be allowed to pretend it
+     * did: the page would come back showing the mark gone while the row is still alive, and the
+     * next time the sketchbook opened the mark would be there again with no explanation.
+     * Exceptions therefore travel out to the caller, which can put the entry back on the stack.
+     *
+     * It is the **same queue**, which is the other half of the point. A page appended by a swipe
+     * and the mark drawn on it a second later are two writes about the same book, and ordering
+     * between them holds only because everything goes through one line. A second path that
+     * "just awaited its own write" would be a second line, and two lines have no order between them.
+     *
+     * A caller waiting here when the sketchbook closes waits forever, by construction — the pump is
+     * cancelled and the task never runs. That is survivable because everything that calls this is
+     * running on the screen's own scope, which is cancelled at the same moment, and it is the reason
+     * this must never be called from the application scope.
+     */
+    suspend fun <T> perform(task: suspend () -> T): T {
+        val result = CompletableDeferred<T>()
+        val accepted = queue.trySend {
+            try {
+                result.complete(task())
+            } catch (e: Throwable) {
+                result.completeExceptionally(e)
+            }
+        }.isSuccess
+        if (!accepted) error("the sketchbook is closed and this write cannot be made")
+        return result.await()
+    }
+
     /** Wait until everything already queued has been written. */
     suspend fun drain() {
         val done = CompletableDeferred<Unit>()

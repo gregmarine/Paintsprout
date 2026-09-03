@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Rect
 import android.os.Bundle
+import android.util.Log
+import android.view.MotionEvent
 import android.view.View
 import android.widget.ImageButton
 import androidx.appcompat.app.AppCompatActivity
@@ -23,8 +25,11 @@ import com.symmetricalpalmtree.paintsproutonyx.core.IndexGuard
 import com.symmetricalpalmtree.paintsproutonyx.core.TopGuard
 import com.symmetricalpalmtree.paintsproutonyx.data.index.IndexRepository
 import com.symmetricalpalmtree.paintsproutonyx.data.prefs.ToolPrefs
+import com.symmetricalpalmtree.paintsproutonyx.data.soil.SoilObjectEntity
 import com.symmetricalpalmtree.paintsproutonyx.databinding.ActivitySketchbookBinding
 import kotlinx.coroutines.launch
+
+private const val TAG = "SketchbookActivity"
 
 /**
  * The page. Everything before this screen was about finding a sketchbook; this is the one that gets
@@ -54,6 +59,24 @@ import kotlinx.coroutines.launch
  * contact are withheld by the ink pipeline and a later repaint of identical content is damage-free,
  * so chrome updated mid-stroke does not merely waste a refresh, it goes missing.
  *
+ * ## The book, and the one door into it
+ *
+ * A sketchbook has many pages now, and **[showPage] is the only thing in this app that puts one on
+ * the glass.** Every route — opening the file, a swipe, a delete, an undo — goes through it, so the
+ * documented swap sequence is written once and cannot be got wrong in five places. What that
+ * sequence protects against is worth stating: `clear()` followed by `loadStrokes` flashes the panel
+ * blank in between, which on e-ink is a full white refresh the artist watches happen, so the swap
+ * uses `clearForContentSwap()` instead and the old pixels simply hold until the new page replaces
+ * them in one go.
+ *
+ * **The `.soil` is the source of truth and the screen is a view of it.** Undo never reaches into
+ * the paper with `addStrokes`/`removeStrokes` — it changes the file and then reloads the page from
+ * the file. The targeted calls are faster and g-paper offers them for exactly this, but they let
+ * the picture and the rows drift apart: a view patched independently of the store can disagree with
+ * what the sketchbook reopens as, and the artist finds out about it a day later with nothing to
+ * connect it to. One extra page load is a cheap price for never having to wonder which of the two
+ * is right.
+ *
  * ## The lifecycle, which is the part that bites
  *
  * `resumeDrawing()` in `onResume` reclaims the pen pipeline without trusting focus events, which on
@@ -72,14 +95,32 @@ class SketchbookActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySketchbookBinding
     private lateinit var paper: PaperView
     private lateinit var gate: PenIdleGate
+    private lateinit var gestures: PageGestures
     private lateinit var prefs: ToolPrefs
 
     private val repo by lazy { IndexRepository() }
+    private val stack = UndoRedoStack()
 
     private var sketchbookId = ""
     private var session: SketchbookSession? = null
     private var lead = Lead.DEFAULT
     private var tool = Tool.PEN
+
+    /**
+     * True while the screen is in the middle of something the artist must not start a second copy
+     * of: opening the file, a page swap, a delete, a replay.
+     *
+     * It is one flag rather than a lock because every one of those things ends in a page being
+     * shown, and two of them running at once is two page loads racing for one panel — the marks of
+     * one page drawn against the rectangle of another. The gesture detector reads it and stands
+     * down; the buttons read it and refuse the tap. Written only on the main thread, which is the
+     * only thread that ever asks.
+     */
+    private var busy = false
+
+    /** What the page indicator says, recomputed whenever a page is shown and not once per mark. */
+    private var pagePosition = 0
+    private var pageTotal = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -110,13 +151,34 @@ class SketchbookActivity : AppCompatActivity() {
         paper.eraserRadius = ERASER_RADIUS_PX
         paper.setPaperListener(listener)
 
+        gestures = PageGestures(
+            host = binding.root,
+            isPenActive = { paper.isPenActive },
+            standDown = { busy },
+            overChrome = ::overChrome,
+            listener = fingers,
+        )
+
         binding.btnBack.setOnClickListener { finish() }
         binding.btnPencil.setOnClickListener { onPencilTapped() }
         binding.btnEraser.setOnClickListener { selectTool(Tool.ERASER) }
+        // A tap on one of these is a finger on chrome, which the gesture observer refuses by
+        // `overChrome` — so the button and the two-finger tap can never both fire for one touch.
+        binding.btnUndo.setOnClickListener { undo() }
+        binding.btnRedo.setOnClickListener { redo() }
+        binding.btnTrash.setOnClickListener { askToDeletePage() }
         TooltipCompat.setTooltipText(binding.btnBack, getString(R.string.cd_sketchbook_back))
         TooltipCompat.setTooltipText(binding.btnPencil, getString(R.string.cd_sketchbook_pencil))
         TooltipCompat.setTooltipText(binding.btnEraser, getString(R.string.cd_sketchbook_eraser))
+        TooltipCompat.setTooltipText(binding.btnUndo, getString(R.string.cd_sketchbook_undo))
+        TooltipCompat.setTooltipText(binding.btnRedo, getString(R.string.cd_sketchbook_redo))
+        TooltipCompat.setTooltipText(binding.btnTrash, getString(R.string.cd_sketchbook_delete_page))
         selectTool(Tool.PEN)
+        // Nothing has been drawn yet, so both arrows open greyed rather than opening bright and
+        // dimming a moment later — a control that changes on its own the first time you look at it
+        // reads as a control you missed pressing.
+        setEnabled(binding.btnUndo, false)
+        setEnabled(binding.btnRedo, false)
 
         // The bars' rectangles are not known until they have been laid out, and they move when the
         // status-bar inset arrives — which is a second pass, after the first. Listening for layout
@@ -131,6 +193,7 @@ class SketchbookActivity : AppCompatActivity() {
     // ── The file ─────────────────────────────────────────────────────────────
 
     private fun openSketchbook() {
+        busy = true
         lifecycleScope.launch {
             val opened = try {
                 SketchbookSession.open(this@SketchbookActivity, sketchbookId, PaintsproutApplication.scope)
@@ -138,6 +201,7 @@ class SketchbookActivity : AppCompatActivity() {
                 // A sketchbook that will not open is never deleted and never quietly skipped. The
                 // artist is told, in a dialog rather than a toast, because a toast that is missed on
                 // e-ink leaves a blank page that looks like lost work.
+                busy = false
                 Dialogs.problem(
                     this@SketchbookActivity,
                     getString(R.string.sketchbook_open_failed_title),
@@ -146,6 +210,7 @@ class SketchbookActivity : AppCompatActivity() {
                 return@launch
             }
             if (opened == null) {
+                busy = false
                 Dialogs.problem(
                     this@SketchbookActivity,
                     getString(R.string.sketchbook_missing_title),
@@ -154,26 +219,374 @@ class SketchbookActivity : AppCompatActivity() {
                 return@launch
             }
             session = opened
-            // The page rect the marks were recorded in, handed over before the marks themselves:
-            // it is what the component registers ink against, so setting it afterwards would draw
-            // the first frame against the wrong rectangle.
-            paper.setPageSize(opened.pageWidth, opened.pageHeight)
-            paper.loadStrokes(opened.loadMarks())
             binding.sketchbookName.text = opened.title
-            binding.pageIndicator.text = getString(R.string.sketchbook_page_of, 1, opened.pageCount)
+            try {
+                showPage(opened.currentPageId)
+            } finally {
+                busy = false
+                refreshChrome()
+            }
             binding.openingOverlay.visibility = View.GONE
             pushExclusionRects()
         }
     }
 
+    /**
+     * Put a page on the glass. **The only path that ever changes what the paper is showing.**
+     *
+     * The three calls into the component are the documented page-swap contract and there is
+     * deliberately nothing between them: `clearForContentSwap` drops the old model without
+     * repainting, so the pixels already on the panel hold; `setPageSize` hands over the rectangle
+     * the marks were recorded in, which is what the component registers ink against, so setting it
+     * *after* the marks would draw the first frame against the wrong rectangle; `loadStrokes` then
+     * swaps the content in. Together that is **one** EPD refresh, and the panel never shows blank
+     * in between.
+     *
+     * Everything the swap needs is read first, off the main thread, so the sequence itself is three
+     * synchronous calls with no chance of something landing in the middle of them. And it waits on
+     * the pen: `loadStrokes` under a live contact drops ink, because the frames it presents are
+     * withheld while the pen is down. That wait is [PenIdleGate.awaitIdle] and it is an obligation,
+     * not a nicety.
+     */
+    private suspend fun showPage(pageId: String) {
+        val s = session ?: return
+        val marks = s.loadMarks(pageId)
+        val row = s.page(pageId)
+        val width = SketchbookSession.pageDimension(row?.width)
+        val height = SketchbookSession.pageDimension(row?.height)
+        val pages = s.livePages().map { it.id }
+
+        gate.awaitIdle()
+        paper.clearForContentSwap()
+        paper.setPageSize(width, height)
+        paper.loadStrokes(marks)
+
+        s.currentPageId = pageId
+        // Every page shown, not only the last one. A screen killed in the background never gets to
+        // write anything on the way out, so the pointer has to already be right at every moment.
+        s.rememberOpenPage(pageId)
+        pagePosition = PageMath.positionOf(pages, pageId)
+        pageTotal = pages.size
+        refreshChrome()
+    }
+
+    /**
+     * The page number and the two arrows, brought up to date — through the gate, like all chrome.
+     *
+     * **Nothing is drawn while an operation is in flight.** Every state the bar could show mid-flip
+     * is about to be replaced a fraction of a second later, and on this panel showing it and then
+     * correcting it spends two full refreshes of the top bar saying nothing. So this stands aside
+     * while [busy] and each operation calls it once at the end, when the answer has settled. What
+     * makes that safe is that the buttons are protected by refusing the tap rather than by being
+     * greyed out and back again — including the trash, which is the one control here with no other
+     * disabled state to show.
+     */
+    private fun refreshChrome() {
+        // A replay cancelled by the screen closing still runs its `finally`, and a label set on a
+        // window that is going away is at best a wasted frame.
+        if (busy || isFinishing || isDestroyed) return
+        val label = getString(R.string.sketchbook_page_of, pagePosition, pageTotal)
+        val canUndo = stack.canUndo()
+        val canRedo = stack.canRedo()
+        gate.run(CHROME_KEY) {
+            // Assigning identical text still lays the label out again; the enabled and alpha
+            // setters return early by themselves. One comparison keeps a no-op refresh a no-op.
+            if (binding.pageIndicator.text != label) binding.pageIndicator.text = label
+            setEnabled(binding.btnUndo, canUndo)
+            setEnabled(binding.btnRedo, canRedo)
+        }
+    }
+
+    /**
+     * A button with nothing behind it, said without colour.
+     *
+     * `bg_toolbar_button` has no disabled state to draw — it is a ring that appears when pressed
+     * and stays when selected, and there is no colour anywhere in this app's chrome to spend on a
+     * third meaning. Alpha is the panel's one honest way to say "this is here but there is nothing
+     * for it to do": the glyph fades towards the paper rather than changing into a different glyph,
+     * which is what greying out means to a hand and needs no vocabulary to read.
+     */
+    private fun setEnabled(button: View, enabled: Boolean) {
+        button.isEnabled = enabled
+        button.alpha = if (enabled) 1f else DISABLED_ALPHA
+    }
+
     private val listener = object : PaperListener {
         override fun onStrokeCommitted(stroke: Stroke) {
-            session?.recordMark(stroke)
+            val s = session ?: return
+            // The page is captured here, at the commit, and travels with the write. A swap already
+            // in flight will move `currentPageId` before this write reaches the front of the queue,
+            // and a mark filed against the leaf the artist is about to be looking at is a mark on
+            // the wrong page.
+            val page = s.currentPageId
+            s.recordMark(stroke, page)
+            stack.record(Edit.Drew(page, stroke.id))
+            refreshChrome()
         }
 
-        override fun onStrokesErased(ids: List<String>) {
-            session?.recordErase(ids)
+        override fun onStrokesErased(strokeIds: List<String>) {
+            if (strokeIds.isEmpty()) return
+            val s = session ?: return
+            val page = s.currentPageId
+            s.recordErase(strokeIds)
+            // One sweep of the eraser is one entry, because it was one movement of the hand. An
+            // entry per mark would make undoing a broad sweep a matter of tapping until it stops.
+            stack.record(Edit.Erased(page, strokeIds))
+            refreshChrome()
         }
+    }
+
+    // ── Turning pages ────────────────────────────────────────────────────────
+
+    private val fingers = object : PageGestures.Listener {
+        override fun onFlipNext() = flip(forward = true)
+        override fun onFlipPrevious() = flip(forward = false)
+        override fun onUndo() = undo()
+        override fun onRedo() = redo()
+    }
+
+    /**
+     * Forward past the last page **makes a new one**, and lands on it.
+     *
+     * A real sketchbook has a next leaf until it does not, and the moment it does not you are
+     * holding the back cover — there is no gesture for "the book is over". So the swipe simply
+     * finds a blank page there. It is recorded as an edit, which means a leaf swiped into by
+     * accident costs one undo to take back rather than being a page that is now permanently in the
+     * book. That is also the entire mechanism for adding pages: there is no button, and pages are
+     * only ever made at the end, which is what keeps page order something nobody maintains.
+     *
+     * Backward off the front does nothing at all. The other direction has no equivalent — a page
+     * before the first one is not a leaf a sketchbook can grow.
+     */
+    private fun flip(forward: Boolean) {
+        if (busy) return
+        val s = session ?: return
+        busy = true
+        lifecycleScope.launch {
+            try {
+                val pages = s.livePages().map { it.id }
+                val at = pages.indexOf(s.currentPageId)
+                if (at < 0) return@launch
+                if (!forward) {
+                    if (at > 0) showPage(pages[at - 1])
+                    return@launch
+                }
+                if (at < pages.lastIndex) {
+                    showPage(pages[at + 1])
+                    return@launch
+                }
+                val leftBehind = s.currentPageId
+                val fresh = s.appendPage()
+                stack.record(Edit.AddedPage(fresh.id, shownAfterUndo = leftBehind))
+                runCatching { repo.setPageCount(sketchbookId, pages.size + 1) }
+                showPage(fresh.id)
+            } catch (e: Exception) {
+                Log.e(TAG, "the page would not turn", e)
+            } finally {
+                busy = false
+                refreshChrome()
+            }
+        }
+    }
+
+    // ── Throwing a page away ─────────────────────────────────────────────────
+
+    /**
+     * The trash asks first, and names the page it is aimed at by number.
+     *
+     * [PaperView.releaseRender] before the dialog is a host obligation on an EPD panel, not a
+     * flourish: the writing overlay holds the pixels under it against ordinary app updates, so a
+     * dialog raised while it is armed simply does not appear. It re-arms on the next pen-down by
+     * itself and is a no-op off e-ink, so it is called without conditions.
+     */
+    private fun askToDeletePage() {
+        if (busy) return
+        val s = session ?: return
+        paper.releaseRender()
+        Dialogs.confirm(
+            this,
+            getString(R.string.delete_page_title, pagePosition, pageTotal),
+            getString(R.string.delete_page_body),
+            R.string.delete_page_confirm,
+        ) { deletePage(s) }
+    }
+
+    /**
+     * Throw the current page away, marks and all, and land on the leaf behind it.
+     *
+     * A soft delete, so undo brings it back with everything that was drawn on it — the rows are
+     * stamped, never removed, which is why restoring is putting the page back rather than building
+     * something that resembles it.
+     *
+     * **Deleting the only page leaves one fresh blank page.** A sketchbook with nothing in it is
+     * not a sketchbook; it is a screen with no paper on it and no way to make any, since the only
+     * way to add a leaf is to swipe past the last one and there would be no last one. So the empty
+     * book gets a new first page, and undo takes that stand-in away again when it puts the real one
+     * back.
+     */
+    private fun deletePage(s: SketchbookSession) {
+        if (busy) return
+        busy = true
+        lifecycleScope.launch {
+            try {
+                val pages = s.livePages().map { it.id }
+                val victim = s.currentPageId
+                val markIds = s.deletePage(victim)
+                var replacement: SoilObjectEntity? = null
+                var target = PageMath.neighbourAfterRemoving(pages, victim)
+                if (target == null) {
+                    replacement = s.appendPage()
+                    target = replacement.id
+                }
+                stack.record(Edit.DeletedPage(victim, markIds, replacement?.id, target))
+                runCatching { repo.setPageCount(sketchbookId, s.livePageCount()) }
+                showPage(target)
+            } catch (e: Exception) {
+                Log.e(TAG, "the page would not go", e)
+            } finally {
+                busy = false
+                refreshChrome()
+            }
+        }
+    }
+
+    // ── Undo and redo ────────────────────────────────────────────────────────
+
+    private fun undo() = replay(undoing = true)
+
+    private fun redo() = replay(undoing = false)
+
+    /**
+     * Take one edit back — or put it back — by changing the file and then showing the page from the
+     * file.
+     *
+     * **The store is mutated first and the picture follows.** g-paper offers `addStrokes` and
+     * `removeStrokes` for exactly this and they would be faster, but they patch the view
+     * independently of the rows: the two can then disagree, and the artist finds out when the
+     * sketchbook reopens looking different from how they left it, a day later, with nothing to
+     * connect it to. The `.soil` is the source of truth, so the page is always redrawn from what is
+     * actually in it.
+     *
+     * Single-flight behind [busy]: an undo arriving into the middle of another undo is two page
+     * loads racing for one panel.
+     *
+     * The generation check is the one subtle part. A replay waits — on the write, and again on the
+     * page load — and the pen can finish a mark across that wait. That mark clears the redo side,
+     * because there is no going forward from a drawing that has moved on. The entry this replay is
+     * holding would go straight back onto the side that was just cleared, so it is dropped instead.
+     * See [UndoRedoStack.generation].
+     *
+     * An edit whose write **failed** goes back where it came from. The writer's [SoilWriter.perform]
+     * lets the exception through for this reason: an undo that did not reach the file must not
+     * pretend it did, and leaving the entry popped would make the failure permanent and silent.
+     */
+    private fun replay(undoing: Boolean) {
+        if (busy) return
+        val s = session ?: return
+        val edit = (if (undoing) stack.popUndo() else stack.popRedo()) ?: return
+        val generation = stack.generation
+        busy = true
+        lifecycleScope.launch {
+            try {
+                val (target, replayed) = applyEdit(s, edit, undoing)
+                if (edit is Edit.AddedPage || edit is Edit.DeletedPage) {
+                    runCatching { repo.setPageCount(sketchbookId, s.livePageCount()) }
+                }
+                showPage(target)
+                if (stack.generation == generation) {
+                    if (undoing) stack.pushRedo(replayed) else stack.pushUndo(replayed)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "the edit could not be replayed and was put back", e)
+                if (undoing) stack.pushUndo(edit) else stack.pushRedo(edit)
+            } finally {
+                busy = false
+                refreshChrome()
+            }
+        }
+    }
+
+    /**
+     * Reverse an edit, or re-apply it, and say which page the result has to be shown on — and which
+     * entry goes onto the other side of the stack.
+     *
+     * The page is part of the answer rather than something the caller works out, because for two of
+     * the four the page to land on is not the page the edit names: undoing an added leaf takes that
+     * leaf away, so the screen goes back to the one before it; redoing a delete takes the page away
+     * again, so the screen goes where the delete originally landed.
+     *
+     * The entry is part of the answer because taking a page away *learns something*: whatever marks
+     * were still alive on it went down with it, and the redo has to bring exactly those back.
+     * Ordinarily there are none — anything drawn on an added leaf sits above this entry on the stack
+     * and was undone first — but a history that overflowed past those marks reaches here with them
+     * still on the page, and a redo that put the leaf back blank would have quietly turned an undo
+     * into a delete. So the ids the store hands back travel with the entry to the redo side, the way
+     * a page delete records its marks at the moment it happens.
+     */
+    private suspend fun applyEdit(s: SketchbookSession, edit: Edit, undoing: Boolean): Pair<String, Edit> =
+        when (edit) {
+            is Edit.Drew -> {
+                if (undoing) s.hideMarks(listOf(edit.markId)) else s.restoreMarks(listOf(edit.markId))
+                edit.pageId to edit
+            }
+            is Edit.Erased -> {
+                if (undoing) s.restoreMarks(edit.markIds) else s.hideMarks(edit.markIds)
+                edit.pageId to edit
+            }
+            is Edit.AddedPage -> if (undoing) {
+                val hidden = s.deletePage(edit.pageId)
+                edit.shownAfterUndo to edit.copy(hiddenMarkIds = hidden)
+            } else {
+                s.restorePage(edit.pageId, edit.hiddenMarkIds)
+                edit.pageId to edit
+            }
+            is Edit.DeletedPage -> if (undoing) {
+                s.restorePage(edit.pageId, edit.markIds)
+                val hidden = edit.replacementPageId?.let { s.deletePage(it) } ?: emptyList()
+                edit.pageId to edit.copy(replacementMarkIds = hidden)
+            } else {
+                s.deletePage(edit.pageId)
+                edit.replacementPageId?.let { s.restorePage(it, edit.replacementMarkIds) }
+                edit.shownAfterDelete to edit
+            }
+        }
+
+    // ── Fingers ──────────────────────────────────────────────────────────────
+
+    /**
+     * Every touch is shown to the gesture observer on its way to the views, and taken from nobody.
+     *
+     * `dispatchTouchEvent` rather than a touch listener on the paper, because the observer has to
+     * see sequences that begin on the toolbar in order to *ignore* them — a listener attached below
+     * the chrome would never be told about a finger that landed on a button, and could not tell a
+     * button press from a swipe that started there.
+     */
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (::gestures.isInitialized) gestures.onTouchEvent(ev)
+        return super.dispatchTouchEvent(ev)
+    }
+
+    /**
+     * Did this touch begin on the chrome rather than on the paper?
+     *
+     * Screen coordinates on both sides. The event's own `x`/`y` are window coordinates and the
+     * bars' `left`/`top` are relative to their parent, and on a screen whose window is inset by a
+     * status bar those two are not the same origin — a mismatch that shows up as a swipe that works
+     * everywhere except near the toolbar, which is exactly where it must not.
+     */
+    private fun overChrome(ev: MotionEvent): Boolean {
+        val x = ev.rawX.toInt()
+        val y = ev.rawY.toInt()
+        return within(binding.topBar, x, y) || within(binding.bottomStrip, x, y)
+    }
+
+    private val chromeAt = IntArray(2)
+
+    private fun within(view: View, x: Int, y: Int): Boolean {
+        if (view.visibility != View.VISIBLE || view.width == 0 || view.height == 0) return false
+        view.getLocationOnScreen(chromeAt)
+        return x >= chromeAt[0] && x < chromeAt[0] + view.width &&
+            y >= chromeAt[1] && y < chromeAt[1] + view.height
     }
 
     // ── Tools ────────────────────────────────────────────────────────────────
@@ -256,17 +669,30 @@ class SketchbookActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        // A screen the index guard turned away never built any of this, and tearing down what was
+        // never made is a crash on the one path that exists to avoid one.
+        if (IndexGuard.bounced(this) || !::paper.isInitialized) {
+            super.onDestroy()
+            return
+        }
+        gestures.cancelAll()
         gate.cancelAll()
+        // The history is a memory of this sitting, not a second copy of the file. What is on disk
+        // is the drawing; how the artist got to it is something they stop needing here.
+        stack.clear()
         val closing = session
         session = null
         if (closing != null) {
             // The close has to outlive this Activity: draining the write queue is the difference
             // between a page that reopens as it was left and one missing the last thing drawn on it,
             // and lifecycleScope is cancelled the moment onDestroy returns. The application scope
-            // owns it instead, and the index's "last changed" stamp goes with it so the shelf can
-            // sort by it.
+            // owns it instead, and the index's page count and "last changed" stamp go with it so the
+            // shelf's card is right the next time it is looked at. The count is read *before* the
+            // close, while the file is still open to be asked.
             PaintsproutApplication.scope.launch {
+                val pages = runCatching { closing.livePageCount() }.getOrNull()
                 closing.close()
+                if (pages != null) runCatching { repo.setPageCount(closing.sketchbookId, pages) }
                 runCatching { repo.touch(closing.sketchbookId) }
             }
         }
@@ -280,6 +706,17 @@ class SketchbookActivity : AppCompatActivity() {
 
     companion object {
         private const val EXTRA_SKETCHBOOK_ID = "sketchbookId"
+
+        /** One key for the whole bar: it says one thing, and the newest version of it is the one. */
+        private const val CHROME_KEY = "chrome"
+
+        /**
+         * How faded a button with nothing to do is. Far enough down that the glyph reads as absent
+         * at a glance on a panel with sixteen greys, far enough up that it is still legible when
+         * looked at directly — the artist should be able to see that undo *exists* before there is
+         * anything to undo.
+         */
+        private const val DISABLED_ALPHA = 0.3f
 
         /**
          * The colour of the graphite. A #2 pencil pressed as hard as it will go is a dark grey with

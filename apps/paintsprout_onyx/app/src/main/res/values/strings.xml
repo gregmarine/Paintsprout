@@ -179,11 +179,27 @@
 
     <!-- The page. Nothing here is a label the artist reads while drawing: the
          name and the page count are for glancing at between marks, and the rest
-         are content descriptions, sheet titles, and the two things a sketchbook
-         that will not open has to be able to say. -->
+         are content descriptions, sheet titles, the question the trash asks
+         before it takes a page, and the two things a sketchbook that will not
+         open has to be able to say. Undo and redo have a finger gesture as well
+         as a button — two fingers tapped twice, three for redo — and the button
+         is what makes them discoverable, so the description is the plain verb
+         and nothing about how else to reach it. -->
     <string name="cd_sketchbook_back">Back to the shelf</string>
     <string name="cd_sketchbook_pencil">Pencil</string>
     <string name="cd_sketchbook_eraser">Eraser</string>
+    <string name="cd_sketchbook_undo">Undo</string>
+    <string name="cd_sketchbook_redo">Redo</string>
+    <string name="cd_sketchbook_delete_page">Delete this page</string>
+
+    <!-- The page the trash is aimed at is named by its number, because that is
+         the only name a page has and "Delete this page?" would be a question
+         about whichever page the artist thinks they are on. The body says the
+         one thing that makes this different from deleting a sketchbook: it can
+         be taken back, and exactly how long for. -->
+    <string name="delete_page_title">Delete page %1$d of %2$d?</string>
+    <string name="delete_page_body">Everything drawn on it goes with it. Undo brings the page back until you close the sketchbook.</string>
+    <string name="delete_page_confirm">Delete</string>
     <string name="sketchbook_opening">Opening\u2026</string>
     <string name="sketchbook_page_of">%1$d / %2$d</string>
     <string name="lead_sheet_title">Pencil</string>

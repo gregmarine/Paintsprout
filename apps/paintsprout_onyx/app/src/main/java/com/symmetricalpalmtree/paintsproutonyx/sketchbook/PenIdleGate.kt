@@ -3,6 +3,9 @@ package com.symmetricalpalmtree.paintsproutonyx.sketchbook
 import android.os.Handler
 import android.os.Looper
 import com.symmetricalpalmtree.gpaper.core.PaperView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /**
  * Nothing on this screen repaints while the pen is on the paper.
@@ -26,12 +29,14 @@ import com.symmetricalpalmtree.gpaper.core.PaperView
  *
  * ## The ledger
  *
- * Every deliberate exception to the rule is written down here and in `docs/sketchbook.md`. As of G3
- * there are **none**: the sketchbook's chrome is static by construction — the toolbar changes only
- * on a tap, and a tap is a finger, and a finger arriving while the pen is active is a palm the
- * component has already refused. The gate exists anyway, wired to the one label that will move, so
- * that G4's page turns and undo counters arrive into a screen that already obeys the rule rather
- * than one that has to be taught it afterwards.
+ * Every deliberate exception to the rule is written down here and in `docs/sketchbook.md`. As of G4
+ * there are still **none**, and the phase that could most easily have added one did not. G3's
+ * chrome was static by construction — the toolbar changed only on a tap, and a finger arriving
+ * while the pen is active is a palm the component has already refused. G4 brought the two things
+ * that genuinely move on their own: a page swap, which repaints the whole panel, and a page
+ * indicator and a pair of undo buttons that change every time a mark is made. Both go through here.
+ * The swap waits on [awaitIdle] before it touches the paper at all; the chrome goes through [run]
+ * exactly as G3's one label did.
  */
 class PenIdleGate(private val paper: PaperView) {
 
@@ -61,6 +66,24 @@ class PenIdleGate(private val paper: PaperView) {
         }
         pending[key] = retry
         handler.postDelayed(retry, PaperView.PEN_ACTIVE_TAIL_MS)
+    }
+
+    /**
+     * Suspend until the pen is neither writing nor hovering. Returns at once when it already is.
+     *
+     * [run] is for chrome, which can wait a beat and then say the last thing it wanted to say. This
+     * is for the things that cannot be phrased that way — a page swap is a sequence of three calls
+     * into the component that has to happen *together*, so there is no block to hand a gate; what
+     * there is, is a moment the sequence must not start before.
+     *
+     * It is not a nicety and not a tidiness. `loadStrokes` under a live contact drops ink: the
+     * frames it presents are withheld while the pen is down, so the new page arrives invisibly and
+     * the marks still being captured land against a model that has already been swapped out from
+     * under them. Waiting is the whole of the fix, and the wait is short — the gate closes about a
+     * third of a second after the pen leaves the glass.
+     */
+    suspend fun awaitIdle() = withContext(Dispatchers.Main) {
+        while (paper.isPenActive) delay(PaperView.PEN_ACTIVE_TAIL_MS)
     }
 
     /** Drop everything waiting. The screen is going away and none of it is worth a frame now. */

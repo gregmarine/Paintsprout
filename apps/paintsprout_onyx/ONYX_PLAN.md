@@ -425,8 +425,9 @@ file count matching the shelf at every step and an empty crash buffer throughout
   written, leaving `user_version` at 0 so Room still takes its own create path. It reads the pragma
   straight back afterwards and warns if it did not take, because the trap it replaces was a pragma
   that ran, returned no error and did nothing. Verified on the device: no warning. Note the debt it
-  leaves — INCREMENTAL only makes reclaiming *possible*; **G4 owes the actual `incremental_vacuum`**,
-  since G4 is the first phase that frees a page. And `ancestry` now stops at deleted rows, so a
+  leaves — INCREMENTAL only makes reclaiming *possible*; the actual `incremental_vacuum` is owed by
+  **whichever phase first hard-deletes rows** — G4 was expected to be it and is not, since every
+  delete there is a soft delete. And `ancestry` now stops at deleted rows, so a
   breadcrumb can never offer a crumb that leads off the shelf.
 - **The folder-delete sweep is crash-safe by ordering, not by luck.** It walks the tree first and
   then stamps **children before parents**. Each stamp is its own statement and this device kills
@@ -881,7 +882,7 @@ eraser end works.** G3 closed 2026-09-03.
 ---
 
 ### G4 — Pages
-**Status:** ⬜ Not started
+**Status:** 🧪 Awaiting device verification (code complete 2026-09-03; every adb-reachable step walked green; undo by hand, the finger taps and the pen-during-swap behaviour are Greg's)
 
 Multi-page sketchbooks: palm-gated finger swipe left/right to turn, add page, delete page, page
 order, and last-open page restored on reopen. Page swap follows the documented contract exactly —
@@ -897,6 +898,74 @@ and delete behave, page count and last-open survive a relaunch; the user confirm
 1. Undo gesture — a multi-finger tap like Notesprout's, toolbar buttons, or both?
 2. What happens at the last page: a swipe that adds a page, or a hard stop?
 3. Delete-page confirmation — a sheet, or undoable without asking?
+
+**Answers.** 1. **Both.** Undo and redo buttons on the top bar, *and* the two-finger stationary
+double-tap for undo and the three-finger one for redo — the pair the artist's hand already knows
+from the Wacom app and from Notesprout. On BOOX the Onyx SDK intercepts three-finger touches and
+cancels the sequence before `ACTION_UP`, so redo takes Paper v0's treatment: an armed, stationary
+three-finger cancel counts as the tap. The buttons keep undo discoverable and adb-verifiable; the
+taps keep the hand on the paper. 2. **A swipe past the last page adds a page** and lands on it, as a
+real sketchbook has a next leaf until it does not. There is no add-page button anywhere: the only
+way a page is made is at the end, which is also what keeps page order trivial. A blank page swiped
+into by accident is harmless and undoable. 3. **A trash button on the top bar, and it asks first** —
+"Delete page 3 of 7?" — then throws the page away as a soft delete that undo brings back, marks and
+all, until the sketchbook closes. Deleting the only page leaves one fresh blank page rather than an
+empty book.
+
+**Outcome (code complete; the hand's half of the gate is open).** **133 JVM tests** (113 after G3),
+`assembleDebug` green, installed on the NA5C, and the whole adb-reachable walk driven directly and
+passed: a swipe forward on the last page appends a leaf and lands on it (1 / 1 → 2 / 2 → 3 / 3), a
+swipe back turns back (2 / 3), undo of the append shows the page before it (2 / 2) and redo brings
+it back (3 / 3), the trash asks "Delete page 3 of 3?" in a bordered dialog and lands on the page
+behind (2 / 2), undo restores it, deleting down through the only page leaves one fresh leaf
+(1 / 1) and three undos walk the book back to 3 / 3, the shelf's card reads "3 pages", reopening
+lands on the last page shown, and so does a force-stop and relaunch. Empty crash buffer throughout.
+
+- **Opus implemented against a written spec; Fable's review found one real defect before the panel
+  saw it.** Undoing an added page hid whatever marks were still on it and the redo put the page back
+  with an empty list — and the comment beside it claimed the opposite. Ordinarily nothing is on such
+  a page (its marks sit above it on the stack and go first), but a history that overflowed past them
+  would have turned an undo into a delete. The ids the store hands back now travel with the entry to
+  the redo side (`AddedPage.hiddenMarkIds`, `DeletedPage.replacementMarkIds`), entries stay
+  ids-only, and the file is never asked twice. Also: a chrome refresh could land on a screen already
+  going away, from a replay's `finally` after the scope was cancelled — now guarded.
+- **`showPage` is the only path that changes what the paper shows** — open, swipe, delete and every
+  replay — so the contract (`clearForContentSwap` → `setPageSize` → `loadStrokes`, nothing between)
+  is written once. It reads everything it needs first, then **waits for the pen** through
+  `PenIdleGate.awaitIdle`, because `loadStrokes` under a live contact drops ink. The ledger stays
+  empty: every frame G4 presents is behind the gate or the wait.
+- **The store first, then the picture, on purpose.** g-paper's `addStrokes`/`removeStrokes` would
+  be faster; they were not used because they patch the view independently of the rows, and the
+  artist finds out the two disagreed a day later when the sketchbook reopens. Replays go through
+  `SoilWriter.perform` — the same single queue as every mark write, so ordering holds — and
+  exceptions come back to the caller, which puts the entry back on the stack it came off.
+- **A mark captures its page at the commit.** `recordMark(stroke, pageId)` takes the page as an
+  argument rather than reading the session's current page at write time, because a swap in flight
+  moves that pointer before the write reaches the front of the queue.
+- **The gesture observer is fed from `dispatchTouchEvent` and consumes nothing**, so a sequence that
+  begins on a toolbar button is seen in order to be ignored — a button and the two-finger tap can
+  never both fire for one touch. All three palm obligations from host-responsibilities are met:
+  refuse to arm under the pen, re-check at finger-up, escrow undo/redo for one pen tail. The flip
+  fires at the lift with a re-check and no escrow, since a sixth-of-the-panel horizontal haul is not
+  a micro-tap a palm makes.
+- **Two things the review deliberately let stand.** `refreshChrome` stands aside while `busy` and
+  each operation calls it once at the end, so the bar never draws a state it is about to correct;
+  the trash therefore has no greyed state and is protected by refusing the tap. And the "Opening…"
+  overlay's hide is a pre-G4 frame outside the gate — effectively behind `awaitIdle` now, but not in
+  the ledger; a G6 decision.
+- **G2's `incremental_vacuum` debt was mis-assigned.** Nothing in G4 hard-deletes a row, so nothing
+  frees a page and there is nothing to reclaim; the debt moves to whichever phase first does.
+  Corrected in G2's outcome note above.
+- **Opus's report caught a real pre-existing crash path:** `onDestroy` tore down `lateinit` fields
+  on an `IndexGuard`-bounced launch, which the guard's own KDoc says every such screen must check.
+  Fixed. It also flagged that `SoilDao.livePageCount()` counts every page in the file with no parent
+  filter — correct while a `.soil` holds one sketchbook, and left alone.
+- **Left for Greg's hand:** the two- and three-finger double-taps (adb cannot inject multi-touch
+  here, and the three-finger case depends on the BOOX cancel rule that only the real SDK exercises);
+  undo of a *drawn mark* and of an *erase* (no stylus injection); a mark drawn on page 2 turning up
+  on page 2 after a swipe and a reopen; and whether a swipe or an undo landing while the pen is
+  hovering waits rather than dropping ink. The test sketchbook "G4walk" is on the shelf with three
+  blank pages for exactly this.
 
 ---
 

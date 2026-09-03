@@ -140,6 +140,19 @@ not apply here. Plus:
   only in arc 1 · sketchbook writes go through the session's single serial `SoilWriter` ·
   undo/redo replays through the store then reloads the page (the DB is the source of truth) · no
   file over ~800 lines without a written reason.
+- **`SketchbookActivity.showPage` is the only thing that changes what the paper shows** — open,
+  swipe, delete and every replay. It reads everything first, waits for the pen (`awaitIdle`), then
+  `clearForContentSwap` → `setPageSize` → `loadStrokes` with nothing between. A second swap path is
+  a second place to get the contract wrong. **Undo mutates the store first and then shows the page
+  from it** — never `addStrokes`/`removeStrokes` on the view — through `SoilWriter.perform`, which
+  is the same queue as every mark write and lets failures back out to the caller.
+- **Three fingers never reach `ACTION_UP` on this device.** The Onyx SDK claims three-finger touches
+  and cancels the sequence, so an armed, unmoved three-finger `ACTION_CANCEL` counts as the tap
+  (`PageGestures`). Any recogniser added later that waits for a clean lift from three fingers will
+  wait forever.
+- **A mark captures its page at the commit.** The session's `currentPageId` is written only when a
+  page is on the glass; a write reads the page it was handed, never the pointer, because a swap in
+  flight moves the pointer before the write reaches the front of the queue.
 - **Non-goals are enforced, not aspirational.** No layers, no paint, no surfaces, no shape tools,
   no selection, no millimetres or calibration, no zoom/pan/rotate, no export, no backup, no
   extensions. The full list, and which of them are candidate later arcs, is in `ONYX_PLAN.md`.

@@ -21,9 +21,20 @@
   ever sits against the very top edge — tapping there pulls the shade down
   instead of firing the button.
 
-  The empty right end of the top bar is a gap on purpose: G4's add-page and
-  delete-page controls go there, the same way G2 left the left end of the
-  shelf's bottom bar empty for the pins and recents that land in G5.
+  The right end of the top bar is now spent, and on one thing: the trash. G4
+  gave the bar the controls G3 left room for, and the arrangement says what
+  each of them is for. Back sits alone at the left edge. The middle carries
+  what the hand is doing — the pencil and the eraser, then a gap, then undo
+  and redo — because those four are one cluster, the tools and the taking-back
+  of what the tools did. The trash sits alone at the right edge, as far from
+  them as the bar is wide: it is the one button here that throws work away, and
+  a control that destroys something should never be a thumb's width from one
+  that does not.
+
+  There is no add-page button, and its absence is a decision rather than a
+  postponement. A page is made by swiping past the last one, the way a real
+  sketchbook has a next leaf until it does not, which is also what keeps page
+  order something nobody has to maintain.
 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/root"
@@ -80,10 +91,37 @@
                 android:src="@drawable/ic_eraser"
                 android:contentDescription="@string/cd_sketchbook_eraser" />
 
+            <!-- A fixed gap, not a weight. The tools and the two arrows are one
+                 cluster and have to read as two halves of it: touching, they
+                 are four undifferentiated buttons and the eraser is one slip
+                 away from an undo. A weighted space would spread with the
+                 panel and stop being a seam at all. -->
+            <Space
+                android:layout_width="24dp"
+                android:layout_height="0dp" />
+
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/btnUndo"
+                style="@style/Widget.Paintsprout.ToolbarButton"
+                android:src="@drawable/ic_arrow_back_up"
+                android:contentDescription="@string/cd_sketchbook_undo" />
+
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/btnRedo"
+                style="@style/Widget.Paintsprout.ToolbarButton"
+                android:src="@drawable/ic_arrow_forward_up"
+                android:contentDescription="@string/cd_sketchbook_redo" />
+
             <Space
                 android:layout_width="0dp"
                 android:layout_height="0dp"
                 android:layout_weight="1" />
+
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/btnTrash"
+                style="@style/Widget.Paintsprout.ToolbarButton"
+                android:src="@drawable/ic_trash"
+                android:contentDescription="@string/cd_sketchbook_delete_page" />
 
         </LinearLayout>
 
