@@ -143,7 +143,7 @@ panel: the colour filter costs resolution and contrast, which is why arc 1 is gr
 
 ```sh
 PKG=com.symmetricalpalmtree.paintsproutonyx.dev
-adb -s 92c16533 shell am start -n $PKG/com.symmetricalpalmtree.paintsproutonyx.PlaceholderActivity
+adb -s 92c16533 shell am start -n $PKG/com.symmetricalpalmtree.paintsproutonyx.bootstrap.BootstrapActivity
 adb -s 92c16533 shell dumpsys activity activities | grep -m1 ResumedActivity
 ```
 
@@ -159,8 +159,9 @@ whole device walk once silently passed against the wrong app.
 package installed but disabled (`enabled=3`, "Activity class does not exist"). Heal it with
 `adb -s 92c16533 shell pm enable <pkg>` — reproduced on this device.
 
-The launcher entry is `PlaceholderActivity` only through G0; G1 replaces it with
-`BootstrapActivity`.
+The launcher entry has been `bootstrap.BootstrapActivity` since G1 (`PlaceholderActivity` was G0
+only). Note the `bootstrap` subpackage — the class name alone does not resolve. When in doubt:
+`adb -s 92c16533 shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER -a android.intent.action.MAIN $PKG`.
 
 ### What adb can and cannot see here
 
