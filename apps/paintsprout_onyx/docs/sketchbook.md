@@ -217,6 +217,15 @@ as the same null a blank page returns, and the caller stored null for either —
 not render, an out-of-memory on a device that runs short of it, cleared the cover the shelf already
 had. Found by the G6 audit while walking the cover path; fixed by making the two answers different.
 
+## What a minute of drawing costs the panel (G6)
+
+`dumpsys gfxinfo` after a reset, Greg sketching for about a minute with a few erases: **26 frames**,
+roughly one per committed stroke plus the open — no storm, which is what the frame-silence rule is
+for. The frames are slow (50th percentile 57 ms, worst 300 ms) because each pen-up bakes the whole
+page again through the software renderer, so the cost grows with the marks on the page. That is
+g-paper's committed-render path, recorded as a watch item for the engine (an incremental bake), not
+for this screen. Nine finger actions — swipes, undo, redo — cost 13 frames, one each.
+
 ## What the host does, and what it must not
 
 The host does only the documented host responsibilities

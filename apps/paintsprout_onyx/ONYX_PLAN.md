@@ -1093,7 +1093,7 @@ third-scale cover reads as the page on the panel. G6 is next.
 ---
 
 ### G6 — Hardening and the verdict
-**Status:** 🧪 Audit, hardening and docs complete 2026-09-03; awaiting the pen half of the `gfxinfo` gate and **the verdict, written with Greg** — see the questions at the end of this section
+**Status:** ✅ Complete (commit `aa214b0` + the closing commit; the pen half of the `gfxinfo` gate passed and **the verdict given by Greg 2026-09-04** — at the end of this section). **Arc 1 "Graphite" is closed.**
 
 The close-out phase. Walk Paper's **six-point data-loss audit** against this source, verifying each
 claim rather than assuming it: every open path wrapped; no create-capable open outside the named
@@ -1203,82 +1203,71 @@ INCREMENTAL); a card whose file has gone stays on the shelf showing its dialog o
 Paper; the three "noted" items in the audit stand as written. The Wacom app owes two fixes found here
 (lean and tangent smoothing; connected-geometry grain) and one corrected claim (Paper's audit text).
 
-**Left for Greg's hand — one item, and the verdict:**
-1. **The pen half of `gfxinfo`.** Open a sketchbook and draw for about half a minute — ordinary
-   sketching, a few erases — then say so; the frame counters are read from the desk afterwards.
-   What is being looked for is a frame storm during writing, which the finger walk cannot produce.
+**`dumpsys gfxinfo`, pen half — passed 2026-09-04.** Greg drew for about a minute with a few erases
+after a reset: **26 frames in total**, about one per committed stroke plus the open — no storm. The
+frames are slow (50th percentile 57 ms, worst 300 ms) because every pen-up bakes the whole page again
+through the software renderer, a cost that grows with the marks on the page. That is g-paper's
+committed-render path, not this host; recorded as a **watch item for the engine** (an incremental
+bake), not a defect of the phase. Crash buffer empty.
 
 ---
 
-#### The verdict — a draft to be finished with Greg
+#### The verdict
 
-The experiment asked one question: **what does g-paper on an Onyx e-ink panel give Paintsprout?** The
-draft below is assembled from the record — Greg's own words where the record has them — and the
-questions after it are the parts only he can answer. It is not the verdict until he has.
+The experiment asked one question: **what does g-paper on an Onyx e-ink panel give Paintsprout?**
+Greg's answer, given 2026-09-04 after drawing with the finished build: *"I like the look and feel.
+I'd say this exercise was a success. The Kaleido is fine for this pencil sketch stuff. The eraser is
+fine for now too. I feel good about this."*
 
-**Does graphite through g-paper on an Onyx panel feel like pencil on paper?** *For one pencil, yes —
+**Does graphite through g-paper on an Onyx panel feel like pencil on paper?** *Yes — for one pencil,
 and only once the firmware's own idea of a pencil was taken out of the loop.* Fourteen measured
 findings tuned a tilt-driven, three-lead pencil against the firmware's charcoal stamp, each one
 measurably right, and Greg rejected the result whole after an evening's sketching: "Both the EPD and
-the baked strokes don't look like pencil." The reset — one hairline lead, no tilt, the plain even
-line live, pressure carrying tone, inked in `#505050` because the first capture "read as a fine pen"
-in black — is the first pencil on this panel he approved: "I like this." That is the reference. What
-it is not, yet, is a pencil that can be laid over: the side-of-lead regime needs a tilt number
-g-paper will not publish without a per-model measurement, and arc 1's eraser takes whole marks rather
-than rubbing graphite away — the one deliberate break with Paintsprout's WYSIWYG rule.
+the baked strokes don't look like pencil." The reset — one hairline lead, no tilt, the plain even line
+live, pressure carrying tone, inked in `#505050` because the first capture "read as a fine pen" in
+black — was the first pencil on this panel he approved ("I like this"), and a day of drawing with the
+hardened build confirmed it: the look and the feel both. That pencil is the reference for anything
+that follows. What it is not, yet, is a pencil that can be laid over: the side-of-lead regime needs a
+tilt number g-paper will not publish without a per-model measurement.
 
-**What did the Kaleido layer cost?** *Resolution and contrast at the panel level, and one design
-decision at the pencil level.* The NA5C's colour filter sits over the mono layer; arc 1 draws
-greyscale so the graphite renders on the crisp layer beneath it, and no mono BOOX was in the fleet to
-measure the difference against. The cost that was actually *paid* in code is the choice of broken
-coverage over tonal shading — a panel with a handful of greys behind a filter dithers any continuous
-grey it is handed and invents a texture on top of ours, so tone had to come from how many flecks of
-tooth catch rather than from how dark each one is. Whether the hairline reads crisp through the
-filter, and whether its texture ever showed through the grain, are Greg's eyes and nobody else's.
+**What did the Kaleido layer cost?** *Nothing the artist could see at this pencil.* The NA5C's colour
+filter sits over the mono layer; arc 1 draws greyscale so the graphite renders on the crisp layer
+beneath it, and the one design decision it forced — broken coverage rather than tonal shading,
+because a panel with a handful of greys behind a filter dithers any continuous grey it is handed —
+turned out to be the right pencil anyway. Greg's word: the Kaleido "is fine for this pencil sketch
+stuff." Whether it stays fine under colour is arc 2's question, if arc 2 is colour.
 
-**Where did the live firmware charcoal and our baked grain disagree?** *Everywhere that was
-measured, and the measuring was the mistake.* Width (the stamp scaled 5×), overdraw (1.3×), density
-(0.68×), the grain's direction, its connectedness, the "pipe cleaner" (raw tilt and a raw tangent
-turned into geometry), chisel ends, a hook, a wedge, a bead, a knot at the start of broad strokes —
-every one documented and fixed in g-paper, fifteen releases from 0.1.7 to 0.1.24. The finding that
-outlives all of them: **a firmware style is a target only if the artist has approved the firmware
-style**, and nobody had asked whether the charcoal stamp looked like a pencil. With the plain line
-live, the two no longer disagree about *size* at all; the pen-up change is tone and texture only,
-and on 2026-09-03 the record says that was acceptable.
+**Where did the live firmware charcoal and our baked grain disagree?** *Everywhere that was measured,
+and the measuring was the mistake.* Width (the stamp scaled 5×), overdraw (1.3×), density (0.68×),
+the grain's direction, its connectedness, the "pipe cleaner" (raw tilt and a raw tangent turned into
+geometry), chisel ends, a hook, a wedge, a bead, a knot at the start of broad strokes — every one
+documented and fixed in g-paper, fifteen releases from 0.1.7 to 0.1.24. The finding that outlives
+all of them: **a firmware style is a target only if the artist has approved the firmware style**, and
+nobody had asked whether the charcoal stamp looked like a pencil. With the plain line live the two no
+longer disagree about *size* at all; the pen-up change is tone and texture only, and it is settled.
 
-**What does g-paper give Paintsprout on this panel?** *The pen, the palm, the EPD pipeline, the
-eraser end, and the discipline.* Fifteen engine releases landed inside one phase without a single
-host-side workaround, which is the standing rule proving itself; the hardware eraser end erased
-"whichever tool is armed" with no code written here at all; the frame-silence rule and the pen-idle
-gate held through page turns, undo and covers with an empty ledger of exceptions. What it costs: the
-live ink is a firmware black box (`TouchHelper` offers style, colour and width, nothing else — so a
-textured live style cannot be had without its tilt response, which is what forced the plain line),
-live ink is invisible to `screencap` so every look at a stroke is a camera or a bake, and the panel's
-own refresh model dictates the shape of every piece of chrome (no state on buttons, no toast that
-explains a failure).
+**And the eraser?** Arc 1's stroke eraser is the one deliberate break with Paintsprout's WYSIWYG
+rule — it takes whole marks rather than rubbing graphite away — and it was expected to be the thing
+the hand noticed first. Greg: "fine for now." It stays on the candidate list, not the defect list.
 
-**What would arc 2 have to be?** The candidates the plan recorded on purpose: side-of-lead shading
-(a per-model tilt phase in g-paper, the pencil's missing half); a **rubbing eraser** (a partial-erase
-model g-paper does not have — arc 1's one deliberate WYSIWYG break); paper tooth (`paperKind` already
-has a home); colour on Kaleido; true size and rotation; durable undo; export and backup. Fable's
-recommendation, for what it is worth: the rubbing eraser, because it is the one thing in arc 1 the
-artist can *feel* is not paper every time they reach for it, and because it makes the next pencil
-question (side-of-lead) answerable on a page that can be corrected. But this is exactly the question
-the verdict exists to put to Greg.
+**What does g-paper give Paintsprout on this panel?** *The pen, the palm, the EPD pipeline, the eraser
+end, and the discipline.* Fifteen engine releases landed inside one phase without a single host-side
+workaround, which is the standing rule proving itself; the hardware eraser end erased "whichever tool
+is armed" with no code written here at all; the frame-silence rule and the pen-idle gate held through
+page turns, undo and covers with an empty ledger of exceptions; a minute of sketching costs 26 frames.
+What it costs: the live ink is a firmware black box (`TouchHelper` offers style, colour and width,
+nothing else — so a textured live style cannot be had without its tilt response, which is what forced
+the plain line), live ink is invisible to `screencap` so every look at a stroke is a camera or a bake,
+each pen-up re-bakes the whole page (the engine's watch item above), and the panel's refresh model
+dictates the shape of every piece of chrome (no state on buttons, no toast that explains a failure).
 
-**Questions for Greg — the verdict is finished from the answers:**
-1. Is "I like this" a yes to *pencil on paper*, or a yes to a good pen? What does the hairline still
-   lack to be graphite in the hand — tooth, the flank, the eraser, something else?
-2. Did the Kaleido filter ever show itself — a colour fringe, a moiré, the grain reading coarser than
-   the drawing — or does the hairline read clean?
-3. The pen-up change from a plain black-grey line to a grained, pressure-toned mark: settled, or still
-   a flinch?
-4. Arc 2: the rubbing eraser, side-of-lead, paper tooth, colour, or something not on the list? Or
-   does the experiment stop here with its answer?
-5. Anything the verdict above gets wrong about what happened.
-
-
----
+**What would arc 2 have to be?** **Undecided, and deliberately so.** The candidates the plan recorded
+on purpose stand: side-of-lead shading (a per-model tilt phase in g-paper, the pencil's missing half);
+a rubbing eraser (a partial-erase model g-paper does not have); paper tooth (`paperKind` already has a
+home); colour on Kaleido; true size and rotation; durable undo; export and backup. Fable's
+recommendation was the rubbing eraser; Greg has not chosen, and the experiment does not need him to
+today. **The verdict is that the experiment succeeded** — graphite through g-paper on this panel is a
+pencil the artist wants to draw with — and that is the answer arc 1 was built to get.
 
 ## Appendix — build & install
 
