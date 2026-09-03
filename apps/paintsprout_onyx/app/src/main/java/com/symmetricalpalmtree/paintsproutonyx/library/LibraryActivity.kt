@@ -8,6 +8,7 @@ import android.view.View
 import android.widget.LinearLayout
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.StringRes
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.AppCompatEditText
@@ -25,6 +26,7 @@ import com.symmetricalpalmtree.paintsproutonyx.data.index.IndexRepository
 import com.symmetricalpalmtree.paintsproutonyx.data.index.ObjectSummary
 import com.symmetricalpalmtree.paintsproutonyx.data.index.ObjectType
 import com.symmetricalpalmtree.paintsproutonyx.data.prefs.LibraryPrefs
+import com.symmetricalpalmtree.paintsproutonyx.data.prefs.RecentsPrefs
 import com.symmetricalpalmtree.paintsproutonyx.data.sidecarsOf
 import com.symmetricalpalmtree.paintsproutonyx.data.soilFile
 import com.symmetricalpalmtree.paintsproutonyx.databinding.ActivityLibraryBinding
@@ -32,8 +34,6 @@ import com.symmetricalpalmtree.paintsproutonyx.sketchbook.SketchbookActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.text.DateFormat
-import java.util.Date
 
 /**
  * The shelf: folders and sketchbooks, a page at a time.
@@ -55,18 +55,48 @@ import java.util.Date
  * an encrypted index, recoverable in principle. A delete takes the `.soil` off the disk, and there is
  * no undo and no bin — which is why it is the only action on this screen that asks first, and why the
  * folder question names what is inside before it goes.
+ *
+ * **Pinned and Recent are this screen wearing a different list**, not screens of their own — see
+ * [BrowseMode]. The grid, the paging, the long-press sheet, the covers and the sort are all identical
+ * in the three; what changes is where the cards come from and what the top bar says. Two more
+ * Activities would be two more copies of every one of those, and three places to fix the next thing
+ * found wrong with a card.
  */
 class LibraryActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityLibraryBinding
     private lateinit var prefs: LibraryPrefs
+    private lateinit var recents: RecentsPrefs
     private val repo by lazy { IndexRepository() }
+    private val covers by lazy { CoverLoader(repo) }
+    private val listing by lazy { ShelfListing(this, repo, prefs, recents) }
 
     private var folderId: String? = null
     private var pageIndex = 0
     private var pageCount = 1
     private var items = emptyList<CardItem>()
     private var grid: LibraryGrid? = null
+
+    /**
+     * Which of the three shelves is showing.
+     *
+     * Held here as well as in the prefs because the prefs are where it is *left*, not where it is
+     * read from a hundred times while the screen is up. [folderId] stays exactly where it was
+     * underneath a mode, so closing the mode puts the artist back in the folder they were standing
+     * in rather than at the root.
+     */
+    private var mode: BrowseMode = BrowseMode.NORMAL
+
+    /**
+     * Which sketchbooks wear the pin badge, read once per listing.
+     *
+     * One query for a whole shelf rather than one per card — see [IndexRepository.pinnedIds]. It is
+     * read for every mode including Pinned itself, where the answer is "all of them" and the badge
+     * is redundant: a badge that vanished on the one shelf where it is guaranteed true would be a
+     * card that changes appearance depending on how you got to it, and a card should look like
+     * itself wherever it is standing.
+     */
+    private var pinned: Set<String> = emptySet()
 
     /**
      * Which listing is the current one.
@@ -91,7 +121,7 @@ class LibraryActivity : AppCompatActivity() {
             lifecycleScope.launch { refresh() }
             result.data?.getStringExtra(NewSketchbookActivity.EXTRA_SKETCHBOOK_ID)
                 ?.takeIf { it.isNotEmpty() }
-                ?.let { startActivity(SketchbookActivity.intent(this, it)) }
+                ?.let { openSketchbook(it) }
         }
     }
 
@@ -109,8 +139,10 @@ class LibraryActivity : AppCompatActivity() {
         TopGuard.applyInsetPadding(binding.root)
 
         prefs = LibraryPrefs(this)
+        recents = RecentsPrefs(this)
         folderId = prefs.folderId
-        backCallback.isEnabled = folderId != null
+        mode = prefs.mode
+        backCallback.isEnabled = canGoBack()
         onBackPressedDispatcher.addCallback(this, backCallback)
         wireBars()
 
@@ -132,6 +164,11 @@ class LibraryActivity : AppCompatActivity() {
                 )
             }
             lifecycleScope.launch {
+                // Once, on the way in. The pinned list is a row in the index like any other and it
+                // is made on the read path rather than by a migration — a library that has never
+                // pinned anything has no such row, and the Pinned mode asking for its members is
+                // exactly the moment it should exist.
+                runCatching { repo.ensurePinnedListExists() }
                 // The folder this screen was left in may have been deleted since — by the folder
                 // sweep on the previous visit, or by a restore. Landing in it would draw a breadcrumb
                 // trail to somewhere that is not on the shelf any more.
@@ -148,12 +185,28 @@ class LibraryActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        if (::prefs.isInitialized) prefs.folderId = folderId
+        // Where the shelf was left: the folder, and which of the three shelves was on top of it.
+        if (::prefs.isInitialized) {
+            prefs.folderId = folderId
+            prefs.mode = mode
+        }
     }
 
     private fun wireBars() {
         binding.btnUp.setOnClickListener { navigateUp() }
         binding.btnSort.setOnClickListener { showSortSheet() }
+        // Tapping the button for the mode already showing puts it away again. The buttons carry no
+        // "on" state — nothing on this panel that changes appearance to mean "currently selected"
+        // can be trusted to have been redrawn — so the tap that opened Pinned has to be the tap that
+        // closes it, or the artist is left hunting for the way out of a shelf they can see but the
+        // chrome will not admit to.
+        binding.btnPinned.setOnClickListener {
+            setMode(if (mode == BrowseMode.PINNED) BrowseMode.NORMAL else BrowseMode.PINNED)
+        }
+        binding.btnRecents.setOnClickListener {
+            setMode(if (mode == BrowseMode.RECENTS) BrowseMode.NORMAL else BrowseMode.RECENTS)
+        }
+        binding.btnCloseMode.setOnClickListener { setMode(BrowseMode.NORMAL) }
         binding.btnNewFolder.setOnClickListener { showNewFolderDialog() }
         binding.btnNewSketchbook.setOnClickListener {
             newSketchbookLauncher.launch(NewSketchbookActivity.intent(this, folderId))
@@ -168,7 +221,8 @@ class LibraryActivity : AppCompatActivity() {
         // way an icon button here can say what it is — so every one of them gets it, and any button
         // added later has to join this list or it is a mark with no name.
         listOf(
-            binding.btnUp, binding.overflowButton,
+            binding.btnUp, binding.btnCloseMode, binding.overflowButton,
+            binding.btnPinned, binding.btnRecents,
             binding.btnSort, binding.btnNewFolder, binding.btnNewSketchbook,
             binding.btnFirst, binding.btnPrev, binding.btnNext, binding.btnLast,
         ).forEach { TooltipCompat.setTooltipText(it, it.contentDescription) }
@@ -178,29 +232,57 @@ class LibraryActivity : AppCompatActivity() {
 
     private suspend fun refresh() {
         val generation = ++listingGeneration
-        val here = folderId
-        renderBreadcrumb()
-        val folders = Sorting.sort(repo.folders(here), prefs.sortField, prefs.sortOrder)
-        val sketchbooks = Sorting.sort(repo.sketchbooks(here), prefs.sortField, prefs.sortOrder)
-        // Both halves were read against `here`, and this is the last listing anybody asked for.
-        // Anything else on screen would be a shelf assembled out of two different folders.
+        renderChrome()
+        // A cover changes whenever a sketchbook is closed, which is to say between one visit to this
+        // screen and the next. Anything held from the last listing is a picture of the page the
+        // artist was on before the session they have just finished.
+        covers.forget()
+        val listed = listing.cards(mode, folderId)
+        // The listing was read against one folder and one mode, and this is the last one anybody
+        // asked for. Anything else on screen would be a shelf assembled out of two different places
+        // — a fence that matters more now than in G2, because a mode change is a second thing that
+        // can start a listing while one is still in flight.
         if (generation != listingGeneration) return
-        items = folders.map { CardItem.Folder(it) } + sketchbooks.map { CardItem.Sketchbook(it, metaLine(it)) }
+        items = listed
+        pinned = runCatching { repo.pinnedIds() }.getOrDefault(emptySet())
 
+        binding.emptyState.setText(emptyStateText())
         binding.emptyState.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
         pageCount = GridGeometry.pageCount(items.size, grid?.cardsPerPage ?: 1)
         pageIndex = pageIndex.coerceIn(0, pageCount - 1)
-        grid?.bind(items, pageIndex)
+        bindPage(generation)
+    }
+
+    /**
+     * Hand the visible slice to the grid, with its covers and its badges.
+     *
+     * **The covers are read before the cards are drawn, not painted in afterwards.** The grid is
+     * torn down and rebuilt on every bind, so binding once bare and again with the pictures would be
+     * two full-screen repaints for one page turn — on this panel that is a visible flash of an empty
+     * shelf followed by the real one. Six covers out of the index is a wait short enough to spend,
+     * and the alternative is a shelf that always shows the artist its own scaffolding first.
+     *
+     * The fence is checked again after that wait, for the same reason [refresh] checks it: the cover
+     * read is another suspension point, and a page bound after a newer listing has replaced [items]
+     * is a page of the wrong shelf.
+     */
+    private suspend fun bindPage(generation: Int) {
+        val perPage = grid?.cardsPerPage ?: 1
+        val start = pageIndex * perPage
+        val slice = if (start >= items.size) emptyList() else items.subList(start, minOf(start + perPage, items.size))
+        val ids = slice.filterIsInstance<CardItem.Sketchbook>().map { it.summary.id }
+        val pictures = covers.load(ids)
+        if (generation != listingGeneration) return
+        grid?.bind(items, pageIndex, pictures, pinned)
         renderPager()
     }
 
-    /** "6 pages · 25 Aug 2026" — what the card says under the name. */
-    private fun metaLine(summary: ObjectSummary): String {
-        val pages = summary.pageCount ?: 1
-        val pagesText =
-            if (pages == 1) getString(R.string.card_meta_pages_one) else getString(R.string.card_meta_pages, pages)
-        val date = DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(summary.updatedAt))
-        return getString(R.string.card_meta, pagesText, date)
+    /** What an empty shelf says. Each mode is empty for its own reason and names its own way out. */
+    @StringRes
+    private fun emptyStateText(): Int = when (mode) {
+        BrowseMode.NORMAL -> R.string.library_empty
+        BrowseMode.PINNED -> R.string.library_empty_pinned
+        BrowseMode.RECENTS -> R.string.library_empty_recents
     }
 
     private fun renderPager() {
@@ -214,11 +296,67 @@ class LibraryActivity : AppCompatActivity() {
         val clamped = index.coerceIn(0, pageCount - 1)
         if (clamped == pageIndex) return
         pageIndex = clamped
-        grid?.bind(items, pageIndex)
-        renderPager()
+        // A page turn is now a coroutine, because the new slice's covers have to come out of the
+        // encrypted index before there is anything to draw. A page already visited is nearly free —
+        // its blobs are still in [covers] — but the trip through IO is taken either way rather than
+        // branched on, because a page turn that is sometimes synchronous and sometimes not is a page
+        // turn that reorders itself against a refresh under load.
+        lifecycleScope.launch { bindPage(listingGeneration) }
     }
 
     // ── Where am I ───────────────────────────────────────────────────────────
+
+    /**
+     * Make the two bars say which shelf this is.
+     *
+     * A mode is not a place in the folder tree, so the crumb trail has nothing to draw and the Up
+     * arrow has nowhere to point: the trail is replaced by the mode's name and Up by a close, which
+     * is the only way out of a mode and says so.
+     *
+     * **New folder and New sketchbook go INVISIBLE, not GONE**, for the same reason the pager does:
+     * they hold the right-hand end of the bottom bar, and letting them collapse would slide the
+     * pager sideways every time a mode opened or closed. A pager that moves under the thumb turning
+     * pages is a worse fault than two buttons standing in a bar with nothing to do — and they are
+     * not merely idle, they are untappable, which is the part GONE and INVISIBLE agree on. Making
+     * something *inside* a mode would have to invent an answer to "in which folder", and there is
+     * no honest one: Pinned and Recent are views of the library, not places in it.
+     */
+    private fun renderChrome() {
+        val inMode = mode != BrowseMode.NORMAL
+        binding.breadcrumbScroll.visibility = if (inMode) View.GONE else View.VISIBLE
+        binding.modeTitle.visibility = if (inMode) View.VISIBLE else View.GONE
+        binding.btnCloseMode.visibility = if (inMode) View.VISIBLE else View.GONE
+        val newButtons = if (inMode) View.INVISIBLE else View.VISIBLE
+        binding.btnNewFolder.visibility = newButtons
+        binding.btnNewSketchbook.visibility = newButtons
+        if (inMode) {
+            binding.modeTitle.setText(
+                if (mode == BrowseMode.PINNED) R.string.mode_title_pinned else R.string.mode_title_recents
+            )
+            binding.btnUp.visibility = View.GONE
+        } else {
+            // Only in NORMAL: the trail is built by walking the index and it would be a listing read
+            // for a bar that is not on the screen, and worse, a coroutine that could land after the
+            // mode closed and draw the trail of a folder nobody is standing in.
+            renderBreadcrumb()
+        }
+    }
+
+    /**
+     * Change shelves.
+     *
+     * Back to the front of the new one, every time. Page four of Recent has nothing to do with page
+     * four of the shelf, and arriving on it would land the artist among cards they did not ask to
+     * see — the same reasoning the sort sheet uses.
+     */
+    private fun setMode(next: BrowseMode) {
+        if (mode == next) return
+        mode = next
+        prefs.mode = next
+        pageIndex = 0
+        backCallback.isEnabled = canGoBack()
+        lifecycleScope.launch { refresh() }
+    }
 
     private fun renderBreadcrumb() {
         val container = binding.breadcrumbContainer
@@ -260,7 +398,14 @@ class LibraryActivity : AppCompatActivity() {
     }
 
     /**
-     * Back walks out of a folder before it walks out of the app.
+     * Back closes a mode before it walks out of a folder, and walks out of a folder before it walks
+     * out of the app.
+     *
+     * That order is the one the artist got here in. A mode is put *on top of* the folder they were
+     * standing in — [folderId] is left exactly where it was underneath it — so backing out of the
+     * mode has to put them down where they were, not one folder further up. Leaving the app from
+     * inside Pinned because back skipped over the mode it was showing is the same fault as leaving
+     * the app from three folders down.
      *
      * Registered with the dispatcher rather than written as `onBackPressed`, and that is not a style
      * choice. This app targets SDK 35 and the NA5C runs Android 15, where predictive back is on by
@@ -272,18 +417,24 @@ class LibraryActivity : AppCompatActivity() {
      * this device — not this one, and not the system settings either — so the walk that would have
      * caught it silently passes. It needs a thumb.
      *
-     * The callback is only enabled while there is somewhere to go up to. Disabled at the root, the
-     * press falls through to the system's own answer and leaves the app, which is what it should do.
+     * The callback is only enabled while there is somewhere to go: a mode to close or a folder to
+     * climb out of. Disabled on the root shelf, the press falls through to the system's own answer
+     * and leaves the app, which is what it should do.
      */
     private val backCallback = object : OnBackPressedCallback(false) {
-        override fun handleOnBackPressed() = navigateUp()
+        override fun handleOnBackPressed() {
+            if (mode != BrowseMode.NORMAL) setMode(BrowseMode.NORMAL) else navigateUp()
+        }
     }
+
+    /** Somewhere to go back to: a mode standing over the shelf, or a folder above this one. */
+    private fun canGoBack(): Boolean = mode != BrowseMode.NORMAL || folderId != null
 
     private fun navigateTo(id: String?) {
         folderId = id
         pageIndex = 0
         prefs.folderId = id
-        backCallback.isEnabled = id != null
+        backCallback.isEnabled = canGoBack()
         lifecycleScope.launch { refresh() }
     }
 
@@ -300,21 +451,73 @@ class LibraryActivity : AppCompatActivity() {
 
     private fun onCardTap(item: CardItem) {
         when (item) {
+            // Only ever reachable from the shelf itself — neither mode lists folders.
             is CardItem.Folder -> navigateTo(item.summary.id)
-            is CardItem.Sketchbook -> startActivity(SketchbookActivity.intent(this, item.summary.id))
+            is CardItem.Sketchbook -> openSketchbook(item.summary.id)
         }
     }
 
+    /**
+     * Open a sketchbook, and remember that it was opened.
+     *
+     * **The record goes to a preference file and never to the index.** Opening is not work: the
+     * index's `updatedAt` is what "Last worked on" sorts by, and a shelf that filed everything the
+     * artist looked at as everything they worked on is a shelf they stop being able to find their
+     * way around — see [IndexRepository]. Recent is the answer to a different question and keeps its
+     * own short list of ids.
+     *
+     * Written before the page is launched rather than after, because "after" is a callback on a
+     * screen that may not be resumed again for hours, or at all: this device kills background
+     * processes as a matter of routine. It is a twenty-entry JSON encode and an `apply()`, which is
+     * a write handed to another thread, so the tap does not wait on the disk for it.
+     */
+    private fun openSketchbook(id: String) {
+        recents.record(id)
+        startActivity(SketchbookActivity.intent(this, id))
+    }
+
+    /**
+     * The long-press sheet. A folder's is unchanged; a sketchbook's gains Pin at the top.
+     *
+     * **Whether it is pinned is read before the sheet is built, not while it is up.** A sheet that
+     * opened saying "Pin" on a card that is already pinned would be a sheet that lies until it is
+     * tapped, and the tap would then unpin the sketchbook the artist was trying to pin. The read is
+     * one row and the sheet appears a frame later, which is a frame well spent on a row whose whole
+     * job is to say which way the toggle is currently pointing.
+     */
     private fun onCardLongPress(item: CardItem) {
         val s = item.summary
-        ActionSheetDialog(this)
-            .title(s.name)
+        if (item is CardItem.Folder) {
+            sheetFor(s, pinnedNow = null).show()
+            return
+        }
+        lifecycleScope.launch {
+            val isPinned = runCatching { repo.isPinned(s.id) }.getOrDefault(false)
+            sheetFor(s, pinnedNow = isPinned).show()
+        }
+    }
+
+    /** [pinnedNow] null is a folder, which cannot be pinned and gets no such row. */
+    private fun sheetFor(s: ObjectSummary, pinnedNow: Boolean?): ActionSheetDialog {
+        val sheet = ActionSheetDialog(this).title(s.name)
+        if (pinnedNow != null) {
+            val label = if (pinnedNow) R.string.action_unpin else R.string.action_pin
+            val icon = if (pinnedNow) R.drawable.ic_pin_off else R.drawable.ic_pin
+            sheet.addAction(getString(label), icon) {
+                lifecycleScope.launch {
+                    if (pinnedNow) repo.unpin(s.id) else repo.pin(s.id)
+                    // The badge on the card behind the sheet has just become wrong, and in the
+                    // Pinned mode the card itself has just left or joined the shelf.
+                    refresh()
+                }
+            }
+        }
+        return sheet
             .addAction(getString(R.string.action_rename), R.drawable.ic_edit) { showRenameDialog(s) }
             .addAction(getString(R.string.action_move), R.drawable.ic_move_page) { showMovePicker(s) }
             .addAction(getString(R.string.action_delete), R.drawable.ic_trash) {
-                if (item is CardItem.Folder) confirmDeleteFolder(s) else confirmDeleteSketchbook(s)
+                if (s.type == ObjectType.FOLDER) confirmDeleteFolder(s) else confirmDeleteSketchbook(s)
             }
-            .show()
     }
 
     private fun showMovePicker(s: ObjectSummary) {
@@ -447,6 +650,17 @@ class LibraryActivity : AppCompatActivity() {
 
     // ── Sort ─────────────────────────────────────────────────────────────────
 
+    /**
+     * The sort sheet, which is the same sheet on all three shelves.
+     *
+     * **In the Recent mode it still opens, still ticks, still saves — and the cards do not move.**
+     * That looks like a bug and is not one: recency is the whole content of that shelf, and a
+     * "Recent" list sorted by name is a list that has stopped answering the question it was opened
+     * to answer. The choice is kept all the same and takes effect the moment the mode is closed, so
+     * the tap is not thrown away. It is not disabled or hidden, because nothing in this app's chrome
+     * ever is — a button whose look changes with the state behind it cannot be trusted to have been
+     * redrawn on this panel, and a faded control reads as a broken app.
+     */
     private fun showSortSheet() {
         val field = prefs.sortField
         val order = prefs.sortOrder

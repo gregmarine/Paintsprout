@@ -57,9 +57,32 @@ not apply here. Plus:
   is the only index opener and is `noHistory`.
 - **The write queue must outlive the screen.** `SoilWriter`'s pump runs on
   `PaintsproutApplication.scope`, never an Activity's `lifecycleScope` — that one is cancelled the
-  instant `onDestroy` returns, which is exactly when `SketchbookSession.close()` is draining it, so
-  the call written to save the last marks drawn would be the call that threw them away. Anything else
-  that must finish after a screen goes belongs on that scope too, and nothing else does yet.
+  instant `onDestroy` returns, which is exactly when `SketchbookSession.close()` is emptying it, so
+  the call written to save the last marks drawn would be the call that threw them away. The cover
+  snapshot (G5) is the second job on that scope. **`SoilWriter.close()` shuts the queue and then
+  waits for everything already accepted to run** — it used to drain and then cancel, and a task
+  accepted in the gap between the two was silently never run, which parked any `perform` caller
+  that outlived the screen for the life of the process. Nothing in the writer cancels anything.
+- **`updatedAt` means worked on, and opening is not work.** The index's stamp moves for ink, an
+  erase, a page added or thrown away, a rename or a move — never for opening a sketchbook, turning
+  its pages, or closing it. The close carries the `.soil` row's own last-edit time forward with
+  `touchIfNewer`, never `now`; the open-page pointer is written by `setOpenPage`, which does not
+  touch the stamp. "Recently opened" is a prefs list of ids (`RecentsPrefs`), never an index column,
+  and never names. Before G5 every close bumped the stamp, so looking at an old sketchbook filed it
+  as the newest work on the shelf.
+- **A cover is a bake of the rows, not a picture of the screen.** `CoverSnapshot` renders the last
+  page shown through `StrokeRasterizer` at the page's full size and box-averages it down by exactly
+  three, because a 1.2 px hairline rasterised at a third is below a pixel and `createScaledBitmap`'s
+  bilinear tap can step over a one-pixel line entirely. It runs behind the write queue on the
+  application scope, at `onStop` (a backgrounded screen may never see `onDestroy` here) and again,
+  ordered before the close, at `onDestroy`. A blank page stores no cover — the white frame is the
+  picture — and a failed render keeps the old one. Never `renderToBitmap()` off the live view: it
+  is main-thread, sees only the page loaded, and is gone by the time the close runs.
+- **Pinned and Recent are modes of the shelf, not screens.** Same grid, paging, covers and
+  long-press sheet; only the card source and the top bar change. Sort applies to Pinned and never
+  to Recent (the order *is* the information). Mode buttons carry no "on" state — the title and ✕
+  say which mode is on. Covers are read per visible card after the listing, never in the listing
+  (`SUMMARY_COLS`), and decoded on IO with a bounded `inSampleSize`.
 - **Turning the pen over erases, and there is no code here to find.** The BOOX SDK intercepts the
   stylus eraser end at hardware level and g-paper's Onyx engine erases with it whichever tool is
   armed (`onBeginRawErasing`). Worth knowing precisely because someone will go looking for the host

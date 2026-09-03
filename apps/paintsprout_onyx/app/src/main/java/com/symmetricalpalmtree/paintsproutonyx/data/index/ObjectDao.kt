@@ -50,6 +50,22 @@ interface ObjectDao {
     @Query("SELECT $SUMMARY_COLS FROM objects WHERE id = :id AND deletedAt IS NULL")
     suspend fun aliveSummaryById(id: String): ObjectSummary?
 
+    /**
+     * The rows of a known handful of ids, alive only, cover-free — in whatever order SQLite likes.
+     *
+     * The pinned shelf and the recents shelf are both a list of ids from somewhere else that has to
+     * become a list of cards, and neither of them is a `parentId` query: what they have in common is
+     * not where they live. Asked one id at a time through a whole-row read this would pull every
+     * pinned cover out of the encrypted index and discard it, which is the exact cost [SUMMARY_COLS]
+     * exists to avoid.
+     *
+     * The order is the caller's to restore. It matters — pinned order and recency are the whole point
+     * of those two shelves — and `IN` does not preserve it, so the caller re-sorts against the list
+     * it asked with.
+     */
+    @Query("SELECT $SUMMARY_COLS FROM objects WHERE id IN (:ids) AND deletedAt IS NULL")
+    suspend fun aliveSummariesByIds(ids: List<String>): List<ObjectSummary>
+
     /** How many alive children of [type] sit directly under [parentId]. Same null-parent arm as above. */
     @Query(
         "SELECT count(*) FROM objects " +
@@ -105,8 +121,31 @@ interface ObjectDao {
     @Query("UPDATE objects SET deletedAt = :at WHERE id = :id AND deletedAt IS NULL")
     suspend fun softDelete(id: String, at: Long)
 
+    /**
+     * A real edit happened, now.
+     *
+     * Renames and moves, which are things the artist did to the shelf that the `.soil` file knows
+     * nothing about. **Not opening and closing a sketchbook** — that used to bump it unconditionally,
+     * which quietly meant that flipping through an old sketchbook to look at it filed it as the
+     * newest work in the library. The close carries [touchIfNewer] instead.
+     */
     @Query("UPDATE objects SET updatedAt = :at WHERE id = :id")
     suspend fun touch(id: String, at: Long)
+
+    /**
+     * Move `updatedAt` forward to [at], and only forward.
+     *
+     * This is how a sketchbook being closed hands the shelf the file's own last-edit stamp — the one
+     * the `.soil` bumps on every mark, erase and page added or thrown away, and on nothing else. The
+     * index's copy is not simply that stamp, because the index also moves for renames and moves that
+     * the file never hears about; a plain assignment on close would drag a sketchbook renamed this
+     * morning and opened this afternoon back to whenever it was last drawn in.
+     *
+     * `AND updatedAt < :at` is the whole guarantee. The stamp can be brought up to date by a close;
+     * it can never be walked backwards by one.
+     */
+    @Query("UPDATE objects SET updatedAt = :at WHERE id = :id AND updatedAt < :at")
+    suspend fun touchIfNewer(id: String, at: Long)
 
     /**
      * Page count and cover are the two things the shelf shows that the artist never types. Neither

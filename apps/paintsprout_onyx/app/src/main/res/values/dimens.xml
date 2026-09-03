@@ -28,4 +28,9 @@
          itself; the padding is what keeps a fingertip from landing on the
          border instead of the text. -->
     <dimen name="dialog_field_padding">12dp</dimen>
+
+    <!-- The pin badge is read, never tapped — it says a fact about the card,
+         it isn't a control of its own — so it is sized to be seen at a glance
+         rather than to the finger-target minimums above it. -->
+    <dimen name="card_pin_badge">28dp</dimen>
 </resources>

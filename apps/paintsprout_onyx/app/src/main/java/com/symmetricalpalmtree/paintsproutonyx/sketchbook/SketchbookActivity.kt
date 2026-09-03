@@ -8,6 +8,7 @@ import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import android.widget.ImageButton
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.TooltipCompat
 import androidx.lifecycle.lifecycleScope
@@ -89,6 +90,18 @@ private const val TAG = "SketchbookActivity"
  * prevents is worth knowing in advance: without it the departing screen's teardown lands ~200 ms
  * *after* the arriving screen reclaimed, and the arriving screen's ink stays invisible until the
  * tool is flipped.
+ *
+ * ## Why this file is over the line
+ *
+ * The house rule is no file past about eight hundred lines without a written reason, and this one
+ * crossed it in G5. The reason is that nearly everything in it is the *order* of a handful of calls
+ * — the swap sequence, the pen-idle waits, the write-then-show of a replay, the write-the-card-then-
+ * finish of leaving — and that order is the whole correctness of the screen. Splitting it into a
+ * page controller, an undo controller and a lifecycle helper would make each file shorter and put
+ * the sequence that matters across three of them, where the next change reorders it without seeing
+ * the comment that said not to. What has been lifted out is the pure logic that can be tested on a
+ * desk (`PageMath`, `SwipeRule`, `UndoRedoStack`, `PageGestures`, `PenIdleGate`); what stays is the
+ * choreography, kept in one place so it can be read top to bottom.
  */
 class SketchbookActivity : AppCompatActivity() {
 
@@ -117,6 +130,15 @@ class SketchbookActivity : AppCompatActivity() {
      * only thread that ever asks.
      */
     private var busy = false
+
+    /**
+     * True from the moment the artist asked to leave until the screen has gone.
+     *
+     * Set by [leave] and read by `onDestroy`, so the shelf's card is written exactly once on the
+     * ordinary way out — by [leave], before `finish()`, where the shelf can see it — and not a
+     * second time by the teardown that follows.
+     */
+    private var leaving = false
 
     /** What the page indicator says, recomputed whenever a page is shown and not once per mark. */
     private var pagePosition = 0
@@ -159,7 +181,13 @@ class SketchbookActivity : AppCompatActivity() {
             listener = fingers,
         )
 
-        binding.btnBack.setOnClickListener { finish() }
+        binding.btnBack.setOnClickListener { leave() }
+        // The system's back gesture is the same departure as the arrow and must take the same road:
+        // a plain finish() from the dispatcher would put the shelf up before the card's picture was
+        // written. Always enabled — there is nowhere else for back to go from a page.
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = leave()
+        })
         binding.btnPencil.setOnClickListener { onPencilTapped() }
         binding.btnEraser.setOnClickListener { selectTool(Tool.ERASER) }
         // A tap on one of these is a finger on chrome, which the gesture observer refuses by
@@ -655,6 +683,76 @@ class SketchbookActivity : AppCompatActivity() {
         paper.resumeDrawing()
     }
 
+    /**
+     * Take the cover when the screen leaves the panel, whether or not it is coming back.
+     *
+     * A backgrounded screen on this device may simply never see `onDestroy` — BOOX kills background
+     * processes as a matter of routine — so waiting for the close to make the cover means a
+     * sketchbook the artist left by going to the launcher keeps whatever picture it had from the
+     * last time it happened to be closed properly. The cover is a picture of the page that was on
+     * the glass, and this is the moment it stops being on the glass.
+     *
+     * Skipped while finishing, because `onDestroy` is a heartbeat away and does the same thing
+     * properly ordered against the close. Doing both would bake the same page twice for one
+     * departure — a full-page render each, on the way out of a screen.
+     */
+    override fun onStop() {
+        super.onStop()
+        val s = session
+        if (isFinishing || s == null) return
+        // Not lifecycleScope: this outlives the stop, and on the kill path it is racing a teardown
+        // it may not win. `renderCover` is queued behind the marks still being written, so a
+        // sketchbook that closes underneath it either finishes it first (the close drains the queue)
+        // or refuses it outright, which arrives here as a failure and leaves the old cover alone.
+        PaintsproutApplication.scope.launch { updateShelfCard(s) }
+    }
+
+    /**
+     * Write everything the shelf's card shows — page count, cover, last-edit stamp — to the index.
+     *
+     * Page count, cover and stamp are all questions only the open file can answer, so this is called
+     * while the session is still open and before it is closed. The cover goes through the write
+     * queue, which puts it behind every mark still waiting to be written: the picture is of the page
+     * as it will reopen. A cover that fails is skipped rather than stored as nothing, so the shelf
+     * keeps the picture it had — a stale cover instead of a blank one.
+     *
+     * The stamp is `touchIfNewer` with the *file's* last edit, not a plain touch with now. Opening a
+     * sketchbook and closing it without drawing used to move it to the top of "Last worked on",
+     * which made that sort a record of what had been looked at.
+     */
+    private suspend fun updateShelfCard(s: SketchbookSession) {
+        val pages = runCatching { s.livePageCount() }.getOrNull()
+        val cover = runCatching { s.renderCover() }
+        val lastEdit = runCatching { s.lastEditAt() }.getOrNull()
+        if (pages != null) runCatching { repo.setPageCount(s.sketchbookId, pages) }
+        if (cover.isSuccess) runCatching { repo.setCover(s.sketchbookId, cover.getOrNull()) }
+        if (lastEdit != null) runCatching { repo.touchIfNewer(s.sketchbookId, lastEdit) }
+    }
+
+    /**
+     * The ordinary way out: write the card, then go.
+     *
+     * **The card is written before `finish()`, not by the teardown after it, because of the order
+     * Android resumes screens in.** Back pauses this screen, *resumes the shelf*, and only then
+     * stops and destroys this one — so a cover written from `onDestroy` lands after the shelf has
+     * already listed, and the card the artist backs out onto is the one from last time. That was
+     * the first thing the panel showed in G5: a tree drawn and closed, and a blank card behind it
+     * until the shelf was next relisted. The wait is a full-page render, a few hundred
+     * milliseconds behind the last marks in the queue, spent between the tap and the shelf
+     * appearing; a second tap in that time does nothing rather than starting a second render.
+     *
+     * Both the arrow and the system back gesture come here, and the teardown that follows knows
+     * from [leaving] that the card is already done and only closes the file.
+     */
+    private fun leave() {
+        if (leaving) return
+        leaving = true
+        lifecycleScope.launch {
+            session?.let { updateShelfCard(it) }
+            finish()
+        }
+    }
+
     override fun onDestroy() {
         // A screen the index guard turned away never built any of this, and tearing down what was
         // never made is a crash on the one path that exists to avoid one.
@@ -670,17 +768,20 @@ class SketchbookActivity : AppCompatActivity() {
         val closing = session
         session = null
         if (closing != null) {
-            // The close has to outlive this Activity: draining the write queue is the difference
-            // between a page that reopens as it was left and one missing the last thing drawn on it,
-            // and lifecycleScope is cancelled the moment onDestroy returns. The application scope
-            // owns it instead, and the index's page count and "last changed" stamp go with it so the
-            // shelf's card is right the next time it is looked at. The count is read *before* the
-            // close, while the file is still open to be asked.
+            // The close has to outlive this Activity: letting the write queue empty is the
+            // difference between a page that reopens as it was left and one missing the last thing
+            // drawn on it, and lifecycleScope is cancelled the moment onDestroy returns. The
+            // application scope owns it instead.
+            //
+            // The shelf's card is normally already written by this point — [leave] does it before
+            // finish(), while the shelf can still see it. This is the path for every other way a
+            // screen ends (the task swiped away, a configuration change, the system finishing it),
+            // where nothing has written the card yet and this is the last chance, taken before the
+            // close because the file has to be open to be asked.
+            val cardDone = leaving
             PaintsproutApplication.scope.launch {
-                val pages = runCatching { closing.livePageCount() }.getOrNull()
+                if (!cardDone) updateShelfCard(closing)
                 closing.close()
-                if (pages != null) runCatching { repo.setPageCount(closing.sketchbookId, pages) }
-                runCatching { repo.touch(closing.sketchbookId) }
             }
         }
         paper.release()

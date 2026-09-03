@@ -1,11 +1,13 @@
 package com.symmetricalpalmtree.paintsproutonyx.library
 
+import android.graphics.Bitmap
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.GridLayout
+import android.widget.ImageView
 import android.widget.TextView
 import com.symmetricalpalmtree.paintsproutonyx.R
 import com.symmetricalpalmtree.paintsproutonyx.data.index.ObjectSummary
@@ -13,7 +15,12 @@ import com.symmetricalpalmtree.paintsproutonyx.data.index.ObjectSummary
 /** One thing on the shelf. Folders come first wherever both appear — see [Sorting]. */
 sealed class CardItem(val summary: ObjectSummary) {
     class Folder(s: ObjectSummary) : CardItem(s)
-    /** [meta] is the card's second line: "6 pages · 25 Aug 2026", already formatted by the caller. */
+    /**
+     * [meta] is the card's second line, already formatted by the caller — "6 pages · 25 Aug 2026"
+     * on the shelf, and where the sketchbook lives ("In Studies") in the Recent mode, which has no
+     * folder around it to say that for it. The card carries the finished sentence rather than the
+     * parts, because which sentence it is depends on the mode and a card knows nothing about modes.
+     */
     class Sketchbook(s: ObjectSummary, val meta: String) : CardItem(s)
 }
 
@@ -60,8 +67,27 @@ class LibraryGrid(
         geometry = GridGeometry.measure(usableWidth, usableHeight, density, gapPx)
     }
 
-    /** Render the [pageIndex] slice of [items]. An empty or out-of-range page leaves the shelf bare. */
-    fun bind(items: List<CardItem>, pageIndex: Int) {
+    /**
+     * Render the [pageIndex] slice of [items]. An empty or out-of-range page leaves the shelf bare.
+     *
+     * [covers] and [pinned] arrive already gathered, keyed by sketchbook id, and a card that finds
+     * nothing under its own id simply goes without. **They are handed in rather than looked up
+     * here** because both come out of the encrypted index and this method runs on the main thread
+     * with a repaint of the whole panel behind it — a grid that fetched its own pictures would
+     * either block the hand that turned the page or paint the shelf twice, once bare and once with
+     * the covers dropped in, which on this panel is two full-screen flashes for one page turn.
+     *
+     * Both default to nothing for the folder picker, which is the other screen built on this grid
+     * and shows folders exclusively: there is no sketchbook card on it for a cover or a badge to
+     * land on, and making it pass two empty collections to say so would be a screen carrying an
+     * argument about a kind of card it does not have.
+     */
+    fun bind(
+        items: List<CardItem>,
+        pageIndex: Int,
+        covers: Map<String, Bitmap> = emptyMap(),
+        pinned: Set<String> = emptySet(),
+    ) {
         currentGrid?.let { container.removeView(it) }
         currentGrid = null
 
@@ -100,7 +126,11 @@ class LibraryGrid(
             val item = items[i]
             val view = when (item) {
                 is CardItem.Folder -> folderCard(inflater, grid, item)
-                is CardItem.Sketchbook -> sketchbookCard(inflater, grid, item)
+                is CardItem.Sketchbook -> sketchbookCard(
+                    inflater, grid, item,
+                    cover = covers[item.summary.id],
+                    isPinned = item.summary.id in pinned,
+                )
             }
             view.layoutParams = GridLayout.LayoutParams().apply {
                 width = geometry.cardWidthPx - geometry.gapPx
@@ -121,13 +151,31 @@ class LibraryGrid(
             contentDescription = item.summary.name
         }
 
-    private fun sketchbookCard(inflater: LayoutInflater, parent: ViewGroup, item: CardItem.Sketchbook): View =
+    private fun sketchbookCard(
+        inflater: LayoutInflater,
+        parent: ViewGroup,
+        item: CardItem.Sketchbook,
+        cover: Bitmap?,
+        isPinned: Boolean,
+    ): View =
         inflater.inflate(R.layout.card_sketchbook, parent, false).apply {
             findViewById<TextView>(R.id.cardName).text = item.summary.name
             findViewById<TextView>(R.id.cardMeta).text = item.meta
             contentDescription = item.summary.name
-            // The cover frame stays empty until G5 takes a snapshot of a page. A blank frame is not a
-            // placeholder waiting for a picture — it is the true picture of a sketchbook nobody has
-            // drawn in yet.
+
+            // The cover is the last page the artist saw, baked at the close and stored at a third of
+            // its size. **A sketchbook with no cover gets no image at all** rather than some emblem
+            // of a missing one: the frame is already paper white and a page's shape, so the empty
+            // frame is the true picture of a sketchbook nobody has drawn in yet — which is why the
+            // frame was built in G2 with nothing to put in it and does not change shape now that
+            // there is. It is also what a sketchbook falls back to when the cover cannot be read,
+            // and "a blank page" is a far better lie than a broken-image glyph on a shelf.
+            if (cover != null) findViewById<ImageView>(R.id.coverImage).setImageBitmap(cover)
+
+            // The badge says a fact about the card and is not a control — the pin is toggled from
+            // the long-press sheet, the same place rename and move live, because a tappable badge on
+            // a card whose whole surface is already a tap would make "open" and "unpin" the same
+            // gesture a few pixels apart.
+            if (isPinned) findViewById<ImageView>(R.id.pinBadge).visibility = View.VISIBLE
         }
 }

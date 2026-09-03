@@ -24,11 +24,11 @@ private const val TAG = "SoilWriter"
  * and the queue carries on. Losing one mark is bad; a dialog that interrupts a drawing to say so is
  * worse, and stopping the queue would silently lose every mark after it as well.
  *
- * **[drain] before the file closes, always.** The queue is asynchronous by design, so at the instant
- * a sketchbook is closed there are usually marks in it that are not yet rows. Closing the database
- * out from under them loses exactly the last thing the artist drew — the part they most expect to
- * still be there. `drain` puts a marker on the end of the queue and waits for it, which by the FIFO
- * ordering means everything ahead of it has run.
+ * **[close] lets the queue empty before the file is sealed, always.** The queue is asynchronous by
+ * design, so at the instant a sketchbook is closed there are usually marks in it that are not yet
+ * rows. Closing the database out from under them loses exactly the last thing the artist drew — the
+ * part they most expect to still be there. So `close` shuts the queue to new work and then waits for
+ * the pump to finish what it already holds, and only then does the session seal the file.
  */
 class SoilWriter(scope: CoroutineScope) {
 
@@ -69,10 +69,13 @@ class SoilWriter(scope: CoroutineScope) {
      * between them holds only because everything goes through one line. A second path that
      * "just awaited its own write" would be a second line, and two lines have no order between them.
      *
-     * A caller waiting here when the sketchbook closes waits forever, by construction — the pump is
-     * cancelled and the task never runs. That is survivable because everything that calls this is
-     * running on the screen's own scope, which is cancelled at the same moment, and it is the reason
-     * this must never be called from the application scope.
+     * A caller here is never left waiting on a task that will not run. Either the queue takes the
+     * task, in which case [close] lets it run before the pump stops, or the queue has already been
+     * closed and the call fails at once. That guarantee is what lets the cover snapshot use this from
+     * the application scope on the way out of a screen — an earlier version cancelled the pump with
+     * tasks still in the channel, which was survivable only while every caller lived on the screen's
+     * own scope and died with it. A caller that outlives the screen would have parked for the life of
+     * the process.
      */
     suspend fun <T> perform(task: suspend () -> T): T {
         val result = CompletableDeferred<T>()
@@ -87,19 +90,20 @@ class SoilWriter(scope: CoroutineScope) {
         return result.await()
     }
 
-    /** Wait until everything already queued has been written. */
-    suspend fun drain() {
-        val done = CompletableDeferred<Unit>()
-        val accepted = queue.trySend { done.complete(Unit) }.isSuccess
-        if (accepted) done.await()
-    }
-
     /**
-     * No more writes. Call [drain] first — this does not wait, and a task still in the queue when
-     * the channel closes never runs.
+     * No more writes — and everything already accepted gets written before this returns.
+     *
+     * Closing the channel is what ends the pump: it finishes the tasks still in the queue and then
+     * falls out of its loop on its own, and this waits for that. It used to be a drain followed by a
+     * cancel, and the gap between them was a real hole — a task accepted after the drain's marker
+     * but before the cancel was simply never run, and if it was a [perform], its caller was left
+     * waiting for an answer that would never come. Nothing here cancels anything: the queue is shut
+     * at the door, whatever is inside is let through, and the file is sealed only after the last of
+     * it has landed. The one thing a caller must not do is submit after this returns; that write is
+     * refused and logged, which is the right answer for a mark aimed at a sketchbook that is closed.
      */
-    fun close() {
+    suspend fun close() {
         queue.close()
-        pump.cancel()
+        pump.join()
     }
 }

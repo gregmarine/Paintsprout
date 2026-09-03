@@ -9,10 +9,14 @@
     android:orientation="vertical"
     android:background="@drawable/shape_bordered">
 
-    <!-- Empty in G2 — covers are G5. This is not a placeholder standing in for
-         a picture; it is the honest picture of a sketchbook nobody has drawn
-         in yet, and the frame is built now so that the day a cover arrives
-         nothing about the card's shape has to move. -->
+    <!-- Covers arrive in G5: the frame holds the last page shown, rendered
+         offline at a third of its recorded size, on the same paper white the
+         page itself starts from. A sketchbook nobody has drawn in yet stores
+         no cover at all, so the frame stays this same paper-white rectangle —
+         not a placeholder standing in for a picture, but the honest picture of
+         a blank page, which is why the frame was built in G2 before there was
+         anything to put in it: nothing about the card's shape has to move now
+         that there is. -->
     <FrameLayout
         android:id="@+id/coverFrame"
         android:layout_width="match_parent"
@@ -28,6 +32,24 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:scaleType="fitCenter"
+            android:importantForAccessibility="no" />
+
+        <!-- The badge sits on its own white island rather than straight on the
+             cover, because a pin drawn in plain inkBlack would disappear the
+             moment it lands over a dark passage of the drawing underneath it —
+             the same reason the frame itself is paper white rather than
+             transparent. Gone unless the sketchbook is pinned; the Kotlin owns
+             that toggle, never this file. -->
+        <ImageView
+            android:id="@+id/pinBadge"
+            android:layout_width="@dimen/card_pin_badge"
+            android:layout_height="@dimen/card_pin_badge"
+            android:layout_gravity="top|end"
+            android:layout_margin="6dp"
+            android:padding="4dp"
+            android:src="@drawable/ic_pin"
+            android:background="@drawable/bg_pin_badge"
+            android:visibility="gone"
             android:importantForAccessibility="no" />
 
     </FrameLayout>
@@ -46,6 +68,11 @@
             android:ellipsize="end"
             android:textAppearance="@style/TextAppearance.Paintsprout.TitleMedium" />
 
+        <!-- "6 pages · 25 Aug 2026" in every ordinary listing, but Recents has
+             no folder column of its own for the reader to orient by, so in
+             that mode the Kotlin overwrites this same line with where the
+             sketchbook lives instead ("In Library" / "In %1$s") rather than
+             adding a third line the card has no room for. -->
         <TextView
             android:id="@+id/cardMeta"
             android:layout_width="match_parent"

@@ -46,6 +46,23 @@
             android:contentDescription="@string/cd_library_up"
             android:visibility="gone" />
 
+        <!-- Pinned and Recents replace the crumb trail with a plain title,
+             because neither is a place in the folder tree — there is nothing
+             to walk back down through, only a mode to leave. One view holds
+             both jobs rather than two screens because the bar underneath it
+             (grid, pager, Sort) is identical in every mode; only this label
+             and the crumb it displaces change. -->
+        <androidx.appcompat.widget.AppCompatTextView
+            android:id="@+id/modeTitle"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center_vertical"
+            android:paddingStart="12dp"
+            android:singleLine="true"
+            android:textAppearance="@style/TextAppearance.Paintsprout.TitleMedium"
+            android:visibility="gone" />
+
         <!-- The Kotlin builds the crumb buttons at runtime, one per folder from
              the library root down to the current one — a fixed set of views
              here would have to be padded out to some maximum nesting depth
@@ -71,6 +88,17 @@
                 android:paddingEnd="12dp" />
 
         </HorizontalScrollView>
+
+        <!-- Stands in for btnUp while a mode is on: there is no folder above a
+             mode to climb to, only the shelf underneath it, so the glyph is a
+             close rather than an up-arrow and it says so in the reading a
+             screen reader gives it. -->
+        <androidx.appcompat.widget.AppCompatImageButton
+            android:id="@+id/btnCloseMode"
+            style="@style/Widget.Paintsprout.ToolbarButton"
+            android:src="@drawable/ic_x"
+            android:contentDescription="@string/cd_library_close_mode"
+            android:visibility="gone" />
 
         <androidx.appcompat.widget.AppCompatImageButton
             android:id="@+id/overflowButton"
@@ -105,11 +133,15 @@
 
     </FrameLayout>
 
-    <!-- The pager takes the weight so it centres in whatever room the other
-         buttons leave rather than sitting pinned to one side. The empty
-         stretch to its left is not slack to tidy away — it is where Pinned
-         and Recents land in G5, and closing it now would mean reopening it
-         under a different layout later. -->
+    <!-- Pinned and Recents live at the left end, the stretch G2 left empty for
+         exactly this. Paper v0 treats both as modes of the one shelf screen
+         rather than screens of their own, and a mode button carries no "on"
+         state by the same rule every toolbar button here follows — the top
+         bar's mode title and its close button are what say which mode is on,
+         not a highlighted glyph the panel could go stale showing. The pager
+         still takes the weight, so it centres in whatever room these two
+         buttons and the ones on the right leave rather than sitting pinned to
+         one side. -->
     <LinearLayout
         android:id="@+id/bottomBar"
         android:layout_width="match_parent"
@@ -117,6 +149,18 @@
         android:orientation="horizontal"
         android:gravity="center_vertical"
         android:background="@drawable/toolbar_background_bottom">
+
+        <androidx.appcompat.widget.AppCompatImageButton
+            android:id="@+id/btnPinned"
+            style="@style/Widget.Paintsprout.ToolbarButton"
+            android:src="@drawable/ic_pin"
+            android:contentDescription="@string/cd_library_pinned" />
+
+        <androidx.appcompat.widget.AppCompatImageButton
+            android:id="@+id/btnRecents"
+            style="@style/Widget.Paintsprout.ToolbarButton"
+            android:src="@drawable/ic_history"
+            android:contentDescription="@string/cd_library_recents" />
 
         <LinearLayout
             android:id="@+id/pager"

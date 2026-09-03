@@ -41,12 +41,15 @@ private const val TAG = "SketchbookSession"
  *
  * ## Reads and writes
  *
- * The reads ([livePages], [page], [loadMarks], [livePageCount]) are ordinary IO. The writes are all
- * queued, and they split in two: the ones the hand makes ([recordMark], [recordErase],
- * [rememberOpenPage]) are fired and forgotten, because there is nothing honest to say to an artist
- * mid-stroke about a write that failed; the ones an undo or a page turn depends on are *awaited*
- * through [SoilWriter.perform], because the screen is about to show a page built from what they
- * did and must not show it before it is true.
+ * The reads ([livePages], [page], [loadMarks], [livePageCount], [lastEditAt]) are ordinary IO. The
+ * writes are all queued, and they split in two: the ones the hand makes ([recordMark],
+ * [recordErase], [rememberOpenPage]) are fired and forgotten, because there is nothing honest to say
+ * to an artist mid-stroke about a write that failed; the ones an undo or a page turn depends on are
+ * *awaited* through [SoilWriter.perform], because the screen is about to show a page built from what
+ * they did and must not show it before it is true.
+ *
+ * [renderCover] is the one read that goes through the queue anyway, because what it wants to see is
+ * the writes that have not landed yet. See its own comment.
  */
 class SketchbookSession private constructor(
     private val db: SoilDatabase,
@@ -91,6 +94,18 @@ class SketchbookSession private constructor(
      * refusing to open the page over it would be losing all of them.
      */
     suspend fun loadMarks(pageId: String): List<Stroke> = withContext(Dispatchers.IO) {
+        readMarks(pageId)
+    }
+
+    /**
+     * The same read, without choosing a thread.
+     *
+     * [loadMarks] is called from a screen and takes itself to IO; [renderCover] is called from
+     * inside the write queue, which is already there, and wrapping a second `withContext` around a
+     * read that is running on the queue's own dispatcher only makes it harder to see that it is.
+     * Both are the same query and the same dropped-row discipline, so they are the same code.
+     */
+    private suspend fun readMarks(pageId: String): List<Stroke> {
         val rows = dao.childrenOfType(pageId, SoilSchema.TYPE_MARK)
         val out = ArrayList<Stroke>(rows.size)
         var dropped = 0
@@ -104,7 +119,48 @@ class SketchbookSession private constructor(
             if (stroke == null) dropped++ else out.add(stroke)
         }
         if (dropped > 0) Log.w(TAG, "$dropped of ${rows.size} marks on page $pageId did not open")
-        out
+        return out
+    }
+
+    /**
+     * When this file was last actually drawn in, by its own reckoning.
+     *
+     * The sketchbook row's `updatedAt`, which `touchSketchbook` moves for a mark, an erase, a page
+     * added, thrown away or brought back — and for nothing else, now that a page turn no longer
+     * touches it. This is what the close carries over to the index so that "last worked on" on the
+     * shelf means the last time work was done, rather than the last time the cover was opened.
+     *
+     * Zero for a file with no sketchbook row, which cannot happen to a session that opened — and if
+     * it somehow did, zero is the number that moves nothing, since the index only ever takes a stamp
+     * that is newer than the one it holds.
+     */
+    suspend fun lastEditAt(): Long = withContext(Dispatchers.IO) {
+        dao.sketchbookRow()?.updatedAt ?: 0L
+    }
+
+    /**
+     * Bake the page that is on the glass into a cover for the shelf, or null if there is nothing
+     * worth showing — see [CoverSnapshot].
+     *
+     * **On the write queue, and that is the point.** The marks a cover most needs are the ones still
+     * sitting in the queue: the cover is taken at the moment the artist puts the sketchbook down,
+     * which is a second or two after the last stroke they drew, which is exactly the stroke least
+     * likely to have reached the table yet. [SoilWriter.perform] puts this read behind every write
+     * already waiting, so the picture is of the page as it will reopen rather than as it was a
+     * moment before the last thing on it happened.
+     *
+     * The cost is that this is queued behind the artist's ink and has to be treated as a write that
+     * might not land — the caller wraps it, and a cover that fails is a cover that stays stale, never
+     * a crash on the way out of a screen.
+     */
+    suspend fun renderCover(): ByteArray? = writer.perform {
+        val pageId = currentPageId
+        val page = dao.byId(pageId)
+        CoverSnapshot.render(
+            marks = readMarks(pageId),
+            pageWidth = pageDimension(page?.width),
+            pageHeight = pageDimension(page?.height),
+        )
     }
 
     // ── Writing, the fire-and-forget half ────────────────────────────────────
@@ -148,10 +204,15 @@ class SketchbookSession private constructor(
      * Fired and forgotten, and called on every single page shown, because it is the one write here
      * whose failure costs nothing worth reporting: the fallback is the first page, which is where a
      * sketchbook opened before there was a pointer at all.
+     *
+     * It is also the one write here that is **not** an edit, which is why it goes through
+     * `setOpenPage` and leaves the row's `updatedAt` where it was. Turning a page is not work — a
+     * sketchbook flipped through and put down again has not been drawn in, and a stamp that moved
+     * anyway would file it as the newest thing in the library.
      */
     fun rememberOpenPage(pageId: String) {
         writer.submit {
-            dao.setRefId(sketchbookId, pageId, System.currentTimeMillis())
+            dao.setOpenPage(sketchbookId, pageId)
         }
     }
 
@@ -254,12 +315,11 @@ class SketchbookSession private constructor(
     /**
      * Close the file, and do not lose the last thing that was drawn on it.
      *
-     * The drain is the whole method. Everything else here is sealing a database; the drain is the
-     * difference between a page that reopens as it was left and one that is missing whatever the
-     * hand did in the last second before the screen went away.
+     * The writer's close is the whole method. Everything else here is sealing a database; waiting
+     * for the queue to empty is the difference between a page that reopens as it was left and one
+     * that is missing whatever the hand did in the last second before the screen went away.
      */
     suspend fun close() {
-        writer.drain()
         writer.close()
         withContext(Dispatchers.IO) {
             runCatching { db.seal(file) }

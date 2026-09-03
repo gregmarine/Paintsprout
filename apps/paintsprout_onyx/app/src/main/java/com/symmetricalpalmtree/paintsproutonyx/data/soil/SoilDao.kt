@@ -81,8 +81,22 @@ interface SoilDao {
     @Query("UPDATE sketchbook SET deletedAt = NULL, updatedAt = :at WHERE id IN (:ids) AND deletedAt IS NOT NULL")
     suspend fun restore(ids: List<String>, at: Long)
 
-    @Query("UPDATE sketchbook SET refId = :refId, updatedAt = :at WHERE id = :id")
-    suspend fun setRefId(id: String, refId: String?, at: Long)
+    /**
+     * Point the sketchbook row at the page now open — and **do not touch `updatedAt`**.
+     *
+     * Turning to a page is not work. The sketchbook row's `updatedAt` is the file's own answer to
+     * "when was this last drawn in", the answer it gives when it turns up somewhere with no index to
+     * explain it, and it is the stamp the shelf's "last worked on" sort is carried forward from. A
+     * page turn moving it means flipping through a sketchbook to look at an old drawing files it as
+     * the newest work in the library, which is a lie the artist has no way to correct.
+     *
+     * That is why this is its own statement rather than a call to the general `setRefId` it replaced:
+     * the only thing that ever set `refId` was this, on every page shown, and the timestamp came
+     * along because the query was written to be general. A general helper nobody needs is just a
+     * trap with a plausible name.
+     */
+    @Query("UPDATE sketchbook SET refId = :refId WHERE id = :id")
+    suspend fun setOpenPage(id: String, refId: String?)
 
     @Query("UPDATE sketchbook SET text = :text, updatedAt = :at WHERE id = :id")
     suspend fun setText(id: String, text: String?, at: Long)

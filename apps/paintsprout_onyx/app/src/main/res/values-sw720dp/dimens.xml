@@ -25,4 +25,5 @@
     <dimen name="card_gap">12dp</dimen>
     <dimen name="card_label_padding">12dp</dimen>
     <dimen name="dialog_field_padding">16dp</dimen>
+    <dimen name="card_pin_badge">32dp</dimen>
 </resources>

@@ -984,7 +984,7 @@ that would change state on a pen event has the same problem.
 ---
 
 ### G5 — Covers, pins and recents
-**Status:** ⬜ Not started
+**Status:** 🧪 Awaiting device verification (code complete 2026-09-03; the adb-reachable gate passed in full; three items for Greg's hand below)
 
 `CoverSnapshot` on sketchbook close, written to the index as WEBP q100 and drawn on the library
 card; the pinned overlay (sentinel list id, `ensurePinnedListExists` on library launch — never a
@@ -997,6 +997,94 @@ persist, recents order is right after several opens, sort applies in every view.
 **Questions to resolve at phase start:**
 1. Which page is the cover — the first, or the last one touched?
 2. Cover snapshot size and whether it renders through `StrokeRasterizer` or off the live view.
+
+**Answers.** 1. **The last page shown** — the page on the glass when the sketchbook is put down, so
+the card is a picture of where the artist left off. Chosen over a fixed first page and over "the last
+page with marks on it"; a fresh blank leaf swiped into at the end therefore *can* become the cover,
+and that is the honest picture of where the book was left. 2. **Offline, full page, shrunk to a
+third.** `StrokeRasterizer` re-renders the page from its rows at the panel's full size, so the
+hairline and the grain are the real bake, then a box average takes it down by exactly three to
+620 × 827, stored as WEBP q100 on the index row. Rendering straight at a third would put a 1.2 px
+lead and single-fleck grain below a pixel and the cover would be a likeness rather than the page.
+It runs on the application scope behind the write queue, never on the UI thread, and never needs the
+view — which also means a cover can be re-taken from rows alone if the renderer ever changes.
+
+The library side follows Paper v0 exactly, as G0's locked answer requires: pinned and recents are
+**modes of the shelf**, toggled from the left end of the bottom bar that G2 held open, the top bar
+swapping the breadcrumb for a title and a ✕, sort applying to the pinned view and never to recents,
+and recents kept in prefs as ids and timestamps — opening a sketchbook is not work, so it does not
+move `updatedAt`.
+
+**Outcome (code complete; the hand's half of the gate is open).** **146 JVM tests** (133 after
+G4), `assembleDebug` green, installed on the NA5C, and the whole adb-reachable gate driven directly
+and passed: Greg's tree from G3 became its card's cover on the first back-out, with the hairline
+surviving the shrink as a faint grey line; the pin row pins, the badge appears, the Pinned shelf
+lists it under its title with New folder / New sketchbook stood down and Sort still live; a second
+pin and the mode itself survived a force-stop and relaunch; Name Z–A reordered the Pinned shelf and
+Name A–Z put it back; Unpin emptied it down to *"Nothing pinned yet. Long-press a sketchbook to pin
+it."*; two opens put Recent in the right order with *In Library* under each; a sort change left
+Recent alone; a sketchbook made inside a folder arrived at the top of Recent reading *In One*;
+deleting it from inside Recent took it off the list and out of the prefs file, which held nothing
+but ids and timestamps throughout; and under "Last worked on", with Graphite renamed to put it
+ahead, opening G4walk and backing out left the order exactly as it was. Empty crash buffer
+throughout.
+
+- **The first thing the panel showed was a cover that was there and not there.** The tree baked
+  correctly on the first close and the shelf drew a blank card anyway — it was there on the *next*
+  listing. Android resumes the shelf before it destroys the page (pause → resume the caller → stop
+  → destroy), so a card written from `onDestroy` lands after the shelf has already listed. Fixed by
+  writing the card *before* `finish()`: the arrow and the system back gesture both go through
+  `leave()`, which writes page count, cover and last-edit stamp while the screen is still up, then
+  finishes; `onDestroy` knows from `leaving` that the card is done and only closes the file.
+  `onStop` still takes the card for the background-kill case. G4walk then showed its cover on the
+  very first listing after backing out, which is the proof.
+- **The write queue's close had a hole, and the cover snapshot is what would have fallen into it.**
+  `SoilWriter.close()` was a drain followed by a cancel; a task accepted between the two never ran,
+  and a `perform` caller waiting on it would have parked for the life of the process — survivable
+  only while every caller lived on the screen's own scope. The cover render is a `perform` on the
+  application scope, so it was the first caller that could actually be stranded. The close now
+  shuts the channel and joins the pump: whatever is inside is let through, nothing is cancelled,
+  and the file is sealed after the last of it has landed. Opus's Part B report found this; Fable
+  fixed it.
+- **`updatedAt` was not honest, and this is the phase where it had to be.** Every close bumped the
+  index's "last worked on" stamp, so looking at an old sketchbook filed it as the newest work; and
+  every page *turn* bumped the `.soil` row's own stamp too. With Recent arriving as the shelf for
+  "opened but not worked on", the two shelves would have been the same shelf. The close now carries
+  the file's own last-edit time forward with `touchIfNewer` (forward only — the index also moves for
+  renames the file never hears about), and the open-page pointer is written by `setOpenPage`, which
+  does not touch the stamp. Proven on the panel by the rename-then-open check above.
+- **The cover is baked from the rows at full size and box-averaged down by three**, exactly as the
+  answer to question 2 asked, and the hairline came through as a faint grey line on the card rather
+  than vanishing. It runs on the write queue so the picture is of the page as it will reopen, marks
+  still in the queue included. A blank page stores no cover; a failed render keeps the old one.
+- **Pinned and Recent are modes of the shelf**, with `ShelfListing` (the three card sources) and
+  `CoverLoader` (per-visible-card reads, bytes cached not bitmaps, decode bounded and on IO) lifted
+  out so `LibraryActivity` stays under the line. Covers are read before the bind rather than painted
+  in afterwards, because the grid is rebuilt on every bind and a bare-then-filled pass is two
+  full-panel repaints for one page turn. `SketchbookActivity` crossed the ~800-line rule in this
+  phase and carries a written reason at its top: what is in it is the order of calls, and the order
+  is the correctness.
+- **Paper v0's design was followed for the library and departed from for the cover.** Paper takes
+  `renderToBitmap()` off the live view at 512 px on the long edge; here the cover is a bake of the
+  rows at 620 × 827, which the plan's answer chose so a 1.2 px hairline survives, and which also
+  means a cover can be re-taken from rows alone if the renderer ever changes. Paper's own library
+  has the same resume-before-destroy ordering; whether its cover suffers the same first-listing
+  blank is a question for that repo, not this one.
+- **Watch item, not fixed:** every `onStop` — every press of Home — renders a full page (an 18 MB
+  bitmap and a full re-render of every mark) whether or not anything was drawn, at exactly the
+  moment the device is deciding what to kill. Correct, and the most expensive thing this app does on
+  a path taken casually. A dirty flag on the session would skip it; left for G6 to weigh.
+- **Not done, on purpose:** no `docs/library.md` (G6 owns the subsystem docs), and the frame-silence
+  ledger is unchanged — nothing in this phase presents a frame while the pen is down; the cover is
+  a file, not a frame.
+- **Left for Greg's hand** (the gate's "a sketchbook drawn in shows its own cover" was passed with
+  drawings already on the device; these are the parts only a pen can reach):
+  1. Draw a few strokes and tap the back arrow *immediately* — the last stroke should be in the
+     cover, because the render queues behind the mark writes.
+  2. Leave a page with the system back gesture instead of the arrow — the cover should be on the
+     card just the same.
+  3. Whether the cover reads as the page at card size on this panel: the hairline is a faint grey
+     line at a third scale, and whether that is legible or too pale is a matter for the eye.
 
 ---
 

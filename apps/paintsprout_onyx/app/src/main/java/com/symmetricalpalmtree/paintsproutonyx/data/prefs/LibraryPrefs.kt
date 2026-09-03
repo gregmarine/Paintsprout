@@ -1,11 +1,13 @@
 package com.symmetricalpalmtree.paintsproutonyx.data.prefs
 
 import android.content.Context
+import com.symmetricalpalmtree.paintsproutonyx.library.BrowseMode
 import com.symmetricalpalmtree.paintsproutonyx.library.SortField
 import com.symmetricalpalmtree.paintsproutonyx.library.SortOrder
 
 /**
- * The two things the shelf remembers between visits: which folder was open, and how it was sorted.
+ * What the shelf remembers between visits: which folder was open, how it was sorted, and which of
+ * its three shelves was showing.
  *
  * **Ids and enum names, never display names.** Everything the artist typed lives in the encrypted
  * index; ordinary SharedPreferences is world-readable to anything with the app's data directory, and
@@ -43,10 +45,24 @@ class LibraryPrefs(context: Context) {
             ?.let { runCatching { SortOrder.valueOf(it) }.getOrNull() } ?: SortOrder.ASC
         set(value) = prefs.edit().putString(KEY_SORT_ORDER, value.name).apply()
 
+    /**
+     * Pinned, Recent, or the shelf itself.
+     *
+     * Remembered for the same reason [folderId] is: a mode is a place the artist chose to be, and
+     * being dropped back on the full shelf every launch is being made to go and find their way back.
+     * [folderId] is kept underneath it while a mode is on, so closing the mode returns to the folder
+     * they were in rather than to the root.
+     */
+    var mode: BrowseMode
+        get() = prefs.getString(KEY_MODE, null)
+            ?.let { runCatching { BrowseMode.valueOf(it) }.getOrNull() } ?: BrowseMode.NORMAL
+        set(value) = prefs.edit().putString(KEY_MODE, value.name).apply()
+
     private companion object {
         const val FILE = "library_state"
         const val KEY_FOLDER = "folderId"
         const val KEY_SORT_FIELD = "sortField"
         const val KEY_SORT_ORDER = "sortOrder"
+        const val KEY_MODE = "mode"
     }
 }

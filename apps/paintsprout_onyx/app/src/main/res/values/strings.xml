@@ -66,6 +66,26 @@
     <string name="cd_library_new_sketchbook">New sketchbook</string>
     <string name="library_root">Library</string>
 
+    <!-- Pinned and Recents (G5). Two modes of this same screen rather than two
+         screens, so their strings borrow the shelf's own voice: a mode has a
+         title where the crumb trail would be, a close where Up would be, and
+         an empty state that tells the reader what to do about it rather than
+         just naming what isn't there yet — library_empty already sets that
+         precedent. Recents' two lines are what cardMeta shows instead of the
+         page count while that mode is on, since a sketchbook can only be
+         opened from one place at a time and the reader wants to know where. -->
+    <string name="cd_library_pinned">Pinned</string>
+    <string name="cd_library_recents">Recent</string>
+    <string name="cd_library_close_mode">Back to the shelf</string>
+    <string name="mode_title_pinned">Pinned</string>
+    <string name="mode_title_recents">Recent</string>
+    <string name="library_empty_pinned">Nothing pinned yet. Long-press a sketchbook to pin it.</string>
+    <string name="library_empty_recents">Nothing opened yet.</string>
+    <string name="action_pin">Pin</string>
+    <string name="action_unpin">Unpin</string>
+    <string name="recents_in_root">In Library</string>
+    <string name="recents_in_folder">In %1$s</string>
+
     <string name="cd_pager_first">First page</string>
     <string name="cd_pager_prev">Previous page</string>
     <string name="cd_pager_next">Next page</string>

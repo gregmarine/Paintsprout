@@ -17,8 +17,12 @@ import java.util.UUID
  *    edges are really removed, and those record a preference, not work.
  *  - **`updatedAt` means "worked on".** It moves for a rename, a move, a page added or removed, and
  *    ink. It does not move for a cover refresh or a page recount, which are things the app did on the
- *    artist's behalf after the fact. A "last worked on" sort is only honest if the timestamp behind
- *    it means what its name says.
+ *    artist's behalf after the fact. **Nor for opening a sketchbook and closing it again** — reading
+ *    is not drawing, and a shelf that files everything you looked at as everything you worked on is
+ *    a shelf you stop being able to find your way around. What the close does instead is hand over
+ *    the `.soil`'s own last-edit stamp through [touchIfNewer], so the index catches up with whatever
+ *    ink actually went down and never moves for a visit that left none. A "last worked on" sort is
+ *    only honest if the timestamp behind it means what its name says.
  *  - **Display names never leave this file.** They are in the encrypted index; prefs hold ids.
  *
  * Suspend throughout, and Room dispatches to its own executor, so a caller on the main thread is
@@ -127,8 +131,24 @@ class IndexRepository(private val dao: ObjectDao = PaintsproutIndex.dao()) {
     suspend fun move(id: String, newParentId: String?, now: Long = System.currentTimeMillis()) =
         dao.move(id, newParentId, now)
 
-    /** A real edit happened. See the `updatedAt` discipline in this class's own comment. */
+    /**
+     * A real edit happened, here, now.
+     *
+     * Nothing calls it in arc 1 — [rename] and [move] carry their own stamp, and the close of a
+     * sketchbook uses [touchIfNewer] with the file's time rather than this with the clock's. It is
+     * kept because "this row changed, now" is a thing the index will be asked for again the moment
+     * anything edits an object without going through one of those, and because leaving it out would
+     * invite the next such edit to reach for `touchIfNewer` with `now`, which is the same statement
+     * with a guard that would never fire and a name that lies about it.
+     */
     suspend fun touch(id: String, now: Long = System.currentTimeMillis()) = dao.touch(id, now)
+
+    /**
+     * Bring the index's stamp up to the file's own last-edit time, if the file is ahead.
+     *
+     * What a closing sketchbook calls. Forward only — see [ObjectDao.touchIfNewer].
+     */
+    suspend fun touchIfNewer(id: String, at: Long) = dao.touchIfNewer(id, at)
 
     suspend fun setPageCount(id: String, count: Int) = dao.setPageCount(id, count)
 
@@ -325,14 +345,45 @@ class IndexRepository(private val dao: ObjectDao = PaintsproutIndex.dao()) {
     suspend fun unpin(sketchbookId: String) = dao.deleteListItem(ListIds.PINNED_LIST_ID, sketchbookId)
 
     /**
-     * The pinned sketchbooks, in the order they were pinned.
+     * The pinned sketchbooks as cards, in the order they were pinned.
      *
      * Filtered against what is actually alive on the way out. A sketchbook deleted through a path that
      * skipped its edges — or restored from a backup taken either side of a delete — would otherwise
      * leave a card on the front shelf that opens onto nothing.
+     *
+     * Pinned order is what comes out of here and it is not what goes on the screen — the Pinned shelf
+     * shows these in whatever sort the library is set to, because a mode that quietly ignored the sort
+     * button sitting right next to it would read as a broken button. The order is preserved here all
+     * the same: it is the only record of the sequence the artist pinned things in, and a later arc
+     * that lets pinned cards be dragged into an order will want it.
      */
-    suspend fun pinnedSketchbookIds(): List<String> =
-        dao.listMemberIds(ListIds.PINNED_LIST_ID).filter { alive(it)?.type == ObjectType.SKETCHBOOK }
+    suspend fun pinnedSketchbooks(): List<ObjectSummary> =
+        summariesAlive(dao.listMemberIds(ListIds.PINNED_LIST_ID))
+            .filter { it.type == ObjectType.SKETCHBOOK }
+
+    /**
+     * Which sketchbooks are pinned, as a set to test cards against.
+     *
+     * One read for a whole page of cards. Asking [isPinned] per card would be a query per card on
+     * every listing, to draw a badge — and the badge would still be right, which is what makes that
+     * version the easy one to write and leave in.
+     */
+    suspend fun pinnedIds(): Set<String> = dao.listMemberIds(ListIds.PINNED_LIST_ID).toSet()
+
+    /**
+     * The cards for [ids], in exactly the order given, with the dead ones dropped.
+     *
+     * What Recents is made of. The order is the caller's and must survive the trip, because for
+     * recents the order *is* the information — a "recently opened" shelf handed back in id order is
+     * not a recently-opened shelf. Dead ids simply fall out rather than coming back as gaps: a
+     * sketchbook that has been deleted is not something the artist opened recently, it is something
+     * they no longer have.
+     */
+    suspend fun summariesAlive(ids: List<String>): List<ObjectSummary> {
+        if (ids.isEmpty()) return emptyList()
+        val found = dao.aliveSummariesByIds(ids).associateBy { it.id }
+        return ids.mapNotNull { found[it] }
+    }
 
     private companion object {
         const val MAX_ANCESTRY_HOPS = 50
