@@ -53,6 +53,15 @@ not apply here. Plus:
 - **Every SQLCipher open routes through `crypto/SoilCrypto`**, wrapped in
   `NonDestructiveOpenHelperFactory`. Passphrases are never logged, never in Intent extras, never in
   the index. **Never delete a DB on corruption.**
+- **Room is never handed a key that has not first opened the file read-only** — the index verifies
+  in `PaintsproutIndex`, every `.soil` in `KeyOpener`, which on a cache miss derives the raw key
+  *now*, verifies it, caches it and opens with it. Never bring back a passphrase-keyed Room open of
+  an existing file. The G6 audit read `sqlcipher-android` 4.6.1's bytecode and found that
+  `NonDestructiveOpenHelperFactory`'s `onCorruption` is **never called** under SQLCipher's helper
+  (it passes a null `DatabaseErrorHandler`); what spares a mis-keyed file is SQLCipher's own default
+  handler returning early when `hasCodec()`. The wrapper stays as the belt for any non-SQLCipher
+  factory; the verified-key rule is what makes neither one load-bearing. Re-check both on any
+  SQLCipher bump — `docs/crypto.md` has the walk.
 - **`IndexGuard.ready(this)` first thing in every index-touching `onCreate`**; `BootstrapActivity`
   is the only index opener and is `noHistory`.
 - **The write queue must outlive the screen.** `SoilWriter`'s pump runs on
@@ -78,6 +87,15 @@ not apply here. Plus:
   ordered before the close, at `onDestroy`. A blank page stores no cover — the white frame is the
   picture — and a failed render keeps the old one. Never `renderToBitmap()` off the live view: it
   is main-thread, sees only the page loaded, and is gone by the time the close runs.
+- **The shelf's card is written only when something changed, and that is decided on the write
+  queue.** `CardKey` = the page on the glass + the sitting's edit count (`touchSketchbook` bumps it);
+  `renderCover` reads the key *inside* `SoilWriter.perform`, behind every queued mark, and answers
+  `Unchanged` when it matches the last card the index took. A key read off the screen thread lies in
+  exactly the case that matters — a stroke still in the queue — and would drop the last stroke from
+  the cover. The key is recorded only after cover, count and stamp have all been written. Verified
+  on the panel in G6: first stop writes, an idle stop writes nothing, a page turn remakes the card.
+  `Cover.Failed` is distinct from `Cover.Blank`: a failed render keeps the old cover, a blank page
+  stores none — before G6 both were null and a failed render *cleared* the cover.
 - **Pinned and Recent are modes of the shelf, not screens.** Same grid, paging, covers and
   long-press sheet; only the card source and the top bar change. Sort applies to Pinned and never
   to Recent (the order *is* the information). Mode buttons carry no "on" state — the title and ✕
@@ -195,6 +213,15 @@ not apply here. Plus:
   chrome, page-turn gestures and persistence are agent-verifiable; the pencil needs the user's hand.
 - **`monkey` does not reliably foreground the app** — launch with `am start -n <pkg>/<Activity>`
   and verify `dumpsys activity activities | grep mResumedActivity` before any screencap conclusion.
+  Verify it **after every tap that should change screens, too**: a tap injected while a new screen
+  is still coming up is lost, and G6's walk drove a whole sleep/wake sequence against the BOOX
+  launcher before the check caught it.
+- **`KEYCODE_SLEEP` / `KEYCODE_WAKEUP` is the clean way to drive `onStop` / `onResume` on the same
+  session.** A launcher-style `am start` of `BootstrapActivity` while the app is backgrounded does
+  not resume the page — it stacks a fresh `LibraryActivity` on top of the task. **After a wake the
+  window is covered again for ~4 s** (g-paper logs a close/reopen of the raw pipeline and the screen
+  gets a second stop/resume); input injected in that gap is silently lost. Wait ~10 s after
+  `KEYCODE_WAKEUP` before injecting anything, and verify the effect.
 - **`adb push` into `/sdcard/Android/data/<pkg>/files/` fails *and deletes the target*.** Push to
   `/data/local/tmp/`, then `adb shell cp` into place, then `rm` the temp.
 - **The NA5C is a Kaleido colour panel** — its colour layer costs resolution and contrast, which is

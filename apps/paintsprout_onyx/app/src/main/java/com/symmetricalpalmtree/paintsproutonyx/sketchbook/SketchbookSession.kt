@@ -17,6 +17,25 @@ import java.util.UUID
 private const val TAG = "SketchbookSession"
 
 /**
+ * What the shelf's card was made from: the page that was on the glass, and how many edits had
+ * landed in the file by then. Two cards with the same key are the same card.
+ *
+ * The edit count rather than the file's `updatedAt`, because two edits can share a millisecond and
+ * a count cannot be shared. A page turn is not an edit and does not move the count — it moves the
+ * page id, which is the other half of the key, since the cover is a picture of the last page shown.
+ */
+data class CardKey(val pageId: String, val edits: Long)
+
+/** What asking for the shelf's card came back with. */
+sealed class CardOutcome {
+    /** Nothing has happened since the card was last written. There is nothing to write. */
+    object Unchanged : CardOutcome()
+
+    /** A cover to store, and the key to record once the index actually holds it. */
+    class Fresh(val cover: CoverSnapshot.Cover, val key: CardKey) : CardOutcome()
+}
+
+/**
  * One open sketchbook, for as long as its screen is on top.
  *
  * The screen above it knows about marks and buttons; this knows about the file. Everything that
@@ -65,6 +84,18 @@ class SketchbookSession private constructor(
 
     /** The page on the glass. Set by the Activity when a page is shown, and by nothing else. */
     var currentPageId: String = initialPageId
+
+    /**
+     * How many edits have landed in the file this sitting. Bumped on the write queue by
+     * [touchSketchbook], which every edit goes through, and read on the queue by [renderCover] —
+     * so a count read there has seen every write that was ahead of it.
+     */
+    @Volatile
+    private var edits = 0L
+
+    /** The key of the last card the index actually took. Null until it has taken one this sitting. */
+    @Volatile
+    private var cardWritten: CardKey? = null
 
     // ── Reading the book ─────────────────────────────────────────────────────
 
@@ -139,8 +170,8 @@ class SketchbookSession private constructor(
     }
 
     /**
-     * Bake the page that is on the glass into a cover for the shelf, or null if there is nothing
-     * worth showing — see [CoverSnapshot].
+     * Bake the page that is on the glass into a cover for the shelf — or say that the card the
+     * shelf already holds is still the right one. See [CoverSnapshot] for the bake itself.
      *
      * **On the write queue, and that is the point.** The marks a cover most needs are the ones still
      * sitting in the queue: the cover is taken at the moment the artist puts the sketchbook down,
@@ -149,18 +180,39 @@ class SketchbookSession private constructor(
      * already waiting, so the picture is of the page as it will reopen rather than as it was a
      * moment before the last thing on it happened.
      *
+     * **The "nothing changed" answer is decided on the queue too, for the same reason.** G5 left a
+     * watch item: every press of Home rendered a full page — an 18 MB bitmap and every mark on it —
+     * whether or not anything had been drawn, at the exact moment this device is deciding what to
+     * kill. The [CardKey] is the fix, and it has to be read *behind* the pending writes or it would
+     * lie in precisely the case that matters most: a stroke just drawn and still in the queue is an
+     * edit the count has not seen yet, and a key read from the screen's thread would say the card
+     * was current while the last stroke was missing from it. Read here, the count has seen
+     * everything that was ahead of it, and "unchanged" means unchanged.
+     *
      * The cost is that this is queued behind the artist's ink and has to be treated as a write that
      * might not land — the caller wraps it, and a cover that fails is a cover that stays stale, never
      * a crash on the way out of a screen.
      */
-    suspend fun renderCover(): ByteArray? = writer.perform {
+    suspend fun renderCover(): CardOutcome = writer.perform {
         val pageId = currentPageId
+        val key = CardKey(pageId, edits)
+        if (key == cardWritten) return@perform CardOutcome.Unchanged
         val page = dao.byId(pageId)
-        CoverSnapshot.render(
+        val cover = CoverSnapshot.render(
             marks = readMarks(pageId),
             pageWidth = pageDimension(page?.width),
             pageHeight = pageDimension(page?.height),
         )
+        CardOutcome.Fresh(cover, key)
+    }
+
+    /**
+     * The index now holds the card made from [key]. Called by the screen only after every part of
+     * the card — cover, page count, stamp — has actually been written, so a card the index refused
+     * is a card still owed and the next departure makes it again.
+     */
+    fun cardWritten(key: CardKey) {
+        cardWritten = key
     }
 
     // ── Writing, the fire-and-forget half ────────────────────────────────────
@@ -308,8 +360,14 @@ class SketchbookSession private constructor(
         }
     }
 
+    /**
+     * Every edit ends here: the file's own "last worked on" moves, and the sitting's edit count with
+     * it. The count is what tells the shelf's card whether anything has happened since it was last
+     * made — see [renderCover]. Runs on the write queue, which is the only writer of either.
+     */
     private suspend fun touchSketchbook(now: Long) {
         dao.touch(sketchbookId, now)
+        edits++
     }
 
     /**

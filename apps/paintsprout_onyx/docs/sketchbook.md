@@ -1,8 +1,9 @@
 # The sketchbook screen
 
-> Started in **G3** and grown in **G4**. G6 owns the subsystem docs and will finish this one; what
-> is here now is what those two phases were required to write down — the frame-silence ledger, the
-> finger vocabulary, the page-swap contract as implemented, and the undo model.
+> Started in **G3**, grown in **G4**, and finished at the **G6** close-out (2026-09-03). It holds the
+> frame-silence ledger, the finger vocabulary, the page-swap contract as implemented, the undo model,
+> and the shelf's card — what the screen writes on the way out and when it declines to. Its siblings
+> are `data.md`, `crypto.md` and `library.md`.
 
 ## The frame-silence rule
 
@@ -31,6 +32,8 @@ Every deliberate exception to the rule goes in this table, with the reason it is
 |---|---|---|
 | G3 | — | **None.** |
 | G4 | — | **None.** |
+| G5 | — | **None.** The cover is a file, not a frame. |
+| G6 | The "Opening…" overlay being hidden after the first `showPage` | **Not an exception, and now written down as such.** G4 flagged it as a pre-G4 frame outside the gate. It runs in the same main-thread continuation as the swap: `showPage` returns only after `awaitIdle` has returned and the three swap calls have run, and there is no suspension point between that and the overlay's `visibility = GONE`, so the pen cannot have arrived in between. The ledger stays empty of real exceptions. |
 
 G3's chrome is static by construction: the toolbar changes only on a tap, a tap is a finger, and a
 finger arriving while the pen is active is a palm the component has already refused. The gate is
@@ -167,6 +170,52 @@ away again when it puts the real page back, which is what `DeletedPage.replaceme
 would be the first phase to free pages. It is not: every delete here — a mark, a sweep, a whole page
 — is a soft delete, so not one row leaves the file and there is nothing to reclaim. The debt moves
 to whichever phase first *hard*-deletes rows.
+
+## The shelf's card (G5, G6)
+
+What the shelf shows for a sketchbook — its cover, its page count, its "last worked on" stamp — is
+written by this screen on the way out, and by nothing else. Three decisions shape it.
+
+**The cover is a bake of the rows, never a picture of the screen.** g-paper's live EPD ink never
+reaches a framebuffer anything else can read, and by the time a cover is wanted the artist is
+already leaving. `CoverSnapshot` re-renders the page that was on the glass from its rows through
+`StrokeRasterizer` at the page's full size — 1860 × 2480 on this panel — and box-averages it down
+by exactly three to 620 × 827, stored as WEBP q100 on the index row. Full size first, because a
+1.2 px hairline and single-fleck grain rasterised at a third are below a pixel and the cover would
+be a likeness rather than the page; a box average rather than `createScaledBitmap`, because a
+bilinear tap at 3:1 samples two rows in three and a one-pixel line can fall in the gap and simply
+not be in the cover. **The last page shown** is the cover, not the first page and not the last page
+with marks on it: the card is a picture of where the artist left off, and a blank leaf swiped into
+at the end is the honest picture of that.
+
+**The card is written before `finish()`, not by the teardown after it.** Android resumes the shelf
+before it destroys the page — pause, resume the caller, then stop and destroy — so a cover written
+from `onDestroy` lands after the shelf has listed and the artist backs out onto last time's card.
+That was the first thing the panel showed in G5. Both the arrow and the system back gesture go
+through `leave()`, which writes the card while the screen is still up and then finishes; `onStop`
+still writes it for the Home-press case, since a backgrounded process on this device may never see
+`onDestroy` at all. The cover render goes through the write queue (`SoilWriter.perform`) so it sits
+behind every mark still waiting to be written, and the count and stamp are read after it returns
+for the same reason: the card is of the page as it will reopen.
+
+**Nothing is written when nothing has changed — decided on the queue.** G5 left a watch item:
+every press of Home rendered the full page, an 18 MB bitmap and every mark on it, whether or not
+anything had been drawn, at exactly the moment this device is deciding what to kill. G6 closed it
+with a `CardKey`: the page on the glass plus the sitting's edit count, which `touchSketchbook`
+bumps for every mark, erase, page added, thrown away or brought back. `renderCover` reads the key
+*on the write queue*, behind the pending writes, and answers `Unchanged` when it matches the key of
+the last card the index took. Reading it anywhere else would lie in precisely the case that matters
+most — a stroke just drawn and still in the queue is an edit the count has not seen yet, and a key
+read from the screen's thread would call the card current while the last stroke was missing from
+it, which is the G5 checklist item Greg passed by hand. The key is recorded only after all three
+index writes have taken, so a card the index refused any part of is still owed. A page turn moves
+the page id and so remakes the card; opening and closing without drawing or turning does not, which
+is also what "opening is not work" means for the stamp.
+
+A failed render is its own answer (`Cover.Failed`) and keeps the old cover. It used to come back
+as the same null a blank page returns, and the caller stored null for either — so a page that would
+not render, an out-of-memory on a device that runs short of it, cleared the cover the shelf already
+had. Found by the G6 audit while walking the cover path; fixed by making the two answers different.
 
 ## What the host does, and what it must not
 

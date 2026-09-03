@@ -245,10 +245,29 @@ class SketchbookActivity : AppCompatActivity() {
             binding.sketchbookName.text = opened.title
             try {
                 showPage(opened.currentPageId)
+            } catch (e: Exception) {
+                // The file opened and then its first page would not — a row that will not read, a
+                // page that has gone. Before G6 this was the one read on the screen with nothing
+                // around it, and an exception here took the process down from inside a coroutine,
+                // which on the panel is a sketchbook that "crashes when opened" and invites exactly
+                // the wrong remedy. The session is set, so the teardown still closes the file
+                // properly; the artist gets the same dialog as any other file that will not open.
+                Log.e(TAG, "the sketchbook opened but its page would not show", e)
+                busy = false
+                Dialogs.problem(
+                    this@SketchbookActivity,
+                    getString(R.string.sketchbook_open_failed_title),
+                    getString(R.string.sketchbook_open_failed_body),
+                ) { finish() }
+                return@launch
             } finally {
                 busy = false
                 refreshChrome()
             }
+            // Not an exception to the frame-silence rule, though it is a frame outside the gate:
+            // it runs in the same main-thread continuation as the swap above, and there is no
+            // suspension between `awaitIdle` returning inside showPage and this line. The pen
+            // cannot have arrived in between. Recorded in the ledger in docs/sketchbook.md.
             binding.openingOverlay.visibility = View.GONE
             pushExclusionRects()
         }
@@ -695,6 +714,10 @@ class SketchbookActivity : AppCompatActivity() {
      * Skipped while finishing, because `onDestroy` is a heartbeat away and does the same thing
      * properly ordered against the close. Doing both would bake the same page twice for one
      * departure — a full-page render each, on the way out of a screen.
+     *
+     * And since G6, skipped by the session itself when nothing has changed: a Home press on a page
+     * that was only looked at costs one queued read of a key, not a full-page render. See
+     * [SketchbookSession.renderCover] for why that decision has to be made on the write queue.
      */
     override fun onStop() {
         super.onStop()
@@ -713,20 +736,50 @@ class SketchbookActivity : AppCompatActivity() {
      * Page count, cover and stamp are all questions only the open file can answer, so this is called
      * while the session is still open and before it is closed. The cover goes through the write
      * queue, which puts it behind every mark still waiting to be written: the picture is of the page
-     * as it will reopen. A cover that fails is skipped rather than stored as nothing, so the shelf
-     * keeps the picture it had — a stale cover instead of a blank one.
+     * as it will reopen. The count and the stamp are read *after* it comes back for the same reason
+     * — by then every write that was queued has landed, so both are of the file as it will reopen
+     * too, rather than a page short of it.
+     *
+     * A cover that fails is skipped rather than stored as nothing, so the shelf keeps the picture it
+     * had — a stale cover instead of a blank one. A blank page stores nothing on purpose: the card's
+     * white frame is the picture. And a card the session says is unchanged writes nothing at all,
+     * which is what turns a Home press on a page that was only looked at from a full-page render
+     * into a queued read of a key.
+     *
+     * The key is recorded only once all three writes have taken. A card the index refused any part
+     * of is a card still owed, and the next departure makes it again rather than assuming it.
      *
      * The stamp is `touchIfNewer` with the *file's* last edit, not a plain touch with now. Opening a
      * sketchbook and closing it without drawing used to move it to the top of "Last worked on",
      * which made that sort a record of what had been looked at.
      */
     private suspend fun updateShelfCard(s: SketchbookSession) {
+        val outcome = runCatching { s.renderCover() }.getOrNull()
+        if (outcome is CardOutcome.Unchanged) {
+            // Ids only in the log, never a title. This line is what a device walk reads to prove
+            // that leaving a page that was only looked at rendered nothing.
+            Log.d(TAG, "shelf card unchanged for ${s.sketchbookId}; nothing written")
+            return
+        }
         val pages = runCatching { s.livePageCount() }.getOrNull()
-        val cover = runCatching { s.renderCover() }
         val lastEdit = runCatching { s.lastEditAt() }.getOrNull()
-        if (pages != null) runCatching { repo.setPageCount(s.sketchbookId, pages) }
-        if (cover.isSuccess) runCatching { repo.setCover(s.sketchbookId, cover.getOrNull()) }
-        if (lastEdit != null) runCatching { repo.touchIfNewer(s.sketchbookId, lastEdit) }
+        val pagesWritten = pages != null && runCatching { repo.setPageCount(s.sketchbookId, pages) }.isSuccess
+        val stampWritten = lastEdit != null && runCatching { repo.touchIfNewer(s.sketchbookId, lastEdit) }.isSuccess
+        // A null outcome is the queue refusing the read — the sketchbook closed underneath this —
+        // and the count and stamp have still been written from whatever the file would answer.
+        // There is no key to record for it, and nothing to store for the cover.
+        if (outcome !is CardOutcome.Fresh) return
+        val coverWritten = when (val cover = outcome.cover) {
+            is CoverSnapshot.Cover.Image -> runCatching { repo.setCover(s.sketchbookId, cover.bytes) }.isSuccess
+            CoverSnapshot.Cover.Blank -> runCatching { repo.setCover(s.sketchbookId, null) }.isSuccess
+            CoverSnapshot.Cover.Failed -> false
+        }
+        if (pagesWritten && stampWritten && coverWritten) {
+            s.cardWritten(outcome.key)
+            Log.d(TAG, "shelf card written for ${s.sketchbookId} (${outcome.cover.javaClass.simpleName})")
+        } else {
+            Log.w(TAG, "shelf card for ${s.sketchbookId} only partly written; it will be made again")
+        }
     }
 
     /**

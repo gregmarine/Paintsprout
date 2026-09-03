@@ -49,9 +49,10 @@ abstract class SoilDatabase : RoomDatabase() {
          * Open a sketchbook that exists. Throws `SoilLockedException` if it does not.
          *
          * The key comes through [KeyOpener], which uses the cached raw key when it fits this
-         * particular file and falls back to the passphrase when it does not. Deriving the key from the
-         * passphrase costs a quarter of a million hash rounds — once, at first launch, that is
-         * invisible; on every sketchbook open it is a pause between tapping a cover and seeing a page.
+         * particular file and derives — and verifies — one when it does not, so Room is never handed
+         * a key that has not already opened the file read-only. Deriving the key from the passphrase
+         * costs a quarter of a million hash rounds — once per file, that is a pause; on every
+         * sketchbook open it would be a pause between tapping a cover and seeing a page.
          *
          * IO thread.
          */

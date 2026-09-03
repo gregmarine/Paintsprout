@@ -1093,7 +1093,7 @@ third-scale cover reads as the page on the panel. G6 is next.
 ---
 
 ### G6 — Hardening and the verdict
-**Status:** ⬜ Not started
+**Status:** 🧪 Audit, hardening and docs complete 2026-09-03; awaiting the pen half of the `gfxinfo` gate and **the verdict, written with Greg** — see the questions at the end of this section
 
 The close-out phase. Walk Paper's **six-point data-loss audit** against this source, verifying each
 claim rather than assuming it: every open path wrapped; no create-capable open outside the named
@@ -1112,6 +1112,171 @@ this file, under this phase, and it is the deliverable — not a footnote to one
 
 **Questions to resolve at phase start:** none — but the verdict is written **with** the user, not
 for them.
+
+**Outcome (audit walked, hardening in, docs in; the verdict is open).** **146 JVM tests** (unchanged
+— nothing added in this phase is pure logic that a desk can exercise), `assembleDebug` green,
+installed on the NA5C, the adb-reachable half of the gate driven directly and passed, crash buffer
+empty throughout.
+
+**The six-point data-loss audit**, walked against this source, claim by claim. The full text is in
+`docs/crypto.md` § "Data-loss audit"; the short form:
+
+1. *Every open path wrapped* — true, and **the reason written in the code was wrong.** `Room.databaseBuilder`
+   appears at two sites, both taking a `SoilCrypto` factory wrapped in `NonDestructiveOpenHelperFactory`.
+   But reading `sqlcipher-android` 4.6.1's bytecode showed that SQLCipher's `SupportHelper` builds an
+   inner `SQLiteOpenHelper` that forwards every androidx callback *except* `onCorruption` and passes a
+   **null** `DatabaseErrorHandler` — so the wrapper's override is unreachable. What actually spares a
+   mis-keyed file is SQLCipher's `DefaultDatabaseErrorHandler`, whose first act after logging is
+   `if (hasCodec()) return`. G1's md5 measurement of a wrong-key attempt was measuring *that*, not the
+   wrapper. The wrapper stays (it is the belt for any future non-SQLCipher factory) and its comment now
+   says what is true. **Paper's `docs/crypto.md` makes the same wrong claim** — a note for that repo.
+2. *No create-capable open outside the named doors* — true. Two doors (`createRaw` → `SoilDatabase.create`
+   → `createSketchbook`; the index's `Invalid` branch), both refusing existing files; every other open
+   passes `requireExisting` or a read-only verify first. Noted: a 1–15 byte index probes `Invalid` and
+   would be created over — nothing that short is a database.
+3. *A missing file never loops into unlock* — true. Missing `.soil` → "not here" dialog; empty `.soil` →
+   "would not open" dialog; missing index → first-launch create, never Unlock. Noted: an index deleted
+   out of band leaves intact, invisible orphans in `Garden/`.
+4. *Delete invalidates the key cache* — true, both tiers, for single and recursive deletes and for a
+   failed create; index row stamped before the file goes. Noted: a background warm can re-cache under a
+   dead UUID, harmlessly.
+5. *No passphrase in logs, intents or ordinary prefs* — true. Every `Log.*` call listed; extras are ids,
+   types and display names on in-app explicit intents; the clipboard copy is at the artist's request.
+6. *No display names in prefs* — true. Ids, enum names, `RecentEntry(id, at)`.
+
+**What the audit changed, beyond the comment:**
+
+- **The cold open of a `.soil` no longer hands Room an unverified key.** `KeyOpener` used to open a
+  cache-miss file with the passphrase (SQLCipher's own KDF inside the open) while a second KDF warmed
+  the cache — two derivations for one open, and the only Room open in the app made with a key nobody
+  had checked. It was survivable only because of the codec guard in point 1, which is a fact about a
+  dependency's default. It now derives once, verifies read-only, caches, and opens with the raw key —
+  same wall-clock, one KDF fewer, and **"Room is never handed a key that has not first opened the file
+  read-only" is now true everywhere**, which is a guarantee this app can own. A new standing rule.
+- **A failed cover render no longer clears the cover.** `CoverSnapshot.render` returned null for both a
+  blank page and a failure, and the caller stored null for either — so an out-of-memory on the
+  full-size bitmap, on a device that runs short of it, would have wiped the card's picture. `Cover`
+  is now `Blank` / `Image` / `Failed`, and only the first two are stored.
+- **The first page failing to show no longer crashes the app.** `openSketchbook` caught a file that
+  would not open but not a page that would not load; that exception escaped a coroutine and took the
+  process down, which on the panel is a sketchbook that "crashes when opened" and invites the wrong
+  remedy. It gets the same dialog as any file that will not open.
+
+**G5's watch item is closed: nothing is written when nothing changed, and that is decided on the
+write queue.** Every Home press used to render the full page — an 18 MB bitmap and every mark on it —
+at exactly the moment this device decides what to kill. `CardKey` (the page on the glass + the
+sitting's edit count, bumped by `touchSketchbook`) is read *inside* `SoilWriter.perform`, behind every
+queued mark, and `renderCover` answers `Unchanged` when it matches the last card the index took. The
+placement is the whole point: a key read off the screen thread lies in precisely the case that matters
+— a stroke still in the queue — and would drop the last stroke from the cover, which is G5's checklist
+item 1. The key is recorded only after cover, count and stamp have all been written. **Proven on the
+panel** with `KEYCODE_SLEEP`/`WAKEUP` driving stop and resume on one session: the first stop wrote the
+card (`Image`), the next two idle stops wrote nothing, a page turn then a stop wrote it again, and the
+back arrow after that wrote nothing and landed on the shelf.
+
+**The frame-silence ledger** gained two rows and still holds no real exception: G5 (none — the cover
+is a file), and G6's decision on the "Opening…" overlay G4 had flagged: it is hidden in the same
+main-thread continuation as the swap, with no suspension point after `awaitIdle` returns, so the pen
+cannot arrive in between. Written down as *not an exception* rather than left as an open note.
+
+**`dumpsys gfxinfo`, finger half:** after a reset, four forward swipes (three of them appending a leaf),
+two back swipes, two undo taps and one redo tap produced **13 frames, 1 janky (89 ms), 50th percentile
+15 ms** — one frame per action, no storm. The pen half needs a hand and is on the checklist below.
+
+**The subsystem docs are in:** `docs/data.md`, `docs/crypto.md` and `docs/library.md` written by Sonnet
+against the finished source and fact-checked line by line by Fable (four corrections: marks record
+`#505050` since the hairline, not `#000000`; the colour list; a `windowLightStatusBar` embellishment; a
+toast count), and `docs/sketchbook.md` finished by Fable — the ledger rows, the shelf's card, the
+cover rule.
+
+**Three device lessons, recorded in `CLAUDE.md`:** after `KEYCODE_WAKEUP` the window is covered again
+for ~4 s and input injected in that gap is lost (g-paper logs a close/reopen of the raw pipeline and
+the screen gets a second stop/resume) — wait ~10 s; a launcher-style `am start` while backgrounded
+stacks a fresh `LibraryActivity` rather than resuming the page, so sleep/wake is the way to drive
+`onStop` on one session; and verify the resumed activity after every screen-changing tap, not only
+after launches — a whole sleep/wake sequence was once driven against the BOOX launcher before the
+check caught it.
+
+**Not done, on purpose:** `incremental_vacuum` is still owed by whichever phase first hard-deletes a
+`.soil` row (none in arc 1; unpin hard-deletes an *index* edge, and the index was never stamped
+INCREMENTAL); a card whose file has gone stays on the shelf showing its dialog on every tap, as in
+Paper; the three "noted" items in the audit stand as written. The Wacom app owes two fixes found here
+(lean and tangent smoothing; connected-geometry grain) and one corrected claim (Paper's audit text).
+
+**Left for Greg's hand — one item, and the verdict:**
+1. **The pen half of `gfxinfo`.** Open a sketchbook and draw for about half a minute — ordinary
+   sketching, a few erases — then say so; the frame counters are read from the desk afterwards.
+   What is being looked for is a frame storm during writing, which the finger walk cannot produce.
+
+---
+
+#### The verdict — a draft to be finished with Greg
+
+The experiment asked one question: **what does g-paper on an Onyx e-ink panel give Paintsprout?** The
+draft below is assembled from the record — Greg's own words where the record has them — and the
+questions after it are the parts only he can answer. It is not the verdict until he has.
+
+**Does graphite through g-paper on an Onyx panel feel like pencil on paper?** *For one pencil, yes —
+and only once the firmware's own idea of a pencil was taken out of the loop.* Fourteen measured
+findings tuned a tilt-driven, three-lead pencil against the firmware's charcoal stamp, each one
+measurably right, and Greg rejected the result whole after an evening's sketching: "Both the EPD and
+the baked strokes don't look like pencil." The reset — one hairline lead, no tilt, the plain even
+line live, pressure carrying tone, inked in `#505050` because the first capture "read as a fine pen"
+in black — is the first pencil on this panel he approved: "I like this." That is the reference. What
+it is not, yet, is a pencil that can be laid over: the side-of-lead regime needs a tilt number
+g-paper will not publish without a per-model measurement, and arc 1's eraser takes whole marks rather
+than rubbing graphite away — the one deliberate break with Paintsprout's WYSIWYG rule.
+
+**What did the Kaleido layer cost?** *Resolution and contrast at the panel level, and one design
+decision at the pencil level.* The NA5C's colour filter sits over the mono layer; arc 1 draws
+greyscale so the graphite renders on the crisp layer beneath it, and no mono BOOX was in the fleet to
+measure the difference against. The cost that was actually *paid* in code is the choice of broken
+coverage over tonal shading — a panel with a handful of greys behind a filter dithers any continuous
+grey it is handed and invents a texture on top of ours, so tone had to come from how many flecks of
+tooth catch rather than from how dark each one is. Whether the hairline reads crisp through the
+filter, and whether its texture ever showed through the grain, are Greg's eyes and nobody else's.
+
+**Where did the live firmware charcoal and our baked grain disagree?** *Everywhere that was
+measured, and the measuring was the mistake.* Width (the stamp scaled 5×), overdraw (1.3×), density
+(0.68×), the grain's direction, its connectedness, the "pipe cleaner" (raw tilt and a raw tangent
+turned into geometry), chisel ends, a hook, a wedge, a bead, a knot at the start of broad strokes —
+every one documented and fixed in g-paper, fifteen releases from 0.1.7 to 0.1.24. The finding that
+outlives all of them: **a firmware style is a target only if the artist has approved the firmware
+style**, and nobody had asked whether the charcoal stamp looked like a pencil. With the plain line
+live, the two no longer disagree about *size* at all; the pen-up change is tone and texture only,
+and on 2026-09-03 the record says that was acceptable.
+
+**What does g-paper give Paintsprout on this panel?** *The pen, the palm, the EPD pipeline, the
+eraser end, and the discipline.* Fifteen engine releases landed inside one phase without a single
+host-side workaround, which is the standing rule proving itself; the hardware eraser end erased
+"whichever tool is armed" with no code written here at all; the frame-silence rule and the pen-idle
+gate held through page turns, undo and covers with an empty ledger of exceptions. What it costs: the
+live ink is a firmware black box (`TouchHelper` offers style, colour and width, nothing else — so a
+textured live style cannot be had without its tilt response, which is what forced the plain line),
+live ink is invisible to `screencap` so every look at a stroke is a camera or a bake, and the panel's
+own refresh model dictates the shape of every piece of chrome (no state on buttons, no toast that
+explains a failure).
+
+**What would arc 2 have to be?** The candidates the plan recorded on purpose: side-of-lead shading
+(a per-model tilt phase in g-paper, the pencil's missing half); a **rubbing eraser** (a partial-erase
+model g-paper does not have — arc 1's one deliberate WYSIWYG break); paper tooth (`paperKind` already
+has a home); colour on Kaleido; true size and rotation; durable undo; export and backup. Fable's
+recommendation, for what it is worth: the rubbing eraser, because it is the one thing in arc 1 the
+artist can *feel* is not paper every time they reach for it, and because it makes the next pencil
+question (side-of-lead) answerable on a page that can be corrected. But this is exactly the question
+the verdict exists to put to Greg.
+
+**Questions for Greg — the verdict is finished from the answers:**
+1. Is "I like this" a yes to *pencil on paper*, or a yes to a good pen? What does the hairline still
+   lack to be graphite in the hand — tooth, the flank, the eraser, something else?
+2. Did the Kaleido filter ever show itself — a colour fringe, a moiré, the grain reading coarser than
+   the drawing — or does the hairline read clean?
+3. The pen-up change from a plain black-grey line to a grained, pressure-toned mark: settled, or still
+   a flinch?
+4. Arc 2: the rubbing eraser, side-of-lead, paper tooth, colour, or something not on the list? Or
+   does the experiment stop here with its answer?
+5. Anything the verdict above gets wrong about what happened.
+
 
 ---
 

@@ -37,11 +37,30 @@ private const val TAG = "CoverSnapshot"
  * ## Nothing here is allowed to be the reason a sketchbook fails to close
  *
  * A cover is a convenience. Every failure — a page with no recorded size, a bitmap that will not
- * allocate, an encoder that refuses — is logged and answered with null, and the shelf goes on
- * showing whatever cover it already had. The alternative is a crash on the way out of a screen that
- * was in the middle of saving the artist's last marks.
+ * allocate, an encoder that refuses — is logged and answered with [Cover.Failed], and the shelf
+ * goes on showing whatever cover it already had. The alternative is a crash on the way out of a
+ * screen that was in the middle of saving the artist's last marks.
+ *
+ * Failed is its own answer, distinct from [Cover.Blank], and the G6 audit is why. Both used to come
+ * back as null, and the caller stored null for either — so a page that would not render (an
+ * out-of-memory on the full-size bitmap, on a device that runs short of it) *cleared* the cover
+ * the shelf already had, which is the opposite of what the sentence above promises. A blank page
+ * stores nothing because the white frame is the honest picture of it; a failed render stores
+ * nothing because the old picture is better than none.
  */
 object CoverSnapshot {
+
+    /** What a render came back with. */
+    sealed class Cover {
+        /** The page has nothing on it. The card's white frame is the picture, so nothing is stored. */
+        object Blank : Cover()
+
+        /** The page, baked at full size and shrunk, as WEBP bytes for the index row. */
+        class Image(val bytes: ByteArray) : Cover()
+
+        /** The page could not be made into a cover. The shelf keeps whatever it already had. */
+        object Failed : Cover()
+    }
 
     /**
      * How many page pixels go into one cover pixel, each way.
@@ -61,23 +80,24 @@ object CoverSnapshot {
     private const val PAPER = 0xFFFFFFFF.toInt()
 
     /**
-     * Bake [marks] onto a page of [pageWidth] × [pageHeight], shrink it, and encode it — or null.
+     * Bake [marks] onto a page of [pageWidth] × [pageHeight], shrink it, and encode it.
      *
-     * Null for a page with no living marks, because **a blank page's cover is no cover**: the card's
-     * empty white frame is already the honest picture of one, and storing an image of nothing would
-     * cost a WEBP per sketchbook to say the same thing less clearly. Null again for a page that
-     * never recorded a size, which is a file this app did not write; there is no rectangle to draw
-     * it in, and inventing one would put the artist's marks in a frame nobody chose.
+     * [Cover.Blank] for a page with no living marks, because **a blank page's cover is no cover**:
+     * the card's empty white frame is already the honest picture of one, and storing an image of
+     * nothing would cost a WEBP per sketchbook to say the same thing less clearly. [Cover.Failed]
+     * for a page that never recorded a size, which is a file this app did not write; there is no
+     * rectangle to draw it in, and inventing one would put the artist's marks in a frame nobody
+     * chose. Failed again for anything that goes wrong in the bake itself.
      *
      * **IO thread only.** It allocates two bitmaps, one of them the size of the whole page, and runs
      * the renderer over every mark on it. On the main thread that is a visibly stalled screen at the
      * exact moment the artist is trying to leave it.
      */
-    fun render(marks: List<Stroke>, pageWidth: Int, pageHeight: Int): ByteArray? {
-        if (marks.isEmpty()) return null
+    fun render(marks: List<Stroke>, pageWidth: Int, pageHeight: Int): Cover {
+        if (marks.isEmpty()) return Cover.Blank
         if (pageWidth <= 0 || pageHeight <= 0) {
             Log.w(TAG, "a page with no recorded size ($pageWidth×$pageHeight) cannot be a cover")
-            return null
+            return Cover.Failed
         }
         var page: Bitmap? = null
         var cover: Bitmap? = null
@@ -100,14 +120,14 @@ object CoverSnapshot {
             cover = Bitmap.createBitmap(small, w, h, Bitmap.Config.ARGB_8888)
             val out = ByteArrayOutputStream()
             cover.compress(webpFormat(), WEBP_QUALITY, out)
-            out.toByteArray()
+            Cover.Image(out.toByteArray())
         } catch (t: Throwable) {
             // Throwable rather than Exception, and deliberately: the failure with any real chance of
             // happening here is an OutOfMemoryError from the full-size bitmap. Letting that escape
             // would take down the close that is draining the write queue, so the last marks drawn
             // would be lost to a failure to draw a thumbnail of them.
             Log.w(TAG, "the page could not be made into a cover; the shelf keeps the old one", t)
-            null
+            Cover.Failed
         } finally {
             page?.recycle()
             cover?.recycle()

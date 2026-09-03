@@ -21,10 +21,15 @@ class SoilLockedException(message: String) : RuntimeException(message)
  * here, because the data-loss bugs this family has actually suffered all begin
  * with an open constructed somewhere else with local assumptions:
  *
- *  - Every Room factory is wrapped in [NonDestructiveOpenHelperFactory]. A wrong
- *    key makes SQLite read ciphertext as corruption, and Room's default answer to
- *    corruption is to delete the file and start fresh. Wrapped, a mis-keyed open
- *    fails loudly and the artist's drawings are still on disk.
+ *  - Every Room factory is wrapped in [NonDestructiveOpenHelperFactory], and
+ *    every key Room is handed has first opened the file read-only
+ *    ([verifyRawKey] / [verifyPassphrase]). A wrong key makes SQLite read
+ *    ciphertext as corruption, and the stock answer to corruption is to delete
+ *    the file. With SQLCipher's factory the wrapper's own handler is never
+ *    reached — that file walks the bytecode — and what spares the file is
+ *    SQLCipher's codec guard instead. The verified-key rule is what makes the
+ *    safety this app's own rather than a default in somebody else's library:
+ *    a key that fits cannot report corruption, whichever handler is on duty.
  *  - Every non-creating open passes [requireExisting] first. The underlying opens
  *    are create-capable, and pointed at a missing path they would mint an empty
  *    database that then masquerades as the real one — an "unlock" that appears to
