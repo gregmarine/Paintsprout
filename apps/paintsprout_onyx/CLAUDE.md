@@ -3,7 +3,8 @@
 **Branch `onyx` · Package `com.symmetricalpalmtree.paintsproutonyx` · Label "Paintsprout Onyx"
 ("Paintsprout Onyx Dev" in debug) · Plan/status: `ONYX_PLAN.md` — read it whole at every phase
 start; it holds the working protocol, model recipe, locked decisions, non-goals, standing traps
-and phase statuses.**
+and phase statuses. Arc 1 is closed; the current work is the raster experiment — for it read the
+standalone `RASTER_PLAN.md` instead, which summarises the protocol and traps.**
 
 A from-scratch, **BOOX-only** rebuild of Paintsprout, asking one question: what does g-paper on an
 Onyx e-ink panel give us for Paintsprout? Arc 1 is a graphite pencil, a rubber eraser, white paper

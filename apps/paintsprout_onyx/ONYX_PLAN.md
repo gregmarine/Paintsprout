@@ -4,6 +4,8 @@
 **Label:** Paintsprout Onyx (debug: "Paintsprout Onyx Dev") · **Version:** `0.1.0-onyx`
 **Device:** BOOX NoteAir5C (NA5C) `92c16533` — **the only device anything installs to.**
 **This file is the cross-session memory for the effort. Read it first, whole, at every phase start.**
+**Arc 1 is closed. The next work is the raster experiment — read the standalone
+`RASTER_PLAN.md` for it, not this file** (its protocol and traps are summarised there).
 
 A from-scratch, **BOOX-only** rebuild of Paintsprout, in the spirit of the Notesprout Paper and
 Notesprout SN experiments. It asks one question: **what does g-paper on an Onyx e-ink panel give
@@ -1268,6 +1270,10 @@ home); colour on Kaleido; true size and rotation; durable undo; export and backu
 recommendation was the rubbing eraser; Greg has not chosen, and the experiment does not need him to
 today. **The verdict is that the experiment succeeded** — graphite through g-paper on this panel is a
 pencil the artist wants to draw with — and that is the answer arc 1 was built to get.
+
+**What came next (2026-09-03/06):** not an arc — a **raster experiment**, planned with Opus and
+reviewed by Fable, in the standalone `RASTER_PLAN.md`: a per-book raster mode beside strokes with
+a pixel eraser, formalised as arc 2 only if its own verdict says a raster page feels truer.
 
 ## Appendix — build & install
 
