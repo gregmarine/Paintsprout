@@ -7,8 +7,8 @@ unless a standing trap or an arc-1 decision needs checking; its protocol and tra
 at the end so this file is enough. Notesprout's `RESTORE_PLAN.md` and `ENCRYPTION_PLAN.md` are the
 shapes this file copies.
 
-**Status: R0 DONE, R1 NEXT.** Planned with Opus 4.8 on 2026-09-03 · reviewed by Fable 2026-09-06
-(amendments A1–A8, § Review amendments) · lifted into the repo 2026-09-06 · R0 ✅ · R1 ⬜ · R2 ⬜ ·
+**Status: R1 DONE, R2 NEXT.** Planned with Opus 4.8 on 2026-09-03 · reviewed by Fable 2026-09-06
+(amendments A1–A8, § Review amendments) · lifted into the repo 2026-09-06 · R0 ✅ · R1 ✅ · R2 ⬜ ·
 R3 ⬜ · R4 ⬜ · R5 ⬜.
 
 **Phase letters:** arc 1 took **G**. This experiment takes **R**.
@@ -275,8 +275,9 @@ the pure rect rule (`RasterDirtyTest`); the copy, the clear-on-mode-set and the 
 composite need a `Bitmap` and are the device walk's — with `RASTER_SWITCH` the rows still
 persist, so the same page reopened with the switch off gives the stroke-mode reference to diff.
 
-### ⬜ R1 — The pixel eraser in g-paper
-**Owner:** Fable. **Publishes:** g-paper 0.1.26. *The headline deliverable — erasing to paper in the
+### ✅ R1 — The pixel eraser in g-paper
+**Owner:** Fable. **Publishes:** g-paper 0.1.26 (g-paper commit `855f483`, Phase 14 there carries the
+engine notes and measurements). Closed 2026-09-06 — Outcome under § Ledger. *The headline deliverable — erasing to paper in the
 hand early.*
 
 - D2 entire, through the existing Onyx handoff; the hardware eraser end confirmed.
@@ -285,8 +286,10 @@ hand early.*
 
 **Gate:** rubbing lifts graphite along the sweep and leaves the rest; a flick erases a continuous
 corridor; the pen's eraser end does the same; one repaint at sweep end, no flicker. Greg's hand.
-**Questions to resolve at phase start:** repaint per batch or once at sweep end (default once) ·
-whether the eraser radius for raster should differ from stroke mode's (default no).
+**Questions to resolve at phase start:** ~~repaint per batch or once at sweep end~~ **live, per
+batch, as far as the panel allows** — Greg, 2026-09-06, against the default; the Onyx engine
+posts a regional `handwritingRepaint` after each throttled (one-frame) redraw · ~~eraser radius~~
+**same as stroke mode** (Greg, 2026-09-06).
 
 ### ⬜ R2 — Persistence in the host
 **Owner:** Opus on a Fable brief; Fable reads it before the walk.
@@ -475,6 +478,45 @@ clean fix is to bake the stroke page's committed layer through a software bitmap
 separate g-paper decision, not taken.
 
 **Next.** R1, the pixel eraser. The device carries the raster-on build.
+
+### R1 — Outcome (2026-09-06)
+
+**Landed.** g-paper 0.1.26 (`855f483`): `eraseAlong` on a raster page strokes the chained sweep
+onto the page image with a round-capped, round-joined CLEAR paint at `2 · eraserRadius`
+(transparent, never white — the layer-over-paper rule, A5); `onRasterWillChange` /
+`onRasterChanged` per batch with the rect from the pure `RasterErase.batchRect` (bounds +
+radius + 2 px, clipped; 7 JVM tests including the gapless chain on a flick); `onStrokesErased`
+silent. The hardware eraser end needed nothing — it already ran the same sweep. Host: pin to
+0.1.26, nothing else; `RASTER_SWITCH` still opens every book raster until R2.
+
+**Decided at phase start (Greg).** Rubbing is shown **live, per batch, as far as the panel
+allows** — against the plan's default of once at pen-up. With the raw pipeline armed the panel
+withholds ordinary frames until the contact ends, so the engine gained
+`presentRasterEraseProgress(rect)`, which the Onyx engine answers with one coalesced regional
+`EpdController.handwritingRepaint` after each redraw. Eraser radius: stroke mode's.
+
+**Found and fixed in the walk.** (1) A fast curved sweep cleared a second corridor beside the
+first. The SDK reports a contact twice — streamed samples, then the whole list at pen-up — and
+the list chained to the last streamed sample, so the replay began with a chord back to the
+start. Probed: identical coordinates, list one sample longer. The Onyx engine now drops the
+list when the contact streamed. This reaches stroke mode too, where the chord silently took
+marks it crossed. (2) The hand felt the lifting as slightly delayed. Measured before tuning:
+re-record < 1 ms, frame 14 ms (bitmap upload 4 ms), panel call 2 ms, input delivered 23 ms
+after its own sample time. The 60 ms stroke-mode throttle was the only lever; the raster eraser
+now redraws once a frame (16 ms). Greg: *"a little better… I think it might be acceptable."*
+What remains is the e-ink's own update.
+
+**Measured.** No full-panel flash mid-sweep. `gfxinfo` for the sketching-and-erasing minute:
+**169 frames, 6 janky** — the R0 debt paid, though the number is not comparable to G6's 26
+because every erase batch now presents a frame by design; a pencil-only minute is the fair
+comparison and is owed by R2's walk if anyone wants it.
+
+**The hand.** *"The second path is gone. That's fixed."* *"There's no full-panel flash."* Good
+enough to close on; the delay is the panel's, and the rubbing eraser follow-on inherits the
+question of whether a lighter update mode exists for it.
+
+**Next.** R2, persistence in the host — Opus on a Fable brief. The device carries the 0.1.26
+build; nothing written under `RASTER_SWITCH` survives a page turn yet.
 
 ---
 
