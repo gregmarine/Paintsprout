@@ -7,8 +7,8 @@ unless a standing trap or an arc-1 decision needs checking; its protocol and tra
 at the end so this file is enough. Notesprout's `RESTORE_PLAN.md` and `ENCRYPTION_PLAN.md` are the
 shapes this file copies.
 
-**Status: NOT STARTED.** Planned with Opus 4.8 on 2026-09-03 · reviewed by Fable 2026-09-06
-(amendments A1–A8, § Review amendments) · lifted into the repo 2026-09-06 · R0 ⬜ · R1 ⬜ · R2 ⬜ ·
+**Status: R0 DONE, R1 NEXT.** Planned with Opus 4.8 on 2026-09-03 · reviewed by Fable 2026-09-06
+(amendments A1–A8, § Review amendments) · lifted into the repo 2026-09-06 · R0 ✅ · R1 ⬜ · R2 ⬜ ·
 R3 ⬜ · R4 ⬜ · R5 ⬜.
 
 **Phase letters:** arc 1 took **G**. This experiment takes **R**.
@@ -44,7 +44,10 @@ hand; formalise the ceremony only if the feel proves out.
 
 **Framing that keeps `ONYX_PLAN.md`'s non-goals honest:** raster ink is still the approved arc-1
 graphite — the hairline lead, `#505050`, pressure carrying tone, broken coverage. This is a
-**storage and eraser change, not a paint feature.** "No paint, no surfaces" still stands.
+**storage and eraser change, not a paint feature.** "No paint, no surfaces" still stands. (R0
+found that the same grain lands paler through the software rasteriser than through the panel's
+hardware bake, and the artist chose the paler tone for raster pages — see § Ledger, R0. The
+pencil's geometry is unchanged; its tone on a raster page is a rasteriser fact, not a tuning.)
 
 ## What already exists (do not rebuild)
 
@@ -252,8 +255,8 @@ Each phase ships to the NA5C (`92c16533`) via the `device-build-install` skill a
 hand. R0–R1 are pure engine and keep g-paper's phase discipline (a `PLAN.md` entry each, a version
 bump each, tests pure Kotlin with no Robolectric).
 
-### ⬜ R0 — The raster page in g-paper
-**Owner:** Fable. **Publishes:** g-paper 0.1.25.
+### ✅ R0 — The raster page in g-paper
+**Owner:** Fable. **Publishes:** g-paper 0.1.25 (g-paper commit `5eb3731`, Phase 13 there carries the engine notes). Closed 2026-09-06 — Outcome under § Ledger.
 
 - D1 entire: `PageMode`, `pageRaster`, the `drawCommittedContent` branch, composite-and-drop in
   `commitCapturedStroke`, the two listener methods, `loadPageRaster` / `getPageRaster` /
@@ -266,8 +269,11 @@ bump each, tests pure Kotlin with no Robolectric).
 **Gate:** ink accumulates on the panel across many strokes; a `screencap` shows every committed
 mark; pen-up feels no slower than arc 1 on a busy page (the `gfxinfo` frame count for a minute of
 sketching, beside G6's 26). Fable's eyes on the bake at 1×; Greg's hand for feel.
-**Questions to resolve at phase start:** bitmap format (default `ARGB_8888`) · whether
-`onStrokeCommitted` keeps firing in raster mode (default yes).
+**Questions to resolve at phase start:** ~~bitmap format~~ **`ARGB_8888`** · ~~whether
+`onStrokeCommitted` keeps firing~~ **yes** (both Greg, 2026-09-06). JVM tests landed only for
+the pure rect rule (`RasterDirtyTest`); the copy, the clear-on-mode-set and the pixel-identical
+composite need a `Bitmap` and are the device walk's — with `RASTER_SWITCH` the rows still
+persist, so the same page reopened with the switch off gives the stroke-mode reference to diff.
 
 ### ⬜ R1 — The pixel eraser in g-paper
 **Owner:** Fable. **Publishes:** g-paper 0.1.26. *The headline deliverable — erasing to paper in the
@@ -435,8 +441,40 @@ the Phase 10/11 mistake again.
 
 ## Ledger
 
-*(Empty. Each phase appends an **Outcome** here when it closes: what landed, what was measured,
-what the hand said, and the commit. R5 appends the verdict in Greg's words.)*
+*(Each phase appends an **Outcome** here when it closes: what landed, what was measured, what the
+hand said, and the commit. R5 appends the verdict in Greg's words.)*
+
+### R0 — Outcome (2026-09-06)
+
+**Landed.** g-paper 0.1.25 (`5eb3731`): `PageMode`, the page bitmap (ARGB_8888, dropped not
+erased at a swap, a layer over the paper), composite-and-drop in `commitCapturedStroke`,
+`onRasterWillChange` / `onRasterChanged` with the rect from the pure `RasterDirty` rule (bounds
++ full width + 2 px, clipped; 9 JVM tests), `loadPageRaster` / `getPageRaster` /
+`copyPageRaster`, the Onyx handoff on the load. Host: pins to 0.1.25 and the throwaway
+`RASTER_SWITCH` (rows still persist under it — that is what made the diff below possible).
+Phase-start answers: ARGB_8888; `onStrokeCommitted` keeps firing.
+
+**Measured.** A minute of sketching on the NA5C: ink accumulated, every committed mark in the
+`screencap`, no engine log lines, the eraser inert on the page as expected before R1. The
+`gfxinfo` count was not taken cleanly (no reset before the sketching minute; 159 frames from
+process start) and is owed by R1's walk. The JVM tests the plan listed for the copy, the
+clear-on-mode-set and the pixel-identical composite need a `Bitmap` and moved to the device.
+
+**Found.** The same rows `screencap`ed as a raster page and reopened as a stroke page are **not
+pixel-identical**: same flecks in the same places, the raster page paler — 78 k ink pixels
+against 86 k, 5.46 M ink mass against 7.66 M, 10.6 k pixels at half-dark against 23.8 k. The
+stroke page bakes on the hardware `RenderNode`, the raster page on a software `Canvas(bitmap)`,
+and a round dot under 1.2 px is where the two rasterisers part company. The plan's "the artist's
+approved pixels, unchanged" held for the grain and not for the tone. Covers have always baked
+this paler way, hidden under the ×3 shrink.
+
+**The hand.** Greg, side by side at 1×: *"To me, the raster looks better than the stroke."*
+Decision: **keep the software tone, tune nothing.** Recorded with its cost: R5 compares two
+books that differ in tone as well as in storage and eraser. If that confound ever matters, the
+clean fix is to bake the stroke page's committed layer through a software bitmap too — a
+separate g-paper decision, not taken.
+
+**Next.** R1, the pixel eraser. The device carries the raster-on build.
 
 ---
 

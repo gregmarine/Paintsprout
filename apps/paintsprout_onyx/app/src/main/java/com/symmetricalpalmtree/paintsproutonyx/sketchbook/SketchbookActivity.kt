@@ -12,6 +12,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.TooltipCompat
 import androidx.lifecycle.lifecycleScope
+import com.symmetricalpalmtree.gpaper.core.PageMode
 import com.symmetricalpalmtree.gpaper.core.PaperListener
 import com.symmetricalpalmtree.gpaper.core.PaperView
 import com.symmetricalpalmtree.gpaper.core.Tool
@@ -164,6 +165,8 @@ class SketchbookActivity : AppCompatActivity() {
         TopGuard.applyInsetPadding(binding.topBar)
 
         paper = GPaper.create(this)
+        // R0 only — see RasterSwitch.kt. Set before the view is added, on an empty page.
+        if (RASTER_SWITCH) paper.pageMode = PageMode.RASTER
         binding.paperContainer.addView(paper.asView())
         gate = PenIdleGate(paper)
 
