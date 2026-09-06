@@ -255,7 +255,7 @@ Each phase ships to the NA5C (`92c16533`) via the `device-build-install` skill a
 hand. R0–R1 are pure engine and keep g-paper's phase discipline (a `PLAN.md` entry each, a version
 bump each, tests pure Kotlin with no Robolectric).
 
-### ✅ R0 — The raster page in g-paper
+### ✅ R0 — The raster page in g-paper (commit 5c66992)
 **Owner:** Fable. **Publishes:** g-paper 0.1.25 (g-paper commit `5eb3731`, Phase 13 there carries the engine notes). Closed 2026-09-06 — Outcome under § Ledger.
 
 - D1 entire: `PageMode`, `pageRaster`, the `drawCommittedContent` branch, composite-and-drop in
