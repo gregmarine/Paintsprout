@@ -361,11 +361,12 @@ the card without an `onPause` in front of it — back pauses this screen only *a
 — and a raster cover is baked from the row, so without the flush a page the artist drew on and then
 backed out of would put the last sitting's picture on the shelf.
 
-**What is still undone**, and where it goes:
+**What was undone, and where it went:**
 
-- **The mode picker.** Until **R4** there is no way to ask the artist, so the answer comes from a
-  preference (`LibraryPrefs.newSketchbooksRaster`) that only the **debug** build's menu can flip.
-  A release build makes stroke books only.
+- **The mode picker.** Since **R4** the choice is the New sketchbook screen's second question —
+  Strokes or Raster, default Strokes, asked every time and remembered nowhere, because a book's
+  mode is still permanent once made. See `docs/library.md` for the screen and the bake it makes
+  possible; the bake itself is the library's, not this screen's.
 
 ## What a minute of drawing costs the panel (G6)
 

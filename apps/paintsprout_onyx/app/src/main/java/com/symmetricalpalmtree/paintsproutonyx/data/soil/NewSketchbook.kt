@@ -136,18 +136,22 @@ suspend fun createSketchbook(
 }
 
 /**
- * Undo a create that did not finish.
+ * Undo a make that did not finish.
  *
- * Safe to do exactly here and nowhere else: this file was made moments ago by this call and no card
- * on the shelf has ever pointed at it, so there is nothing in it that anybody drew. The cached raw
- * key goes with it — from both RAM and the Keystore — because the next sketchbook is a different file
- * with a different salt, and a key left behind under a dead id is one that will one day be tried
- * against a file it does not open and reported as corruption.
+ * Safe for exactly the two callers it has — the create above and R4's bake next door, which is why
+ * it is `internal` rather than copied into a second file carrying the same argument at the top of
+ * it. Both are the same situation: the file was made moments ago by the call that is now clearing
+ * it up, no card on the shelf has ever pointed at it, and there is nothing in it that anybody drew.
+ * Anywhere else this is a delete with no undo.
+ *
+ * The cached raw key goes with it — from both RAM and the Keystore — because the next sketchbook is
+ * a different file with a different salt, and a key left behind under a dead id is one that will one
+ * day be tried against a file it does not open and reported as corruption.
  *
  * Failures here are logged and swallowed. The caller is already carrying a real error to the artist,
  * and "and also the tidying up failed" is not a second thing they can act on.
  */
-private fun discardHalfMadeSketchbook(context: Context, sketchbookId: String, file: java.io.File) {
+internal fun discardHalfMadeSketchbook(context: Context, sketchbookId: String, file: java.io.File) {
     try {
         file.delete()
         sidecarsOf(file).forEach { it.delete() }

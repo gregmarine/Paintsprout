@@ -209,8 +209,8 @@ not apply here. Plus:
   and then save it over the good row. A page delete and an undo replay flush the outgoing page
   **before** the store change so the image is tombstoned with its page. The bounded-decode guard
   (`RasterRows.fitsPage`, exact size from the PNG header) runs before `BitmapFactory`, and a row it
-  refuses is soft-deleted, never overwritten. Until R4's picker, the debug menu's "New sketchbooks
-  are raster" toggle stamps the flag; release builds make stroke books only.
+  refuses is soft-deleted, never overwritten. Since R4 the choice is the second question on the New
+  sketchbook screen, default Strokes, asked every time and remembered nowhere.
 - **A raster undo is a swap, and its entry is pixels on a grid.** (R3, g-paper 0.1.29.) One contact
   — a mark, or a whole eraser sweep — is one `Edit.RasterChanged`, opened at the first
   `onRasterWillChange` and closed at `onPenLifted`, holding the before-image on a fixed grid of
@@ -224,6 +224,20 @@ not apply here. Plus:
   stored PNG composited **over paper white** (the image is a layer, its unmarked pixels transparent)
   before the usual shrink-by-three and WEBP; `leave()` flushes the page first, being the one exit
   with no `onPause` in front of it.
+- **A bake is a copy beside the original, and the original is never opened for writing.** (R4.)
+  Read-then-seal before a single bitmap exists — the source is closed for the whole time the drawing
+  runs, and reading is all that happens to it first. No write of any kind reaches the source's rows
+  or its index row, not even `updatedAt`: baking a book is not working in it. A page bitmap is born
+  transparent (`ARGB_8888`, never `eraseColor` white) because the page image is a layer over the
+  paper, and only one page bitmap is ever alive at a time, recycled before the next is asked for —
+  the memory failure G6 met. The index row is written last, after the `.soil` is made, filled and
+  sealed, and any failure discards the half-made copy and rethrows; the source is untouched either
+  way. The job runs on `PaintsproutApplication.scope`, never `lifecycleScope` — a twelve-page bake
+  outlives the screen it was asked from as readily as a mark write does. `RasterBake` stays the pure
+  half, no `Bitmap`, no `Context`, no Room, and is what the JVM tests prove; `BakeSketchbook` is the
+  Android half, the drawing a device walk proves. The copy's folder comes from the index
+  (`repo.ancestry`), never the source's meta row — that row is written once at creation and never
+  refreshed, so a book moved since would leave a copy claiming to live somewhere it never has.
 - **Non-goals are enforced, not aspirational.** No layers, no paint, no surfaces, no shape tools,
   no selection, no millimetres or calibration, no zoom/pan/rotate, no export, no backup, no
   extensions. The full list, and which of them are candidate later arcs, is in `ONYX_PLAN.md`.

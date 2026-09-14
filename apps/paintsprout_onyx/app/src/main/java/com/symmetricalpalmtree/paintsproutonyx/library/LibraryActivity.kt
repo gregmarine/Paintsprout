@@ -512,12 +512,27 @@ class LibraryActivity : AppCompatActivity() {
                 }
             }
         }
-        return sheet
-            .addAction(getString(R.string.action_rename), R.drawable.ic_edit) { showRenameDialog(s) }
-            .addAction(getString(R.string.action_move), R.drawable.ic_move_page) { showMovePicker(s) }
-            .addAction(getString(R.string.action_delete), R.drawable.ic_trash) {
-                if (s.type == ObjectType.FOLDER) confirmDeleteFolder(s) else confirmDeleteSketchbook(s)
+        sheet.addAction(getString(R.string.action_rename), R.drawable.ic_edit) { showRenameDialog(s) }
+        sheet.addAction(getString(R.string.action_move), R.drawable.ic_move_page) { showMovePicker(s) }
+        if (s.type == ObjectType.SKETCHBOOK) {
+            // **Offered on every sketchbook card, raster ones included, and that is deliberate.**
+            // The index does not mirror a book's mode — R2 settled that: the `.soil` row is the only
+            // truth about it, precisely so there is no second copy to disagree with the first — so
+            // the only way to know whether this card is already a raster book would be to open an
+            // encrypted file, which on a cold cache is a quarter of a million rounds of key
+            // derivation, spent to decide which rows a menu shows. That is not a price a long-press
+            // gets to charge. So the row is always there, the confirmation is always asked, and the
+            // bake itself comes back with "already raster" — as a problem dialog rather than a
+            // toast, because it is explaining why a tap did not do anything, which on this panel is
+            // the whole of the toast-vs-dialog rule.
+            sheet.addAction(getString(R.string.action_bake), R.drawable.ic_pencil) {
+                BakeCommand.confirm(this, repo, s) { lifecycleScope.launch { refresh() } }
             }
+        }
+        sheet.addAction(getString(R.string.action_delete), R.drawable.ic_trash) {
+            if (s.type == ObjectType.FOLDER) confirmDeleteFolder(s) else confirmDeleteSketchbook(s)
+        }
+        return sheet
     }
 
     private fun showMovePicker(s: ObjectSummary) {

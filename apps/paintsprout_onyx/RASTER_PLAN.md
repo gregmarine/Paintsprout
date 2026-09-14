@@ -7,9 +7,9 @@ unless a standing trap or an arc-1 decision needs checking; its protocol and tra
 at the end so this file is enough. Notesprout's `RESTORE_PLAN.md` and `ENCRYPTION_PLAN.md` are the
 shapes this file copies.
 
-**Status: R3 DONE, R4 NEXT.** Planned with Opus 4.8 on 2026-09-03 · reviewed by Fable 2026-09-06
+**Status: R4 DONE, R5 NEXT.** Planned with Opus 4.8 on 2026-09-03 · reviewed by Fable 2026-09-06
 (amendments A1–A8, § Review amendments) · lifted into the repo 2026-09-06 · R0 ✅ · R1 ✅ · R2 ✅ ·
-R3 ✅ · R4 ⬜ · R5 ⬜.
+R3 ✅ · R4 ✅ · R5 ⬜.
 
 **Phase letters:** arc 1 took **G**. This experiment takes **R**.
 
@@ -330,13 +330,15 @@ gestures; a raster book's card on the shelf shows its last page. Haiku walks the
 0.1.27/28, whose Onyx changes touch only the lasso tools this app never arms) · ~~byte budget~~
 **48 MB** (both Greg, 2026-09-14, the defaults).
 
-### ⬜ R4 — Mode choice and the bake
+### ✅ R4 — Mode choice and the bake
 **Owner:** Opus on a Fable brief; Sonnet for the picker layout and strings; Fable reads before the
 walk.
 
 - D6 entire.
 - JVM tests: bake determinism; the copy carries name, paper, page order and every live page; the
-  original is byte-identical before and after.
+  original is byte-identical before and after. *(Amended at the walk: the original's **rows** are
+  untouched and its index row is untouched; the file's bytes are not, and never were on any open —
+  see the R4 outcome.)*
 
 **Gate:** make a book of each kind; bake a stroke book and compare the two side by side on the
 shelf and in the hand; the picker reads right at arm's length on the panel.
@@ -613,6 +615,67 @@ the shelf): *"All pass."* Nothing found, nothing tuned.
 
 **Next.** R4, the mode picker and the one-way bake — Opus on a Fable brief, Sonnet for the picker's
 layout and strings. The device carries the R3 build with the debug toggle ON.
+
+### R4 — Outcome (2026-09-14)
+
+**Landed.** Host only, g-paper still 0.1.29. The **picker**: the New sketchbook screen's second
+question, "Pages" — *Strokes* ("Marks you can take back whole.") / *Raster* ("Graphite you rub
+off."), radio rows in the recovery screen's existing style, Strokes checked in the layout every
+time the screen opens and nothing remembering the last answer; the debug toggle, the
+`LibraryPrefs.newSketchbooksRaster` preference and their two strings are gone. **The bake**:
+*Bake to raster…* on the shelf's long-press sheet between Move and Delete, confirm first, then a
+modal counting dialog ("Page n of m") over a job on `PaintsproutApplication.scope` behind a
+`BakeCommand.running` guard. `RasterBake` (pure: `plan`, `copyName`, `digest`) decides the copy —
+same `order` values, same sizes, opens on the leaf the original was left on, blank leaves get no
+raster row, "<name> raster" then a counter from 2 trimmed at the source name never the suffix;
+`BakeSketchbook` (Android) opens the source, reads book + pages + marks, **seals it before any
+bitmap exists**, then makes the copy exactly as `createSketchbook` does — transparent page bitmap,
+`StrokeRasterizer.draw`, PNG, one bitmap alive at a time, cover from the open leaf via
+`CoverSnapshot.render(pixels…)`, meta row, seal, **index row last**, `setCover` — and a `Throwable`
+anywhere after the create discards the half-made file. The copy's folder path comes from the index,
+not the source's meta row (written once at creation, never refreshed — Fable's review catch). The
+sheet offers Bake on every sketchbook card, raster ones included, because the index does not mirror
+the mode; the bake answers `AlreadyRaster` and the shelf shows a problem dialog. Each baked leaf
+logs `baked page i/n of <id>: <bytes> bytes, <digest>`. JVM: 203 tests (187 + 16 `RasterBakeTest`).
+
+**Decided at phase start (Greg).** Copy, default Strokes, no offer to delete — the three defaults.
+
+**Measured (Haiku's adb walk + Fable's probes, 2026-09-14, NA5C).** Picker: dump shows the label,
+Strokes checked, Raster not, both hints; a tap flips it (`02_picker.png` is for the eye). A raster
+book and a stroke book were made through it. Bake of *Graphite* (1 page): confirm dialog, counting
+dialog, card *Graphite raster* with a drawn cover and "1 page"; **baked twice → identical bytes and
+digest** (265340 bytes, `7a943083dcd0c85d`); *G4walk* (4 pages, one blank) → three leaves logged
+(57938 / 141158 / 87429 bytes), 316 KB copy beside a 132 KB stroke book. The copy's page and the
+original's page `screencap`ed side by side: **0.03 % of pixels differ, identical bounding boxes**
+(377,256)–(1646,1967); mean darkness 1.2 vs 1.4 — geometry exact, tone within noise (the R0
+paleness confound is not visible at this coverage). *Already raster*: baking a raster copy shows the
+problem dialog and makes no file. Sleep/wake with the copy open: page back. Log: no
+`AndroidRuntime`, no leaked window. Index: the original's card still reads "Sep 3, 2026" — its
+`updatedAt` did not move.
+
+**Finding — the original's file bytes change on every open, and always have.** The walk's md5 of
+the source `.soil` moved at the bake's open moment though no row was written. A staged probe build
+(digest of the file at six points) put the two writes **before any read**: the first inside
+`KeyOpener`'s verify open (`SoilCrypto.verifyRawKey`: raw open, `SELECT count(*) FROM
+sqlite_master`, close) and the second inside Room's own open (`forceOpen`); a second verify in a row
+changed nothing, so the first is idempotent, and the reads and the seal changed nothing. Consistent
+with the raw open flipping the header's journal mode from WAL to DELETE and Room's WAL open flipping
+it back — page 1 re-encrypted under a fresh IV each time. This is **every** `SoilDatabase.open` in
+the app since G1, ordinary sketchbook opens included, and it touches no row. Left as it is in R4 (a
+crypto-path change is not this phase's); the plan's "byte-identical" gate is amended to "rows and
+index row untouched", which the second bake's identical digests and the Sep 3 card both show.
+Watch item for arc 2's formalisation: verify with the WAL flag, or accept the flip and say so.
+
+**Left on the shelf by the walk** (Greg to delete or keep): `20260914_124317rrR4_rasteaR4_raster`
+(adb's text entry mangled the name; the book is raster and fine), `R4_strokes`, `Graphite raster`,
+`Graphite raster 2`, `G4walk raster`, `20260906_110500 raster`.
+
+**The hand** (Greg, the five-step checklist: the picker at arm's length; a book of each kind drawn
+in; a drawn stroke book baked and the two compared on the shelf and in the hand; a multi-page bake
+with Home pressed mid-count; Back out of the New screen): *"Tests pass."* Nothing found, nothing
+tuned.
+
+**Next.** R5, the verdict — Greg's, written down with Fable. The device carries the R4 build.
 
 ---
 

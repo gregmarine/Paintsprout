@@ -1,13 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  One field, because a sketchbook needs exactly one thing from the reader
-  before it can exist: a name. Page size and surface are arc-1 non-goals (no
-  millimetres, no calibration, no surfaces), so there is nothing else this
-  screen could ask for without asking a question the app doesn't have an
-  answer to yet. nameRule sits under the field rather than only surfacing as a
-  rejected-input error, because the reader should know the boundary before
-  they hit it — a rule discovered by violation reads as the app being
-  difficult rather than the field being honest about what it accepts.
+  Two questions, because a sketchbook needs two things from the reader before
+  it can exist: a name, and a mode. Page size and surface are still arc-1
+  non-goals (no millimetres, no calibration, no surfaces), so those two are
+  the whole screen. nameRule sits under the field rather than only surfacing
+  as a rejected-input error, because the reader should know the boundary
+  before they hit it — a rule discovered by violation reads as the app being
+  difficult rather than the field being honest about what it accepts. The
+  mode question belongs here and nowhere else because a book's mode is
+  permanent once made (see `NewSketchbook.kt`'s KDoc on `raster`) — a choice
+  that cannot be changed later has to be asked at the one moment it can still
+  be answered, not tucked into a debug menu or inferred from a default.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/root"
@@ -80,6 +83,54 @@
             android:layout_marginTop="8dp"
             android:text="@string/new_sketchbook_name_rule"
             android:textAppearance="@style/TextAppearance.Paintsprout.Hint" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/new_sketchbook_mode_label"
+            android:textAppearance="@style/TextAppearance.Paintsprout.BodyLarge" />
+
+        <RadioGroup
+            android:id="@+id/modeGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="vertical">
+
+            <androidx.appcompat.widget.AppCompatRadioButton
+                android:id="@+id/modeStrokes"
+                style="@style/Widget.Paintsprout.RadioButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minHeight="48dp"
+                android:checked="true"
+                android:text="@string/new_sketchbook_mode_strokes" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/new_sketchbook_mode_strokes_hint"
+                android:textAppearance="@style/TextAppearance.Paintsprout.Hint" />
+
+            <androidx.appcompat.widget.AppCompatRadioButton
+                android:id="@+id/modeRaster"
+                style="@style/Widget.Paintsprout.RadioButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:minHeight="48dp"
+                android:text="@string/new_sketchbook_mode_raster" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/new_sketchbook_mode_raster_hint"
+                android:textAppearance="@style/TextAppearance.Paintsprout.Hint" />
+
+        </RadioGroup>
 
     </LinearLayout>
 

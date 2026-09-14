@@ -16,7 +16,6 @@ import com.symmetricalpalmtree.paintsproutonyx.core.PanelSize
 import com.symmetricalpalmtree.paintsproutonyx.core.TopGuard
 import com.symmetricalpalmtree.paintsproutonyx.data.index.IndexRepository
 import com.symmetricalpalmtree.paintsproutonyx.data.index.ObjectType
-import com.symmetricalpalmtree.paintsproutonyx.data.prefs.LibraryPrefs
 import com.symmetricalpalmtree.paintsproutonyx.data.soil.createSketchbook
 import com.symmetricalpalmtree.paintsproutonyx.databinding.ActivityNewSketchbookBinding
 import kotlinx.coroutines.launch
@@ -33,9 +32,10 @@ import java.util.Locale
  * to sit where it is being typed and for the rule about names to be visible while the artist breaks
  * it, rather than appearing afterwards as a complaint.
  *
- * It is also where the paper choice will go when there is more than one paper. Arc 1's paper is plain
- * white and there is nothing to choose, so nothing is shown — but a screen with room for a second
- * question is why this is not a dialog either.
+ * The room for a second question is why this is not a dialog either, and since R4 there is one: what
+ * kind of pages the book keeps. It is not the paper question — arc 1's paper is plain white and there
+ * is still nothing to choose there — but it is the same shape, and when a paper choice does arrive it
+ * comes and stands next to this one.
  *
  * The name is the artist's to pick and the default is only a starting point: a timestamp, because it
  * is the one default that is never already taken and never means anything misleading. It arrives
@@ -116,13 +116,20 @@ class NewSketchbookActivity : AppCompatActivity() {
                     parentFolderId = parentFolderId,
                     panel = PanelSize.of(this@NewSketchbookActivity),
                     repo = repo,
-                    // **R4's to replace with a question on this screen.** A book's pages are marks
-                    // or pixels for good, and there is nowhere yet to ask which — so until the
-                    // picker exists the answer comes from a preference only the debug build's menu
-                    // can flip, and a release build makes stroke books. A mode cannot be changed
-                    // after the fact, so the one thing this must not do is let the artist acquire
-                    // one without having asked for it.
-                    raster = LibraryPrefs(this@NewSketchbookActivity).newSketchbooksRaster,
+                    // The answer comes off this screen and from nowhere else. A book's pages are
+                    // marks or pixels for good — the pixels of a raster page cannot be turned back
+                    // into strokes — so the one moment the question can honestly be asked is the
+                    // moment the book is being made, in front of the person making it. A setting
+                    // remembered somewhere else would mean acquiring a permanent property of a
+                    // sketchbook by inheritance from a choice made weeks ago about a different one.
+                    //
+                    // Which is also why nothing here remembers the last answer between visits. The
+                    // radio is checked in the layout, at Strokes, every single time the screen
+                    // opens: the artist who wants a raster book says so on purpose, and the artist
+                    // who made one last Tuesday and is not thinking about it today gets the known
+                    // thing back. A default that drifted to match the last visit would be exactly
+                    // the inheritance the paragraph above refuses, wearing the word "convenient".
+                    raster = binding.modeRaster.isChecked,
                 )
                 setResult(
                     Activity.RESULT_OK,

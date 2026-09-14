@@ -277,6 +277,20 @@ the half-made file and invalidates the just-cached key. See `docs/data.md` for t
 against the original first and simply dismisses if unchanged — no duplicate check, no `repo.rename`
 call, no stamp moved.
 
+**The second question, since R4: what kind of pages.** Below the name field and its rule line sits
+a `RadioGroup` of two rows, Strokes and Raster, each with a one-line description underneath it
+rather than a mechanism word — "Marks you can take back whole" and "Graphite you rub off" are what
+an artist reaches for; "vector" and "bitmap" are not. Strokes is checked by default and nothing
+remembers which the artist picked last time: a sketchbook's mode is permanent the instant it is
+made (pixels do not turn back into strokes — `NewSketchbook.kt`'s KDoc on `raster` is where that is
+argued in full), and a choice that cannot be undone has to be asked in front of the person making
+it, every time, rather than inherited from whatever they happened to want for a different book on a
+different day. That permanence is also why the question lives on this screen and nowhere else — not
+a setting, not a debug toggle, not a preference remembered between visits. A setting would mean a
+book could acquire a permanent property of itself by accident, from a choice made about a different
+book weeks earlier; asking here, at the one moment the book is being made, is the only way the
+answer is ever the artist's own.
+
 `FolderPickerActivity` reuses `LibraryGrid` for a folder-only browse — "choosing a folder should
 look like the place it is choosing from" — and refuses two moves in the UI: a name already taken in
 the destination, and a **folder moved into itself or its own descendant**
@@ -301,6 +315,78 @@ folder holding *live* contents that no listing ever walks down to again — stil
 Deepest-first, whatever is still alive at any instant still has a living parent all the way to the
 root. The confirmation sentence names what actually goes ("2 sketchbooks and 1 folder inside it go
 with it, for good"), which a one-level count would have gotten silently wrong for nested contents.
+
+## Baking to raster (R4)
+
+**A copy, never a conversion.** The shelf's long-press sheet offers **Bake to raster…** between
+Move and Delete, and what it makes is a whole second sketchbook, in the same folder, sitting beside
+the stroke book it was made from — not a change to that book. The argument belongs to `RasterBake`
+and is written there in full: a conversion in place would be the one act in this app that destroys
+work irreversibly and does it silently, since the pages look much the same afterwards and what has
+actually gone — every mark as a mark, ready to be taken back — is invisible until somebody reaches
+for undo and finds a flat image. A copy costs disk, which the device has, and costs nothing that
+cannot be got back by deleting it.
+
+**The original is opened, read, and sealed before a single pixel is drawn**, and nothing in the bake
+ever writes to it again — not a mark, not the open-page pointer, not even `updatedAt`. Baking a book
+is not working in it, so the source's index row is not touched either; a sketchbook that jumped to
+the top of "last worked on" because somebody copied it would be the shelf lying about the artist's
+afternoon. The source is closed for the whole twenty-odd seconds the drawing takes, because reading
+is the only thing it was ever asked to do.
+
+**The index row goes last, exactly as `createSketchbook` writes one — and a failure discards
+whatever was made.** The `.soil` file is created, filled, and sealed before the card is written; a
+card written first would, on any failure in between, open onto nothing, and there is no worse thing
+a library can do than lie about what it holds. Anywhere past that point a `Throwable` is caught
+(not merely an `Exception` — an `OutOfMemoryError` on a page-sized bitmap is the real failure this
+guards), what is open is sealed, `discardHalfMadeSketchbook` clears the half-made file, and the
+error is rethrown. The source is untouched whichever way it goes.
+
+**The name: "<name> raster", then "2", "3", the first nobody on that shelf has taken.** The counter
+starts at 2 because the first copy needs no number — "Study raster 1" would claim a series the
+artist never started. A source name at the 64-character cap plus " raster" is over the limit, so
+the *source name* is trimmed from its end, a character at a time, until the whole candidate fits —
+never the suffix, because the suffix is the information a copy's name exists to carry and the tail
+of a long name is not. Trailing spaces go with each cut.
+
+**The copy opens on the page the original was left on**, because whoever bakes a book has been
+working in it, and landing them on page one of the copy would be the copy pretending to be a
+different sketchbook than the one they asked for. Every live page keeps its own `order` value, not
+merely its position in the list — a book with torn-out leaves has gaps in its numbering, and closing
+those gaps in the copy would be a difference between the two books with no reason behind it, in a
+phase whose whole point is comparing them. A page with no marks on it becomes a blank leaf with a
+page row and no raster row at all, which is exactly what an untouched page of any raster book
+already looks like to `SketchbookSession.loadPageRaster` — "no row" reads as "nobody drew here."
+
+**The cover comes from the page the copy opens on**, rendered the same way `CoverSnapshot` always
+has, so the new card on the shelf actually shows a picture rather than a blank frame beside the
+original's drawn one — the phase gate asks for the two books to be compared on the shelf, and a
+copy that looked empty next to a full one would read as a bake that had done nothing.
+
+**Why Bake is offered on every sketchbook card, raster ones included.** The index does not mirror a
+book's mode — R2 settled that: the `.soil` row is the only truth about it, precisely so there is no
+second copy of the answer to disagree with the first — so the only way to know at long-press time
+whether a card is already raster would be to open an encrypted file, a quarter-million rounds of key
+derivation on a cold cache, spent just to decide what a menu shows. That is not a price a long-press
+gets to charge. So the row is always there, the confirmation is always asked, and a book that is
+already raster comes back from the bake itself as **"Already raster,"** a problem dialog rather than
+a toast — because it is explaining why a tap did nothing, which on this panel is the whole of the
+toast-vs-dialog rule below.
+
+**The job runs on `PaintsproutApplication.scope`, never the screen's `lifecycleScope`,** behind a
+modal, uncancellable counting dialog ("Page *n* of *m*") and a `BakeCommand.running` guard. A
+twelve-page book is ten or twenty seconds of drawing, long enough that the artist presses Home or
+the panel sleeps; an activity-scoped job would be cancelled the instant the screen is torn down,
+mid-write, before the tidying that would have cleaned it up even runs — the same argument the write
+queue is built on, met again. If the shelf goes away the bake still lands and the card is simply
+there next time the shelf is looked at. The guard exists because a second long-press mid-bake would
+check its copy's name against a shelf that does not yet know about the first copy underway, and two
+sketchbooks with one name and two files is what one moment of impatience on a silent panel buys.
+
+**`baked page i/n of <id>: <bytes> bytes, <digest>`** is written to the log for every leaf that gets
+a picture. It exists for the device walk, which has no pen to inject and so cannot make a new
+drawing to compare — its only way to say "the copy's third page is the original's third page" is to
+bake the same book twice and check that the two logs agree, leaf for leaf, page for page.
 
 **Toast vs. dialog.** A toast only confirms something that already happened; anything explaining why
 a tap *did not* work is a problem dialog, never a toast, because a missed toast on this panel reads
@@ -360,6 +446,9 @@ toast, then kills the process after a 400 ms delay timed so the toast actually r
 first — a message with no frame never happened here, and it is the only confirmation the tap did
 anything). Killing the process, not merely clearing memory, matters because the index is already
 open in this process; without a kill, a relaunch would find it ready and sail straight past Unlock.
+**Since R4 the sheet is back to these two items** — the raster experiment's stand-in toggle, "New
+sketchbooks are raster," is gone along with `LibraryPrefs.newSketchbooksRaster`, now that the New
+sketchbook screen asks the question properly.
 
 **The release build does not contain either action**, not merely hide it — the release `DebugMenu`
 is a distinct, minimal file whose `install()` sets the overflow button `GONE` and wires nothing. Its

@@ -113,6 +113,20 @@
     <string name="new_sketchbook_duplicate">There\'s already a sketchbook called “%1$s” here.</string>
     <string name="new_sketchbook_failed_title">Couldn\'t make the sketchbook</string>
     <string name="new_sketchbook_failed">Nothing was added to your library. Try again.</string>
+    <!-- The second question the New sketchbook screen asks (R4): what kind of
+         book. Strokes and Raster describe what the reader gets back rather than
+         a mechanism, because "vector" and "bitmap" are not words an artist
+         reaches for — "marks you can take back" and "graphite you rub off" are
+         the actual difference in hand. There is no third hint explaining that
+         this can never be changed; that fact belongs in the confirmation the
+         reader already has to clear (the name field, the Create button) rather
+         than a warning stacked onto a screen that is supposed to feel like
+         picking paper, not signing a waiver. -->
+    <string name="new_sketchbook_mode_label">Pages</string>
+    <string name="new_sketchbook_mode_strokes">Strokes</string>
+    <string name="new_sketchbook_mode_strokes_hint">Marks you can take back whole.</string>
+    <string name="new_sketchbook_mode_raster">Raster</string>
+    <string name="new_sketchbook_mode_raster_hint">Graphite you rub off.</string>
     <!-- The five specific answers to "why did nothing happen when I tapped
          Create". They are string resources rather than sentences inside
          NameRules because they are screen text like any other and belong where
@@ -141,6 +155,29 @@
 
     <string name="delete_sketchbook_title">Delete “%1$s”?</string>
     <string name="delete_sketchbook_body">The sketchbook and everything drawn in it go for good. This can\'t be undone.</string>
+
+    <!-- Bake to raster (R4). A one-way copy, never a conversion — the sheet
+         offers this on every sketchbook card, raster ones included, because
+         the index does not mirror a book's mode (R2's decision: the .soil row
+         is the only truth) and reading it at long-press would mean opening an
+         encrypted file just to decide what a menu shows. So the confirm is
+         always offered and bake_already_raster is the answer when there was
+         nothing to do — the toast-vs-dialog rule applies here too, since a tap
+         that silently did nothing reads as broken. bake_confirm_body says the
+         source is untouched because that is the one fact that makes this safe
+         to try: nothing is lost by baking a copy you don't end up wanting. -->
+    <string name="action_bake">Bake to raster…</string>
+    <string name="bake_confirm_title">Bake “%1$s” to raster?</string>
+    <string name="bake_confirm_body">A new raster sketchbook is made beside this one, every page drawn as graphite that can be rubbed off. “%1$s” itself is left exactly as it is.</string>
+    <string name="bake_confirm">Bake</string>
+    <string name="bake_progress_title">Baking…</string>
+    <string name="bake_progress_page">Page %1$d of %2$d</string>
+    <string name="bake_copy_name">%1$s raster</string>
+    <string name="bake_already_raster_title">Already raster</string>
+    <string name="bake_already_raster">“%1$s” is a raster sketchbook. Its pages are graphite already.</string>
+    <string name="bake_failed_title">Couldn\'t bake the sketchbook</string>
+    <string name="bake_failed">Nothing was added to your library and “%1$s” is unchanged. Try again.</string>
+
     <string name="delete_folder_title">Delete “%1$s”?</string>
     <string name="delete_folder_body_empty">The folder is empty, so nothing drawn goes with it.</string>
     <!-- The Kotlin builds the "3 sketchbooks and 1 folder" phrase and passes
@@ -196,12 +233,6 @@
     <string name="debug_forget_body">Clears the cached recovery key and closes the app. The next launch will ask for the key. Your sketchbooks are untouched — but have the key to hand before you do this.</string>
     <string name="debug_forget_confirm">Forget and close</string>
     <string name="debug_forgotten">Forgotten — launch again</string>
-    <!-- The raster experiment's stand-in for R4's mode picker. The label states the
-         setting rather than the action, because a sketchbook's mode is permanent
-         and invisible once made, and the toast after the tap repeats it. Both go
-         when R4 asks the question properly on the New sketchbook screen. -->
-    <string name="debug_new_raster_on">New sketchbooks are raster: ON</string>
-    <string name="debug_new_raster_off">New sketchbooks are raster: OFF</string>
 
     <!-- The page. Nothing here is a label the artist reads while drawing: the
          name and the page count are for glancing at between marks, and the rest
