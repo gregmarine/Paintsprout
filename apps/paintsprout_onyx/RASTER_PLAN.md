@@ -312,7 +312,7 @@ record nothing on the undo stack until R3; a raster book's cover is `Blank` unti
 the bounded-decode guard refuses is **tombstoned, never overwritten** — the page opens blank and
 the next save makes a fresh row.
 
-### ✅ R3 — Undo and covers
+### ✅ R3 — Undo and covers (commit aabb355)
 **Owner:** Opus on a Fable brief; Fable wrote the engine call in g-paper (`swapPageRaster`, 0.1.29,
 g-paper commit `d0bc484`, Phase 17 there) and read the host before the walk. Closed 2026-09-14 —
 Outcome under § Ledger.
