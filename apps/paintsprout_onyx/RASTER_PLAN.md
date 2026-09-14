@@ -291,7 +291,7 @@ batch, as far as the panel allows** — Greg, 2026-09-06, against the default; t
 posts a regional `handwritingRepaint` after each throttled (one-frame) redraw · ~~eraser radius~~
 **same as stroke mode** (Greg, 2026-09-06).
 
-### ✅ R2 — Persistence in the host
+### ✅ R2 — Persistence in the host (commit e9ddc36)
 **Owner:** Opus on a Fable brief; Fable read it before the walk. Closed 2026-09-14 — Outcome under § Ledger.
 
 - D3 entire; the R0 throwaway switch removed; `showPage` branches on the session's mode.
@@ -527,7 +527,7 @@ build; nothing written under `RASTER_SWITCH` survives a page turn yet.
 
 ### R2 — Outcome (2026-09-14)
 
-**Landed.** Host only; g-paper stays at 0.1.26. The sketchbook row's `flags` bit 0 says a book is
+**Landed** (`e9ddc36`). Host only; g-paper stays at 0.1.26. The sketchbook row's `flags` bit 0 says a book is
 raster, stamped by `createSketchbook(raster)` and read once at `SketchbookSession.open`. Each page
 of a raster book has at most one `raster` child row (`order = -1`, blob = PNG of the whole page,
 upserted in place) — the family's raster-cache shape, on its own row for A3's reason. `RasterRows`
