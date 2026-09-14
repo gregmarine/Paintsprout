@@ -7,8 +7,8 @@ unless a standing trap or an arc-1 decision needs checking; its protocol and tra
 at the end so this file is enough. Notesprout's `RESTORE_PLAN.md` and `ENCRYPTION_PLAN.md` are the
 shapes this file copies.
 
-**Status: R1 DONE, R2 NEXT.** Planned with Opus 4.8 on 2026-09-03 · reviewed by Fable 2026-09-06
-(amendments A1–A8, § Review amendments) · lifted into the repo 2026-09-06 · R0 ✅ · R1 ✅ · R2 ⬜ ·
+**Status: R2 DONE, R3 NEXT.** Planned with Opus 4.8 on 2026-09-03 · reviewed by Fable 2026-09-06
+(amendments A1–A8, § Review amendments) · lifted into the repo 2026-09-06 · R0 ✅ · R1 ✅ · R2 ✅ ·
 R3 ⬜ · R4 ⬜ · R5 ⬜.
 
 **Phase letters:** arc 1 took **G**. This experiment takes **R**.
@@ -291,8 +291,8 @@ batch, as far as the panel allows** — Greg, 2026-09-06, against the default; t
 posts a regional `handwritingRepaint` after each throttled (one-frame) redraw · ~~eraser radius~~
 **same as stroke mode** (Greg, 2026-09-06).
 
-### ⬜ R2 — Persistence in the host
-**Owner:** Opus on a Fable brief; Fable reads it before the walk.
+### ✅ R2 — Persistence in the host
+**Owner:** Opus on a Fable brief; Fable read it before the walk. Closed 2026-09-14 — Outcome under § Ledger.
 
 - D3 entire; the R0 throwaway switch removed; `showPage` branches on the session's mode.
 - JVM tests: `RasterRows` round-trip, the header/bounds guard rejects a wrong-size image, the mode
@@ -302,8 +302,15 @@ posts a regional `handwritingRepaint` after each throttled (one-frame) redraw ·
 from the background after a save and reopen; a stroke book opened after all this is untouched.
 Haiku's `screencap` walk covers all of it (raster content is capturable); Greg confirms nothing
 was lost.
-**Questions to resolve at phase start:** does `SketchbookMeta` mirror the mode (default no) ·
-debounce interval (default 3 s) · the PNG size ceiling for the log line.
+**Questions to resolve at phase start:** ~~does `SketchbookMeta` mirror the mode~~ **no — the
+row's `flags` bit is the truth** · ~~debounce interval~~ **3 s** · ~~the PNG size ceiling for the
+log line~~ **4 MB** (all Greg, 2026-09-14, the defaults). Fable's phase decisions: the throwaway
+switch moves from open-time to **create-time** — a debug-menu toggle "new sketchbooks are raster"
+stamps the flag until R4's picker exists (release builds make stroke books only); g-paper stays at
+0.1.26 (0.1.27/28 carry hardware-untested Onyx changes for Notesprout SN); raster marks and erases
+record nothing on the undo stack until R3; a raster book's cover is `Blank` until R3; a raster row
+the bounded-decode guard refuses is **tombstoned, never overwritten** — the page opens blank and
+the next save makes a fresh row.
 
 ### ⬜ R3 — Undo and covers
 **Owner:** Opus on a Fable brief; Fable writes `patchPageRaster` in g-paper if R3 takes that route
@@ -517,6 +524,46 @@ question of whether a lighter update mode exists for it.
 
 **Next.** R2, persistence in the host — Opus on a Fable brief. The device carries the 0.1.26
 build; nothing written under `RASTER_SWITCH` survives a page turn yet.
+
+### R2 — Outcome (2026-09-14)
+
+**Landed.** Host only; g-paper stays at 0.1.26. The sketchbook row's `flags` bit 0 says a book is
+raster, stamped by `createSketchbook(raster)` and read once at `SketchbookSession.open`. Each page
+of a raster book has at most one `raster` child row (`order = -1`, blob = PNG of the whole page,
+upserted in place) — the family's raster-cache shape, on its own row for A3's reason. `RasterRows`
+is the pure border (row ↔ bytes, the IHDR header read, the exact-size guard, the flag helpers; 13
+JVM tests, 159 in all) and `RasterImage` the Android half (PNG encode with the 4 MB watch line;
+guard **before** `BitmapFactory`, always). `showPage` is still the only door: it reads the incoming
+page's row **through `SoilWriter.perform`** (Opus's addition — turn away from a leaf and straight
+back and its encode is still queued; a read off to the side would hand back the previous sitting
+and then save it over the good row), waits on the gate, flushes the outgoing page, then
+`clearForContentSwap` → `setPageSize` → `loadPageRaster` under a `loadingRaster` flag so the
+load's own whole-page callback is not taken for the hand. Saves: 3 s after the last change through
+the gate, and immediately on page turn, page delete, replay, `onPause` and `onDestroy` — every one
+a ~10 ms main-thread copy and a queued encode, never a bake. The delete and the replay flush
+**before** the store change so the image is tombstoned with its page rather than minted live on a
+dead one. A row the guard refuses is soft-deleted, never overwritten. `RasterSwitch.kt` is gone;
+until R4's picker the debug menu's "New sketchbooks are raster" toggle (a `LibraryPrefs` boolean)
+stamps the flag, and a release build makes stroke books only.
+
+**Decided at phase start (Greg).** No meta mirror; 3 s debounce; 4 MB ceiling — the defaults.
+
+**Measured.** The walk on the NA5C, driven from adb for everything but the graphite: the toggle
+flipped and read back ON; the book created and opened raster; after the first marks the `-wal`
+grew to 251 KB in two writes (page images, not mark rows); after Home the WAL folded into a
+348 KB `.soil` and the card wrote `Blank` (R3's); `am kill` and a relaunch reopened both pages;
+two stroke books then opened and wrote `Image` covers as before. No error lines in the streaming
+log. `meminfo` during drawing: graphics ≈ 107 MB, native heap ≈ 35 MB — the page bitmap and its
+copies are inside that, and nothing was killed.
+
+**The hand.** *"Page 1 retained the raster image as expected."* *"Both pages of R2_raster were
+exactly as I left them. Page turns feel fine."* Step 5, a stroke book untouched: *"passes."*
+
+**Deferred, on purpose.** A raster book's cover is `Blank` and its undo arrows move pages only —
+both R3. The picker is R4. A pencil-only `gfxinfo` minute was not taken.
+
+**Next.** R3, undo and covers — Opus on a Fable brief; Fable writes `patchPageRaster` in g-paper if
+R3 takes the engine route. The device carries the R2 build with the debug toggle ON.
 
 ---
 

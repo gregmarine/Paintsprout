@@ -8,6 +8,7 @@ import com.symmetricalpalmtree.paintsproutonyx.crypto.KeySession
 import com.symmetricalpalmtree.paintsproutonyx.data.index.IndexRepository
 import com.symmetricalpalmtree.paintsproutonyx.data.sidecarsOf
 import com.symmetricalpalmtree.paintsproutonyx.data.soilFile
+import com.symmetricalpalmtree.paintsproutonyx.sketchbook.RasterRows
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -40,6 +41,15 @@ private const val TAG = "NewSketchbook"
  * The page size comes from [PanelSize] and is never written again. Nothing here rescales a page: a
  * sketchbook made on this panel is a sketchbook of this panel's pages, for good.
  *
+ * **[raster] is asked here and nowhere else, ever again.** A book's pages are either marks the artist
+ * can take back whole or graphite they rub off, and that is a property of the book, not a setting on
+ * a screen: the pixels of a raster page cannot be turned back into strokes, so a mode flipped under a
+ * drawing would be a conversion the artist never asked for and cannot undo. Stamping it at creation
+ * and reading it at open is what makes the two kinds of book able to sit on one shelf. Zero rather
+ * than null for a stroke book, on the same argument the page row's `refId = ""` makes: the question
+ * was asked and answered, and a later reader should not have to guess whether null meant "strokes" or
+ * "written before anyone asked".
+ *
  * IO throughout. Returns the new sketchbook's id, which is also its filename.
  */
 suspend fun createSketchbook(
@@ -48,6 +58,7 @@ suspend fun createSketchbook(
     parentFolderId: String?,
     panel: PanelSize,
     repo: IndexRepository,
+    raster: Boolean = false,
 ): String = withContext(Dispatchers.IO) {
     val sketchbookId = UUID.randomUUID().toString()
     val passphrase = KeySession.get() ?: error("no key session — nothing may be created before bootstrap")
@@ -78,6 +89,7 @@ suspend fun createSketchbook(
                 updatedAt = now,
                 text = name,
                 refId = pageId,
+                flags = RasterRows.flagsFor(raster),
             )
         )
         dao.upsert(

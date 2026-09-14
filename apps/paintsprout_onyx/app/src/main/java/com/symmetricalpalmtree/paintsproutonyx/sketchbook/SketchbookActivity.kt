@@ -29,6 +29,8 @@ import com.symmetricalpalmtree.paintsproutonyx.data.index.IndexRepository
 import com.symmetricalpalmtree.paintsproutonyx.data.prefs.ToolPrefs
 import com.symmetricalpalmtree.paintsproutonyx.data.soil.SoilObjectEntity
 import com.symmetricalpalmtree.paintsproutonyx.databinding.ActivitySketchbookBinding
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val TAG = "SketchbookActivity"
@@ -103,6 +105,12 @@ private const val TAG = "SketchbookActivity"
  * the comment that said not to. What has been lifted out is the pure logic that can be tested on a
  * desk (`PageMath`, `SwipeRule`, `UndoRedoStack`, `PageGestures`, `PenIdleGate`); what stays is the
  * choreography, kept in one place so it can be read top to bottom.
+ *
+ * R2 added to it for exactly the same reason. A raster page is saved by *when* — a debounce, a page
+ * turn, a pause, the teardown, and before any store change that could take the leaf away — and every
+ * one of those is an ordering against something already in this file. Put in a helper, the rule that
+ * a save must be queued ahead of a page delete becomes a rule split across two files, which is the
+ * way it gets reversed by somebody who never saw it.
  */
 class SketchbookActivity : AppCompatActivity() {
 
@@ -131,6 +139,31 @@ class SketchbookActivity : AppCompatActivity() {
      * only thread that ever asks.
      */
     private var busy = false
+
+    /**
+     * True while a page's image is being put on the glass, so the change that load reports is not
+     * mistaken for the artist drawing.
+     *
+     * `loadPageRaster` brackets its work with the same will-change/changed callbacks a mark does,
+     * over the whole page — it has no way to know the pixels came from the file rather than from a
+     * pen. Without this, showing a page would mark it dirty the instant it arrived, and every turn
+     * through a sketchbook would queue a save of every leaf it passed: an evening's flipping written
+     * back as an evening's work, at eighteen megabytes of encoding a page.
+     */
+    private var loadingRaster = false
+
+    /**
+     * Something has been drawn or rubbed out on the page now on the glass, and the file does not
+     * know about it yet.
+     *
+     * A raster page has no rows to write as the hand goes — one image is the whole page — so this
+     * flag and the debounce below are what stand in for the per-mark write a stroke book gets.
+     * Main thread only, which is the only place either the callbacks or the saves run.
+     */
+    private var rasterDirty = false
+
+    /** The debounced save waiting to happen, if one is. Replaced by each new change. */
+    private var rasterSave: Job? = null
 
     /**
      * True from the moment the artist asked to leave until the screen has gone.
@@ -165,8 +198,6 @@ class SketchbookActivity : AppCompatActivity() {
         TopGuard.applyInsetPadding(binding.topBar)
 
         paper = GPaper.create(this)
-        // R0 only — see RasterSwitch.kt. Set before the view is added, on an empty page.
-        if (RASTER_SWITCH) paper.pageMode = PageMode.RASTER
         binding.paperContainer.addView(paper.asView())
         gate = PenIdleGate(paper)
 
@@ -245,6 +276,12 @@ class SketchbookActivity : AppCompatActivity() {
                 return@launch
             }
             session = opened
+            // The mode before the first page, and never after it. Setting it drops the view's
+            // content, which is free here because there is none yet — the contract is that a mode
+            // belongs to an empty page and is never flipped under ink. Which mode a book is was
+            // decided when it was made and read off its own row a moment ago; there is no switch on
+            // this screen and there must never be one, because pixels do not turn back into marks.
+            if (opened.raster) paper.pageMode = PageMode.RASTER
             binding.sketchbookName.text = opened.title
             try {
                 showPage(opened.currentPageId)
@@ -292,19 +329,49 @@ class SketchbookActivity : AppCompatActivity() {
      * the pen: `loadStrokes` under a live contact drops ink, because the frames it presents are
      * withheld while the pen is down. That wait is [PenIdleGate.awaitIdle] and it is an obligation,
      * not a nicety.
+     *
+     * **A raster page turns exactly the same way**, with its one image where the marks go: the read
+     * up front is the page's picture instead of its rows, and `loadPageRaster` replaces
+     * `loadStrokes` as the third call of the swap. The one thing added for it is the snapshot of the
+     * page being left — [flushRasterSave] between the gate and the swap — because a raster page's
+     * drawing lives only in the engine's bitmap until something saves it, and the swap is about to
+     * throw that bitmap away. A stroke page needs no such thing; its marks were rows before the pen
+     * lifted.
      */
     private suspend fun showPage(pageId: String) {
         val s = session ?: return
-        val marks = s.loadMarks(pageId)
+        // Two books, two reads, and never both: a raster page has no mark rows to list and a stroke
+        // page has no picture to decode, so asking for the other one would be dragging a page of
+        // rows — or a page-sized PNG — through SQLCipher for nothing on every turn.
+        val marks = if (s.raster) emptyList() else s.loadMarks(pageId)
+        val image = if (s.raster) s.loadPageRaster(pageId) else null
         val row = s.page(pageId)
         val width = SketchbookSession.pageDimension(row?.width)
         val height = SketchbookSession.pageDimension(row?.height)
         val pages = s.livePages().map { it.id }
 
         gate.awaitIdle()
+        // The leaf being left, written down before it is dropped. Nothing to do on a stroke page, or
+        // on a raster page nothing has happened to.
+        flushRasterSave()
         paper.clearForContentSwap()
         paper.setPageSize(width, height)
-        paper.loadStrokes(marks)
+        if (s.raster) {
+            // The load reports a whole-page change the moment it lands, and that change is the file
+            // talking, not the hand — see [loadingRaster]. The engine copies the bitmap in, so the
+            // decode is ours to let go of the instant it returns; an eighteen-megabyte page held
+            // one turn longer than it is needed is eighteen megabytes on a device that kills
+            // processes for less.
+            loadingRaster = true
+            try {
+                paper.loadPageRaster(image)
+            } finally {
+                loadingRaster = false
+            }
+            image?.recycle()
+        } else {
+            paper.loadStrokes(marks)
+        }
 
         s.currentPageId = pageId
         // Every page shown, not only the last one. A screen killed in the background never gets to
@@ -356,11 +423,33 @@ class SketchbookActivity : AppCompatActivity() {
             // and a mark filed against the leaf the artist is about to be looking at is a mark on
             // the wrong page.
             val page = s.currentPageId
+            if (s.raster) {
+                // **A raster book writes no row for a mark and records no undo entry, and both of
+                // those are deliberate.** The graphite is already in the page image by the time
+                // this fires — the engine composited it at pen-up and dropped the stroke — so there
+                // is nothing here to store: the file hears about this mark when the debounced save
+                // writes the whole page. And there is nothing to take back either. An `Edit.Drew`
+                // holds a row id to hide, a raster page has no such row, and the entry would replay
+                // as a page reload that changed nothing at all — an undo button that visibly does
+                // not work, which on this panel reads as broken rather than as empty. R3 gives the
+                // stack a raster entry that holds the pixels the mark covered; until then the
+                // arrows on a raster book move pages and nothing else.
+                //
+                // `updatedAt` and the sitting's edit count still move — in `saveRaster`, where the
+                // picture actually reaches the file, rather than here.
+                refreshChrome()
+                return
+            }
             s.recordMark(stroke, page)
             stack.record(Edit.Drew(page, stroke.id))
             refreshChrome()
         }
 
+        /**
+         * Marks the eraser took out — **stroke books only**. In raster mode the sweep clears pixels
+         * and there are no ids to report, so the engine never calls this; the erase arrives as
+         * [onRasterChanged] instead, like any other change to the page image.
+         */
         override fun onStrokesErased(strokeIds: List<String>) {
             if (strokeIds.isEmpty()) return
             val s = session ?: return
@@ -371,6 +460,88 @@ class SketchbookActivity : AppCompatActivity() {
             stack.record(Edit.Erased(page, strokeIds))
             refreshChrome()
         }
+
+        /**
+         * The page image changed — a mark composited at pen-up, or one batch of an eraser sweep.
+         *
+         * This is a raster page's only news that anything happened, so it is what schedules the
+         * save. The rect is not read: one image is written whole, and there is nothing this screen
+         * could do with knowing which part of it moved. R3 will want the *before* side of this
+         * bracket, which is where the undo images come from.
+         */
+        override fun onRasterChanged(rect: Rect) {
+            // The file talking, not the hand — a page arriving on the glass is not a change to save.
+            if (loadingRaster) return
+            rasterDirty = true
+            scheduleRasterSave()
+        }
+    }
+
+    // ── Keeping a raster page ────────────────────────────────────────────────
+
+    /**
+     * Put the page's picture on the file a few seconds after the hand stops.
+     *
+     * **Debounced, and the wait is the point.** A stroke book writes one row per mark, which is
+     * small and lands between strokes; a raster book writes the whole page, and an eraser sweep
+     * reports a change dozens of times a second. Saving on every one of those would put a page
+     * encode on the queue for every frame of a rub. So each change cancels the save that was waiting
+     * and starts a new one: the write happens [RASTER_SAVE_DEBOUNCE_MS] after the **last** thing the
+     * artist did, not after the first. Cancelling and relaunching a coroutine per batch is cheap
+     * beside the work it stands in for, and it keeps the rule in one readable line — the save is
+     * three seconds after the hand stopped, always.
+     *
+     * Nothing is riding on the timer alone: a page turn, a pause and the teardown each flush
+     * whatever is outstanding, so the debounce decides when a save happens *while drawing goes on*
+     * and never whether one happens at all.
+     *
+     * The gate is asked before the copy, and that is about the hand rather than about correctness —
+     * see [flushRasterSave]. A pen back on the glass before the timer fires pushes the copy out
+     * until it lifts again.
+     */
+    private fun scheduleRasterSave() {
+        rasterSave?.cancel()
+        rasterSave = lifecycleScope.launch {
+            delay(RASTER_SAVE_DEBOUNCE_MS)
+            gate.awaitIdle()
+            flushRasterSave()
+        }
+    }
+
+    /**
+     * Take a copy of the page now on the glass and hand it to the file. A no-op when nothing has
+     * changed, which is what lets every exit path call it without asking.
+     *
+     * **The copy needs no gate, and it is worth being exact about why.** The engine touches the page
+     * image only on the main thread — the composite at pen-up, each batch of an erase, a load — and
+     * `getPageRaster` is a main-thread copy, so a copy can never catch a half-written composite:
+     * they cannot run at the same time. A4's snapshot-before-encode rule is satisfied by this being
+     * a copy at all, not by when it is taken. What the pen-idle wait on the *debounced* path buys is
+     * comfort, not correctness: it keeps eighteen megabytes of `memcpy` off the main thread while
+     * the hand is mid-stroke. Which is exactly why `onPause` and `onDestroy` can take the copy
+     * immediately, with no gate and no waiting — at those moments there is no hand to disturb and
+     * something to lose.
+     *
+     * **The flag is cleared when the copy is taken, not when the write lands.** A change arriving in
+     * the gap between the two dirties the page again and a second save follows it; the other order
+     * would let that change fall into the hole between a copy that predates it and a flag cleared
+     * after it, and the last thing the artist drew would be the thing that was not there next time.
+     *
+     * The page id is read here, at the copy, and travels with the write — a turn in flight must not
+     * be able to file this picture against the leaf it is turning to.
+     *
+     * A debounced save already waiting is **left to fire**, rather than cancelled from here. It
+     * wakes up to a clean page and does nothing, which costs a comparison; cancelling would mean
+     * this method sometimes cancelling the very coroutine it is running inside, which works only for
+     * as long as nothing between here and the submit ever suspends.
+     */
+    private fun flushRasterSave() {
+        if (!rasterDirty) return
+        val s = session ?: return
+        val pageId = s.currentPageId
+        rasterDirty = false
+        val copy = paper.getPageRaster() ?: return
+        s.saveRaster(pageId, copy)
     }
 
     // ── Turning pages ────────────────────────────────────────────────────────
@@ -460,6 +631,15 @@ class SketchbookActivity : AppCompatActivity() {
      * way to add a leaf is to swipe past the last one and there would be no last one. So the empty
      * book gets a new first page, and undo takes that stand-in away again when it puts the real one
      * back.
+     *
+     * **On a raster page the picture is written down *before* the delete, and the order is the whole
+     * of it.** Everything here goes through one queue in the order it was put there, so a save
+     * queued after the delete would land after the tombstone: a live picture on a dead page, which
+     * the next undo of the delete would bring back as a leaf with somebody else's drawing on it, and
+     * which nothing would ever clean up. Flushed first, the save is behind the tombstone's read of
+     * what the page was holding, so the image goes down with the page and comes back with it. The
+     * flush clears the dirty flag itself, so the `showPage` at the end of this finds nothing left to
+     * write for a leaf that is no longer there.
      */
     private fun deletePage(s: SketchbookSession) {
         if (busy) return
@@ -468,6 +648,7 @@ class SketchbookActivity : AppCompatActivity() {
             try {
                 val pages = s.livePages().map { it.id }
                 val victim = s.currentPageId
+                flushRasterSave()
                 val markIds = s.deletePage(victim)
                 var replacement: SoilObjectEntity? = null
                 var target = PageMath.neighbourAfterRemoving(pages, victim)
@@ -516,6 +697,13 @@ class SketchbookActivity : AppCompatActivity() {
      * An edit whose write **failed** goes back where it came from. The writer's [SoilWriter.perform]
      * lets the exception through for this reason: an undo that did not reach the file must not
      * pretend it did, and leaving the entry popped would make the failure permanent and silent.
+     *
+     * **A raster page is written down before the edit is applied, not after.** Undoing a leaf that
+     * was swiped into throws that leaf away, and a picture saved after the tombstone would be a live
+     * image on a dead page — orphaned if the undo stands, and a second picture fighting the first if
+     * it is redone. Flushed first, the drawing goes down with the leaf and comes back with it, which
+     * is also what the artist means: a page taken back and put back again is the page they drew on.
+     * Same argument as [deletePage], reached by the other door.
      */
     private fun replay(undoing: Boolean) {
         if (busy) return
@@ -525,6 +713,7 @@ class SketchbookActivity : AppCompatActivity() {
         busy = true
         lifecycleScope.launch {
             try {
+                flushRasterSave()
                 val (target, replayed) = applyEdit(s, edit, undoing)
                 if (edit is Edit.AddedPage || edit is Edit.DeletedPage) {
                     runCatching { repo.setPageCount(sketchbookId, s.livePageCount()) }
@@ -706,6 +895,26 @@ class SketchbookActivity : AppCompatActivity() {
     }
 
     /**
+     * The page's picture written down the moment the screen stops being the thing in front of the
+     * artist — a Home press, a call, the lamp going out.
+     *
+     * **A copy and a submit, never a bake.** G6 left a standing trap here: for five phases every
+     * press of Home rendered a full page, at the exact moment this device is deciding what to kill.
+     * This is the opposite shape — the main thread's share is one `memcpy` of a page, the encode
+     * happens behind the write queue on a scope that outlives the screen, and a page nothing has
+     * happened to costs a single comparison. No gate either, deliberately: the pen cannot be on the
+     * glass at the moment the window is being taken away, and waiting for a gate that will never
+     * open on a process that may be killed in the next second would be waiting to lose the drawing.
+     *
+     * `onPause` and not `onStop`, because pause runs first and the cover already has `onStop`.
+     * Doing both would copy the same page twice for one departure.
+     */
+    override fun onPause() {
+        super.onPause()
+        flushRasterSave()
+    }
+
+    /**
      * Take the cover when the screen leaves the panel, whether or not it is coming back.
      *
      * A backgrounded screen on this device may simply never see `onDestroy` — BOOX kills background
@@ -821,6 +1030,12 @@ class SketchbookActivity : AppCompatActivity() {
         // The history is a memory of this sitting, not a second copy of the file. What is on disk
         // is the drawing; how the artist got to it is something they stop needing here.
         stack.clear()
+        // Ahead of `session = null`, ahead of `paper.release()`, and ahead of the close below — the
+        // last chance a raster page has to become a row. The submit goes on the writer's queue in
+        // front of the close, and the close drains everything it holds before the file is sealed, so
+        // a save queued here lands even though this screen is already gone. `onPause` has usually
+        // done it a moment ago; this is the path for every other way a screen ends.
+        flushRasterSave()
         val closing = session
         session = null
         if (closing != null) {
@@ -853,6 +1068,17 @@ class SketchbookActivity : AppCompatActivity() {
 
         /** One key for the whole bar: it says one thing, and the newest version of it is the one. */
         private const val CHROME_KEY = "chrome"
+
+        /**
+         * How long the hand has to be still before a raster page is written down. Three seconds,
+         * Greg's answer at R2's phase start.
+         *
+         * Long enough that a pause to look at the drawing does not cost an encode, short enough that
+         * the worst a crash can take is the last few seconds of sketching — and every deliberate way
+         * out of this screen flushes anyway, so the only thing riding on this number is what happens
+         * if the process is killed mid-drawing.
+         */
+        private const val RASTER_SAVE_DEBOUNCE_MS = 3_000L
 
         /**
          * The colour of the graphite. A #2 pencil pressed as hard as it will go is a dark grey with

@@ -16,6 +16,7 @@ import com.symmetricalpalmtree.paintsproutonyx.core.PanelSize
 import com.symmetricalpalmtree.paintsproutonyx.core.TopGuard
 import com.symmetricalpalmtree.paintsproutonyx.data.index.IndexRepository
 import com.symmetricalpalmtree.paintsproutonyx.data.index.ObjectType
+import com.symmetricalpalmtree.paintsproutonyx.data.prefs.LibraryPrefs
 import com.symmetricalpalmtree.paintsproutonyx.data.soil.createSketchbook
 import com.symmetricalpalmtree.paintsproutonyx.databinding.ActivityNewSketchbookBinding
 import kotlinx.coroutines.launch
@@ -115,6 +116,13 @@ class NewSketchbookActivity : AppCompatActivity() {
                     parentFolderId = parentFolderId,
                     panel = PanelSize.of(this@NewSketchbookActivity),
                     repo = repo,
+                    // **R4's to replace with a question on this screen.** A book's pages are marks
+                    // or pixels for good, and there is nowhere yet to ask which — so until the
+                    // picker exists the answer comes from a preference only the debug build's menu
+                    // can flip, and a release build makes stroke books. A mode cannot be changed
+                    // after the fact, so the one thing this must not do is let the artist acquire
+                    // one without having asked for it.
+                    raster = LibraryPrefs(this@NewSketchbookActivity).newSketchbooksRaster,
                 )
                 setResult(
                     Activity.RESULT_OK,

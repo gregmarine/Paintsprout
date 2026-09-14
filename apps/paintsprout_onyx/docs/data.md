@@ -155,12 +155,16 @@ discipline" for how the two are kept honest against each other.) An index on
 `(parentId, "order", deletedAt)` backs the one query shape that matters: living children of a row,
 in stacking order.
 
-Four row `type`s exist:
+Five row `type`s exist:
 
 - **`sketchbook`** — one row, root of the file, `parentId = ""` (`SoilSchema.ROOT_PARENT`). `text`
   = title. `refId` = the id of the page **last open**, written only by `SoilDao.setOpenPage`, on
   every page shown, so a kill mid-session reopens where the hand was. `setOpenPage` deliberately
-  does not touch `updatedAt` — turning a page is not work.
+  does not touch `updatedAt` — turning a page is not work. `flags` **bit 0**
+  (`SoilSchema.FLAG_RASTER`, R2) says this book's pages are images rather than marks — stamped by
+  `createSketchbook`, read once at `SketchbookSession.open`, never changed in place. Zero, not
+  null, for a stroke book; a file written before the bit existed has no flags at all and is a
+  stroke book, which is what it is.
 - **`page`** — `parentId` = the sketchbook, `"order"` = position, `width`/`height` = the **panel's
   own size at creation**, never rescaled: a sketchbook made on this panel is a sketchbook of this
   panel's pages, for good. `refId` is `""`, never null — "no paper, and the question was asked and
@@ -168,6 +172,15 @@ Four row `type`s exist:
 - **`mark`** — `parentId` = the page, `"order"` = stacking position, `color` = `#RRGGBB`/`#AARRGGBB`
   text (`InkColorCodec`), `strokeWidth` px, `style` = the g-paper `StrokeStyle` name, `blob` =
   geometry in format B (`MarkCodec`, below). `deletedAt` is how erase/undo remove it.
+- **`raster`** — R2, the raster experiment. `parentId` = the page, `blob` = a **PNG of the whole
+  page**, `"order"` = `SoilSchema.RASTER_ORDER` = **−1**. At most one live row per page, upserted
+  in place on every save: the family measured its own raster cache at 75–88% of a document
+  (`docs/soil-format.md` § The raster cache), so a book's size must be its page count times one
+  image and not a function of how long the artist worked. −1 keeps it **out of the marks' stacking
+  space** entirely — the image is not one of the operations, it is what all of them came to — which
+  is the family's shape copied exactly. It is a child of the page and not a column on it because
+  `livePages()` reads whole page rows on **every page turn**, and a blob there would drag every
+  page's picture through SQLCipher each time the artist flipped a leaf.
 - **`paper`** — one row per sketchbook, `text` = paper identity, `blob` = a WEBP. **Written by
   nothing in arc 1** — kept because paper texture is a real candidate later arc and the table
   already has a home for it.
@@ -193,12 +206,44 @@ A row that will not decode is **skipped, not guessed at** — an empty mark is i
 a mark never made, so there is no honest fallback for damage; the failing row is logged and the
 rest of the page still opens.
 
+### `RasterRows` — a page's picture becomes a row, and back (R2)
+
+`sketchbook/RasterRows.kt` is `MarkRows`' sibling for raster books, and pure for the same reason:
+bytes in, bytes out, no `Bitmap` anywhere, so the part of a raster page that can be proved is proved
+on a laptop. The encode and decode themselves need Android and live next door in
+`sketchbook/RasterImage.kt`; the rules about them live in `RasterRows`.
+
+**The bounded-decode guard is the piece that matters.** `pngSize(bytes)` reads the width and height
+straight out of the PNG's own header — the eight-byte signature, then the IHDR chunk's big-endian
+width and height at offsets 16 and 20 — and `fitsPage(bytes, w, h)` is true only when they match the
+page **exactly**, in both directions. That is the family's invariant #12, and the order it enforces
+is the whole point: the question is answered from twenty-four bytes *before* anything asks the
+allocator for the eighteen megabytes a page image decodes to, so a damaged or foreign blob claiming
+a larger one cannot take the process down while somebody is drawing. `RasterImage.decode` asks the
+same guard again before it touches `BitmapFactory`, so no future caller can arrive past it.
+
+**A refused row is shelved, never overwritten.** When the guard says no,
+`SketchbookSession.loadPageRaster` logs it, opens the page blank, and soft-deletes the row through
+the writer so the next save makes a fresh one. A row we refused to *read* is not a row we know to be
+worthless; stamping it keeps it in the file where a later build with a better answer can still find
+it, and overwriting it would be the one move in R2 that could destroy a drawing.
+
+`SIZE_CEILING_BYTES` is **4 MB** and is a **watch item, not a refusal**: a page image over the line
+gets a `Log.w` naming the page and its byte count and is written anyway. The number exists to say
+what a real book costs before R5 asks, and no measurement is worth dropping an artist's drawing for.
+
 ### Erase and undo: `deletedAt`, never a real delete
 
 `SoilDao`'s rule: **nothing in this table is ever deleted.** An erased mark or a thrown-away page is
 stamped `deletedAt` and left exactly where it was, which is what lets `restore` bring it back with
 its id and stacking position intact — a real delete would turn undo into recreating something that
-merely resembles what was erased. `livePageCount()` counts only `deletedAt IS NULL` pages with no
+merely resembles what was erased.
+
+`liveChildIds(pageId)` — the set a page delete carries down with it — asks for `type IN ('mark',
+'raster')` since R2. A raster page's drawing *is* its one image, so a page thrown away with its
+picture left alive would leave the only copy of that drawing on a leaf nobody can turn to, and the
+next save for that page would find the old row still live and overwrite it. Tombstoned with the page
+and restored with it, the picture goes and comes back the way marks always did. `livePageCount()` counts only `deletedAt IS NULL` pages with no
 `parentId` filter at all, correct today because one `.soil` holds exactly one sketchbook.
 
 ### `sketchbook_meta`

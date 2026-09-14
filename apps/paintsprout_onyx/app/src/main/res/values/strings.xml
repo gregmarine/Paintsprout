@@ -196,6 +196,12 @@
     <string name="debug_forget_body">Clears the cached recovery key and closes the app. The next launch will ask for the key. Your sketchbooks are untouched — but have the key to hand before you do this.</string>
     <string name="debug_forget_confirm">Forget and close</string>
     <string name="debug_forgotten">Forgotten — launch again</string>
+    <!-- The raster experiment's stand-in for R4's mode picker. The label states the
+         setting rather than the action, because a sketchbook's mode is permanent
+         and invisible once made, and the toast after the tap repeats it. Both go
+         when R4 asks the question properly on the New sketchbook screen. -->
+    <string name="debug_new_raster_on">New sketchbooks are raster: ON</string>
+    <string name="debug_new_raster_off">New sketchbooks are raster: OFF</string>
 
     <!-- The page. Nothing here is a label the artist reads while drawing: the
          name and the page count are for glancing at between marks, and the rest

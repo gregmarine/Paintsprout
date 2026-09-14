@@ -62,17 +62,42 @@ interface SoilDao {
     suspend fun livePageCount(): Int
 
     /**
-     * Everything a page is currently holding.
+     * Everything a page is currently holding — its marks, and on a raster page its picture.
      *
-     * Deleting a page has to carry its marks down with it, and undoing that has to bring exactly the
-     * same set back — so the set is read once, up front, and the same list of ids drives both
+     * Deleting a page has to carry what is on it down with it, and undoing that has to bring exactly
+     * the same set back — so the set is read once, up front, and the same list of ids drives both
      * directions. Recomputing it on the way back would be asking a different question of a table that
      * has changed since.
      *
-     * Ids only, so nothing drags a mark's geometry through a bookkeeping read.
+     * **The `raster` row is in the set, and that is R2's whole amendment to this query.** It used to
+     * ask for marks alone, which was the truth while a page's drawing *was* its marks. On a raster
+     * page the drawing is one image, and a page thrown away with its picture left alive would leave
+     * the only copy of that drawing on a leaf nobody can turn to — and the next save of a *new* image
+     * for the same page would find the old row still live and overwrite it. Tombstoned with the page
+     * and restored with it, the picture goes and comes back the way the marks always did.
+     *
+     * Ids only, so nothing drags a mark's geometry — or a page-sized PNG — through a bookkeeping read.
      */
-    @Query("SELECT id FROM sketchbook WHERE parentId = :pageId AND type = 'mark' AND deletedAt IS NULL")
+    @Query(
+        "SELECT id FROM sketchbook WHERE parentId = :pageId AND type IN ('mark', 'raster') " +
+            "AND deletedAt IS NULL"
+    )
     suspend fun liveChildIds(pageId: String): List<String>
+
+    /**
+     * The picture of one page on a raster sketchbook, or null when nothing has been drawn on it yet.
+     *
+     * `LIMIT 1` because there is only ever one: a save reuses the id this hands back, so the row is
+     * replaced in place rather than accumulating a picture per sitting. If a second one ever did
+     * appear — a file from some future arc, a restore that brought back a tombstoned image beside a
+     * fresh one — taking the first is still an honest answer, and a page that opens with the wrong
+     * one of two pictures is a great deal better than one that refuses to open at all.
+     */
+    @Query(
+        "SELECT * FROM sketchbook WHERE parentId = :pageId AND type = 'raster' " +
+            "AND deletedAt IS NULL LIMIT 1"
+    )
+    suspend fun rasterRow(pageId: String): SoilObjectEntity?
 
     @Query("UPDATE sketchbook SET deletedAt = :at, updatedAt = :at WHERE id IN (:ids) AND deletedAt IS NULL")
     suspend fun softDelete(ids: List<String>, at: Long)

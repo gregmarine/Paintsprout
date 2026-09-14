@@ -30,16 +30,60 @@ object SoilSchema {
     const val META_TABLE = "sketchbook_meta"
 
     // Row types. The hierarchy: one `sketchbook` row (parentId = "", text = title,
-    // refId = last-open page) → `page` rows (refId = the paper row id,
-    // width/height px) → `mark` rows (color, strokeWidth, style, blob = format-B
-    // geometry). One `paper` row sits under the sketchbook row (text = the paper
-    // identity, blob = a WEBP). Nothing else exists in this file — no object
-    // rows, no link rows: those are other family members' types, not dormant
-    // features of ours.
+    // refId = last-open page, flags = the mode bits below) → `page` rows
+    // (refId = the paper row id, width/height px) → `mark` rows (color,
+    // strokeWidth, style, blob = format-B geometry) and, on a raster page, at
+    // most one `raster` row (blob = a PNG of the whole page, "order" = -1). One
+    // `paper` row sits under the sketchbook row (text = the paper identity,
+    // blob = a WEBP). Nothing else exists in this file — no object rows, no link
+    // rows: those are other family members' types, not dormant features of ours.
+    //
+    // A page holds marks or an image, never both: which of the two it holds is a
+    // fact about the whole sketchbook, stamped in the sketchbook row's flags when
+    // the book is made and never changed in place afterwards.
     const val TYPE_SKETCHBOOK = "sketchbook"
     const val TYPE_PAGE = "page"
     const val TYPE_PAPER = "paper"
     const val TYPE_MARK = "mark"
+
+    /**
+     * The page's picture, on a raster sketchbook: one row per page, `blob` = a
+     * PNG of the whole page, upserted in place every time the image is saved.
+     *
+     * One row and not one per change, because the page image is most of what a
+     * raster book weighs — the family measured its own raster cache at 75–88% of
+     * a document (`docs/soil-format.md` § The raster cache) — so a book's size
+     * has to be its page count times one image and nothing else. It is a child of
+     * the page rather than a column on it because the page rows are read whole on
+     * **every page turn**, and a blob living there would drag every page's
+     * picture through SQLCipher each time the artist flipped a leaf.
+     */
+    const val TYPE_RASTER = "raster"
+
+    /**
+     * Where a [TYPE_RASTER] row sits in the stacking order: nowhere.
+     *
+     * Marks stack from zero upwards and the family's own raster cache sits at −1
+     * for the same reason — the image is not an operation in the sequence, it is
+     * the result of all of them, so it is kept out of op space entirely rather
+     * than being handed a number that some later reader would try to sort against
+     * the marks. Copied from the family shape exactly, so a family tool that
+     * already understands a raster cache understands ours.
+     */
+    const val RASTER_ORDER = -1
+
+    /**
+     * Bit 0 of the **sketchbook row's** `flags`: this book's pages are images,
+     * not marks.
+     *
+     * The mode goes here and not in `refId`, which the sketchbook row already
+     * spends on the last-open page, and not in `SketchbookMeta`, which would then
+     * be a second place to ask the same question and a second place for the
+     * answer to be wrong. The row is the truth; a book with no flags at all — one
+     * written before this bit existed — is a stroke book, which is what every
+     * file made until now actually is.
+     */
+    const val FLAG_RASTER = 1
 
     /** The sketchbook row's `parentId` — it is the root, and the root has no parent. */
     const val ROOT_PARENT = ""

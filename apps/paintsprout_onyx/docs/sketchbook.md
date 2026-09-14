@@ -2,8 +2,9 @@
 
 > Started in **G3**, grown in **G4**, and finished at the **G6** close-out (2026-09-03). It holds the
 > frame-silence ledger, the finger vocabulary, the page-swap contract as implemented, the undo model,
-> and the shelf's card — what the screen writes on the way out and when it declines to. Its siblings
-> are `data.md`, `crypto.md` and `library.md`.
+> and the shelf's card — what the screen writes on the way out and when it declines to. Extended in
+> **R2** with the raster experiment's page image. Its siblings are `data.md`, `crypto.md` and
+> `library.md`.
 
 ## The frame-silence rule
 
@@ -216,6 +217,81 @@ A failed render is its own answer (`Cover.Failed`) and keeps the old cover. It u
 as the same null a blank page returns, and the caller stored null for either — so a page that would
 not render, an out-of-memory on a device that runs short of it, cleared the cover the shelf already
 had. Found by the G6 audit while walking the cover path; fixed by making the two answers different.
+
+## Raster pages (R2)
+
+> The raster experiment, `RASTER_PLAN.md`. A book made as a **raster** book keeps its pages as
+> pixels rather than as marks: the pencil composites into one page image at pen-up and the eraser
+> rubs pixels off it. Which kind of book it is was decided when it was made — bit 0 of the sketchbook
+> row's `flags` — and is read once at `SketchbookSession.open`. Stroke books are unchanged in every
+> respect, and everything below is the raster branch only.
+
+**The mode is set before the first page and never again.** `paper.pageMode = PageMode.RASTER` goes in
+between the session opening and the first `showPage`, because setting it drops the view's content —
+which is free on a page that has none yet, and is the contract: a mode belongs to an empty page and
+is never flipped under ink. There is no control on this screen for it and there must never be one;
+pixels do not turn back into strokes.
+
+**Turning a page is the same three calls**, with the page's one image where the marks go:
+`clearForContentSwap()` → `setPageSize(w, h)` → `loadPageRaster(bitmap)`. The reads up front fetch
+the picture instead of the rows (never both — the other read would drag a page of marks, or a
+page-sized PNG, through SQLCipher for nothing). **The row read goes through `SoilWriter.perform`**,
+like the cover's: turn away from a leaf and straight back to it and the encode of what was just
+drawn on it is still in the queue, so a read off to the side would hand back the picture as it was
+before this sitting — and then save *that* over the good row when the artist left again. Only the
+row read is queued; the decode is not. The load is wrapped in a `loadingRaster` flag,
+because `loadPageRaster` reports a whole-page change exactly as a mark does and has no way to know
+the pixels came from the file: without the flag, every leaf flipped past would be marked dirty and
+saved, and an evening's flipping would be written back as an evening's work. The decoded bitmap is
+recycled the moment the call returns — the engine copies it in, and eighteen megabytes held one turn
+longer than needed is eighteen megabytes on a device that kills processes for less.
+
+**A save is a copy and a submit.** Four things trigger one:
+
+| Trigger | Why |
+|---|---|
+| **Debounce**, 3 s after the last `onRasterChanged` | A raster page has no per-mark row to write as the hand goes. An eraser sweep reports a change dozens of times a second, so each change cancels the waiting save and starts a new one: the write is three seconds after the hand stopped, not after it started. Through `gate.awaitIdle()` — a pen back on the glass pushes it out again. |
+| **Page turn** (`showPage`, between the gate and the swap) | The swap is about to throw the engine's bitmap away, and until something saves it that bitmap is the only copy of the drawing. |
+| **`onPause`** | The screen stops being the thing in front of the artist. |
+| **`onDestroy`**, before `paper.release()` and before the close | Queued ahead of `SoilWriter.close()`, which drains everything it holds, so the submit lands even though the screen is already gone. |
+
+**The copy needs no gate, and that is worth being exact about.** The engine touches the page image
+only on the main thread — the composite at pen-up, each erase batch, a load — and `getPageRaster()`
+is a main-thread copy, so a copy can never catch a half-written composite: they cannot run at the
+same time. The plan's snapshot-before-encode rule (A4) is satisfied by this being a *copy* at all,
+not by *when* it is taken. What the pen-idle wait on the debounced path buys is comfort, not
+correctness: it keeps eighteen megabytes of `memcpy` off the main thread while the hand is
+mid-stroke. Which is exactly why `onPause` and `onDestroy` take the copy immediately — at those
+moments there is no hand to disturb and something to lose. **The dirty flag is cleared when the copy
+is taken, not when the write lands**, so a change arriving between the two dirties the page again and
+a second save follows it.
+
+The encode runs **on the write queue**, not before the submit: the main thread's share of a save
+stays the ~10 ms copy, and the queue is serial so two saves of one page cannot land out of order.
+`updatedAt` and the sitting's edit count move there too — on a raster page that write *is* the mark
+reaching the table.
+
+**Throwing a page away flushes first**, in `deletePage`, before `session.deletePage(victim)`.
+Everything goes through one queue in the order it was put there, so a save queued *after* the delete
+would land after the tombstone — a live picture on a dead page, which the next undo would bring back
+as a leaf with somebody else's drawing on it. Flushed first, the image goes down with the page (the
+DAO's `liveChildIds` now includes the `raster` row) and comes back with it.
+
+**The ledger gains no entry.** A save is a file, not a frame — the same argument G5's cover made.
+
+**What R2 deliberately leaves undone**, and where it goes:
+
+- **Undo.** A raster mark or erase records **nothing** on the stack: there is no row to hide, and an
+  `Edit.Drew` would replay as a page reload that changed nothing at all — an undo arrow that visibly
+  does not work, which on this panel reads as broken rather than as empty. Page add and delete still
+  record and replay as they always did. **R3** gives the stack an entry that holds the pixels a
+  change covered.
+- **Covers.** `renderCover` in raster mode finds no marks and answers `Blank`, so a raster book's
+  card carries the white frame. Accepted for this phase; **R3** gives `CoverSnapshot` a pixels-in
+  overload that skips the bake.
+- **The mode picker.** Until **R4** there is no way to ask the artist, so the answer comes from a
+  preference (`LibraryPrefs.newSketchbooksRaster`) that only the **debug** build's menu can flip.
+  A release build makes stroke books only.
 
 ## What a minute of drawing costs the panel (G6)
 

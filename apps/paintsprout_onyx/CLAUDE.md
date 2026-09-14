@@ -199,6 +199,18 @@ not apply here. Plus:
 - **A mark captures its page at the commit.** The session's `currentPageId` is written only when a
   page is on the glass; a write reads the page it was handed, never the pointer, because a swap in
   flight moves the pointer before the write reaches the front of the queue.
+- **A raster book's page is one image, saved by copy-and-submit, and its row is read through the
+  write queue.** (R2, `RASTER_PLAN.md`.) The sketchbook row's `flags` bit 0 says raster; each page
+  has at most one `raster` child row at `order = -1` holding a PNG, upserted in place. Every save
+  is a ~10 ms main-thread `getPageRaster()` copy handed to `SoilWriter.submit`, which encodes on
+  the queue — never a bake on the main thread, and never a frame. `showPage` reads the incoming
+  page's row through `SoilWriter.perform`, because turning away from a leaf and straight back
+  finds its encode still queued, and a read off to the side would hand back the previous sitting
+  and then save it over the good row. A page delete and an undo replay flush the outgoing page
+  **before** the store change so the image is tombstoned with its page. The bounded-decode guard
+  (`RasterRows.fitsPage`, exact size from the PNG header) runs before `BitmapFactory`, and a row it
+  refuses is soft-deleted, never overwritten. Until R4's picker, the debug menu's "New sketchbooks
+  are raster" toggle stamps the flag; release builds make stroke books only.
 - **Non-goals are enforced, not aspirational.** No layers, no paint, no surfaces, no shape tools,
   no selection, no millimetres or calibration, no zoom/pan/rotate, no export, no backup, no
   extensions. The full list, and which of them are candidate later arcs, is in `ONYX_PLAN.md`.

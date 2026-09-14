@@ -58,11 +58,34 @@ class LibraryPrefs(context: Context) {
             ?.let { runCatching { BrowseMode.valueOf(it) }.getOrNull() } ?: BrowseMode.NORMAL
         set(value) = prefs.edit().putString(KEY_MODE, value.name).apply()
 
+    /**
+     * **R4's to remove.** Whether the next sketchbook this library makes keeps pixels rather than
+     * marks — the raster experiment's mode, with nowhere yet to ask the artist about it.
+     *
+     * It lives here rather than in `ToolPrefs` because it is not a tool: a lead is the pencil in the
+     * hand and travels with the artist from book to book, while this decides what kind of thing the
+     * *library* brings into the world, beside the folder it is made in and the name it is given. It
+     * is written by the debug menu's toggle and read by `NewSketchbookActivity`, both of which are
+     * the library's own screens.
+     *
+     * The only thing that can flip it is the debug build's menu, so a release build makes stroke
+     * books and nothing else — which is the honest state of the experiment: there is no picker yet,
+     * and a mode is permanent once a book carries it, so it must not be possible to acquire one by
+     * accident. **R4 replaces all of this with the choice on the New sketchbook screen**, and both
+     * this preference and the toggle behind it go when it does.
+     *
+     * False for anyone who has never touched the toggle, which is everyone until they do.
+     */
+    var newSketchbooksRaster: Boolean
+        get() = prefs.getBoolean(KEY_NEW_RASTER, false)
+        set(value) = prefs.edit().putBoolean(KEY_NEW_RASTER, value).apply()
+
     private companion object {
         const val FILE = "library_state"
         const val KEY_FOLDER = "folderId"
         const val KEY_SORT_FIELD = "sortField"
         const val KEY_SORT_ORDER = "sortOrder"
         const val KEY_MODE = "mode"
+        const val KEY_NEW_RASTER = "newSketchbooksRaster"
     }
 }

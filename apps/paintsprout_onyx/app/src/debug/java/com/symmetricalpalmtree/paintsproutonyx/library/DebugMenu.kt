@@ -12,6 +12,7 @@ import com.symmetricalpalmtree.paintsproutonyx.R
 import com.symmetricalpalmtree.paintsproutonyx.crypto.KeyMaterial
 import com.symmetricalpalmtree.paintsproutonyx.crypto.KeySession
 import com.symmetricalpalmtree.paintsproutonyx.crypto.PassphraseStore
+import com.symmetricalpalmtree.paintsproutonyx.data.prefs.LibraryPrefs
 
 /**
  * The two development tools that make the lock testable on a real device. **Debug build
@@ -21,6 +22,13 @@ import com.symmetricalpalmtree.paintsproutonyx.crypto.PassphraseStore
  * - **Show recovery key** reveals and copies the global passphrase. On a device with no
  *   file manager worth the name, the alternative is reinstalling to see the key again,
  *   which destroys the library you were trying to unlock.
+ * - **New sketchbooks are raster** flips the raster experiment's mode for the next book
+ *   made (`RASTER_PLAN.md`, R2). A book's pages are marks or pixels for good, and R4 is
+ *   where the artist is properly asked — this is the stand-in until then, and it is here
+ *   rather than on the New sketchbook screen precisely because it is a stand-in: a
+ *   permanent choice does not belong on a screen where it could be made by accident, and
+ *   the release twin of this file cannot flip it at all, so a release build makes stroke
+ *   books only. **Goes when R4's picker lands.**
  * - **Forget cached key** clears the cached passphrase and every derived raw key, then
  *   kills the process. Clearing alone is not enough: the index is already open in this
  *   process, so a relaunch would find it ready and sail straight past the screen under
@@ -44,6 +52,7 @@ object DebugMenu {
         val items = arrayOf(
             activity.getString(R.string.debug_show_recovery_key),
             activity.getString(R.string.debug_forget_cached_key),
+            activity.getString(rasterLabel(activity)),
         )
         AlertDialog.Builder(activity)
             .setTitle(R.string.debug_tools)
@@ -51,9 +60,32 @@ object DebugMenu {
                 when (which) {
                     0 -> showKey(activity)
                     1 -> confirmForget(activity)
+                    2 -> flipRaster(activity)
                 }
             }
             .show()
+    }
+
+    /**
+     * The item says what the setting *is*, not what tapping it would do.
+     *
+     * A label reading "Make new sketchbooks raster" leaves the state unsaid, and this is a state
+     * nobody can check anywhere else — a book's mode is invisible until it has been drawn on. So the
+     * item reads as a statement with its answer on the end of it, and the toast afterwards repeats
+     * the new statement, because on e-ink a sheet that closes without a word is a tap that might not
+     * have registered.
+     */
+    private fun rasterLabel(activity: AppCompatActivity): Int =
+        if (LibraryPrefs(activity).newSketchbooksRaster) {
+            R.string.debug_new_raster_on
+        } else {
+            R.string.debug_new_raster_off
+        }
+
+    private fun flipRaster(activity: AppCompatActivity) {
+        val prefs = LibraryPrefs(activity)
+        prefs.newSketchbooksRaster = !prefs.newSketchbooksRaster
+        Toast.makeText(activity, rasterLabel(activity), Toast.LENGTH_SHORT).show()
     }
 
     private fun showKey(activity: AppCompatActivity) {

@@ -1,6 +1,7 @@
 package com.symmetricalpalmtree.paintsproutonyx.sketchbook
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.util.Log
 import com.symmetricalpalmtree.gpaper.core.model.Stroke
 import com.symmetricalpalmtree.paintsproutonyx.crypto.KeySession
@@ -69,12 +70,25 @@ sealed class CardOutcome {
  *
  * [renderCover] is the one read that goes through the queue anyway, because what it wants to see is
  * the writes that have not landed yet. See its own comment.
+ *
+ * ## Marks or pixels
+ *
+ * [raster] says which kind of book this is, read once from the sketchbook row's flags at [open] and
+ * never again. A raster book's pages are one image apiece — [loadPageRaster] and [saveRaster] — and
+ * not a single mark row is written for them; a stroke book's are marks, exactly as before. Nothing
+ * here flips between the two: pixels cannot be turned back into strokes, so a mode is a fact about
+ * the book, stamped when it was made.
+ *
+ * The two share everything else. Pages are added, thrown away and brought back the same way in both,
+ * and the page-delete path carries whatever the page was holding — marks or a picture — down with it,
+ * because `SoilDao.liveChildIds` asks for both.
  */
 class SketchbookSession private constructor(
     private val db: SoilDatabase,
     private val file: File,
     val sketchbookId: String,
     val title: String,
+    val raster: Boolean,
     initialPageId: String,
     scope: CoroutineScope,
 ) {
@@ -151,6 +165,91 @@ class SketchbookSession private constructor(
         }
         if (dropped > 0) Log.w(TAG, "$dropped of ${rows.size} marks on page $pageId did not open")
         return out
+    }
+
+    /**
+     * The picture of one page of a raster sketchbook, or null when there is nothing to show.
+     *
+     * **A row this refuses to read is shelved, not overwritten.** The guard is the family's
+     * bounded-decode rule — an image whose header does not claim exactly this page's size is not this
+     * page's image — and when it says no, the page opens blank and the row is soft-deleted through
+     * the writer so the next save makes a fresh one beside it. Leaving the row live and letting the
+     * save replace it would be the one move in this phase that could destroy a drawing: a row we
+     * refused to *read* is not a row we know to be worthless, and stamping it as deleted keeps it in
+     * the file where a later build with a better answer can still find it. Overwriting it puts it
+     * beyond anybody's reach for good.
+     *
+     * A page with no row at all is simply a leaf nobody has drawn on. That is silent — it is the
+     * ordinary state of every new page.
+     *
+     * **The row is read on the write queue, and that is not tidiness.** A save of *this* page may
+     * still be sitting in the queue — turn away from a leaf and straight back to it and the encode
+     * of what was drawn on it has not landed yet. Read off to the side, this would hand back the
+     * picture as it was before that sitting, put it on the glass, and then save *that* over the good
+     * row the moment the artist left again: an afternoon's drawing quietly replaced by the morning's,
+     * with nothing to connect the loss to. [renderCover] goes through the queue for the same reason
+     * and it is the same reason every time — what a read wants to see is the writes that have not
+     * landed yet. Only the row read is queued; the decode is eighteen megabytes of work and has no
+     * business holding up the artist's next mark.
+     */
+    suspend fun loadPageRaster(pageId: String): Bitmap? {
+        val row = writer.perform { dao.rasterRow(pageId) } ?: return null
+        return withContext(Dispatchers.IO) {
+            val bytes = RasterRows.pngBytes(row)
+            val page = dao.byId(pageId)
+            val width = pageDimension(page?.width)
+            val height = pageDimension(page?.height)
+            if (bytes == null || !RasterRows.fitsPage(bytes, width, height)) {
+                Log.e(
+                    TAG,
+                    "the picture on page $pageId is not this page's and was put on the shelf; " +
+                        "the page opens blank",
+                )
+                val now = System.currentTimeMillis()
+                writer.submit { dao.softDelete(listOf(row.id), now) }
+                return@withContext null
+            }
+            RasterImage.decode(bytes, width, height)
+        }
+    }
+
+    /**
+     * The page as it stands now, on its way to the file. [copy] is the screen's own copy of the page
+     * image and this owns it from here — it is recycled when the write is done with it, whatever
+     * happened.
+     *
+     * **Fired and forgotten, like a mark**, and for the same reason: a save that failed is not
+     * something there is anything honest to say about to somebody who is still drawing. It carries
+     * the same bump to the file's "last worked on" and to the sitting's edit count that
+     * [recordMark] does, because on a raster page this write *is* the mark reaching the table —
+     * there is no row per stroke to carry them instead.
+     *
+     * **The encode happens on the queue rather than before it.** Turning eighteen megabytes into a
+     * PNG is a fraction of a second of CPU, and the main thread's share of a save has to stay the
+     * ~10 ms copy or the hand feels it. The queue is serial, so two saves of one page cannot land out
+     * of order however long each takes — which is the other half of why the encode belongs here and
+     * not on some scratch thread of its own.
+     *
+     * [pageId] travels with the call and is never read from [currentPageId], the same rule
+     * [recordMark] follows: a page turn can move the pointer while this write is still in the queue,
+     * and a picture filed against the leaf the artist is looking at *now* would overwrite that leaf's
+     * drawing with the one before it.
+     */
+    fun saveRaster(pageId: String, copy: Bitmap) {
+        writer.submit {
+            try {
+                val png = RasterImage.encode(copy, pageId)
+                val now = System.currentTimeMillis()
+                // The live row's id, so the picture is replaced where it sits. A page saved for the
+                // first time gets a fresh one — see RasterRows.toRow for why one row per page and
+                // not one per save.
+                val id = dao.rasterRow(pageId)?.id ?: UUID.randomUUID().toString()
+                dao.upsert(RasterRows.toRow(pageId, png, id, now))
+                touchSketchbook(now)
+            } finally {
+                copy.recycle()
+            }
+        }
     }
 
     /**
@@ -336,12 +435,13 @@ class SketchbookSession private constructor(
     }
 
     /**
-     * Throw a page away, and its marks with it. Returns the marks that went.
+     * Throw a page away, and whatever was on it with it — its marks, or on a raster page its picture.
+     * Returns what went.
      *
-     * The set of marks is read once, here, and handed back so undo can restore exactly it. Asking
-     * the table again on the way back would be asking a different question of a page that has
-     * changed since — see `SoilDao.liveChildIds`, where the same argument is made from the other
-     * side.
+     * The set is read once, here, and handed back so undo can restore exactly it. Asking the table
+     * again on the way back would be asking a different question of a page that has changed since —
+     * see `SoilDao.liveChildIds`, where the same argument is made from the other side, and where R2
+     * widened the question to include the page's image.
      */
     suspend fun deletePage(pageId: String): List<String> = writer.perform {
         val now = System.currentTimeMillis()
@@ -435,6 +535,10 @@ class SketchbookSession private constructor(
                 file = file,
                 sketchbookId = sketchbookId,
                 title = book.text.orEmpty(),
+                // Read here, once, and carried for the life of the screen. The row is the only
+                // truth about which kind of book this is — nothing mirrors it in the index or in
+                // the meta row, so there is no second copy to disagree with it.
+                raster = RasterRows.isRaster(book.flags),
                 initialPageId = page.id,
                 scope = scope,
             )

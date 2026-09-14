@@ -13,10 +13,14 @@ import androidx.room.PrimaryKey
  * Wide and sparse: every payload column is nullable and each row type uses the
  * few it needs. Columns are shared by role across types — read [type] first,
  * then interpret:
- *  - sketchbook: [text] = title, [refId] = last-open page id
+ *  - sketchbook: [text] = title, [refId] = last-open page id, [flags] bit 0
+ *    ([SoilSchema.FLAG_RASTER]) = this book's pages are images rather than marks
  *  - page: [refId] = the paper row's id, [width]/[height] px
  *  - mark: [color] `#RRGGBB`/`#AARRGGBB`, [strokeWidth] px, [style] = the
  *    g-paper StrokeStyle name, [blob] = format-B geometry (MarkCodec)
+ *  - raster: [blob] = a PNG of the whole page, [order] = [SoilSchema.RASTER_ORDER]
+ *    (−1, out of the marks' stacking space); at most one live row per page,
+ *    replaced in place on every save
  *  - paper: [text] = the paper identity, [blob] = a WEBP
  *
  * [x] and [y] are written by nothing in arc 1 — they stay because the family's
