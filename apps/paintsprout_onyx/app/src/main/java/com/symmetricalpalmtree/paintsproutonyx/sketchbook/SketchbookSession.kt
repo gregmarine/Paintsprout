@@ -291,18 +291,68 @@ class SketchbookSession private constructor(
      * The cost is that this is queued behind the artist's ink and has to be treated as a write that
      * might not land — the caller wraps it, and a cover that fails is a cover that stays stale, never
      * a crash on the way out of a screen.
+     *
+     * **A raster book's cover is baked from its row, not from the screen.** Same queue and the same
+     * argument, only more so: the picture of the page is a `raster` row that a save put there, and
+     * the save of the last few seconds' drawing is usually the task immediately in front of this
+     * one. Reading the row here means reading it behind that save. It is never taken off the live
+     * view — G5's rule, and this is the reason it was made: the cover is wanted at the moment the
+     * screen is going away, when there may be no view left to read.
      */
     suspend fun renderCover(): CardOutcome = writer.perform {
         val pageId = currentPageId
         val key = CardKey(pageId, edits)
         if (key == cardWritten) return@perform CardOutcome.Unchanged
         val page = dao.byId(pageId)
-        val cover = CoverSnapshot.render(
-            marks = readMarks(pageId),
-            pageWidth = pageDimension(page?.width),
-            pageHeight = pageDimension(page?.height),
-        )
+        val width = pageDimension(page?.width)
+        val height = pageDimension(page?.height)
+        val cover = if (raster) {
+            rasterCover(pageId, width, height)
+        } else {
+            CoverSnapshot.render(marks = readMarks(pageId), pageWidth = width, pageHeight = height)
+        }
         CardOutcome.Fresh(cover, key)
+    }
+
+    /**
+     * A raster page's cover: its stored picture, over white and shrunk.
+     *
+     * **No row is [CoverSnapshot.Cover.Blank], and a row the guard refuses is
+     * [CoverSnapshot.Cover.Failed].** The difference matters and it is the G6 lesson again. A page
+     * with no picture is a leaf nobody has drawn on and the card's white frame is the honest
+     * picture of it; a picture that is not this page's is something gone wrong, and the shelf
+     * keeping whatever cover it already had is better than the shelf being cleared by it.
+     *
+     * **Nothing is tombstoned from here.** [loadPageRaster] shelves a row it refuses, because that
+     * is the path where the artist is about to draw on the leaf and a bad row would be saved over
+     * the top of a real one. This path is the way *out* of a screen: soft-deleting somebody's
+     * drawing while making a thumbnail of it is a great deal of consequence for a picture on a
+     * card, and the same row will be met properly the next time the page is opened.
+     *
+     * Already on the writer's IO dispatcher, which is where the stroke bake runs too — hence no
+     * `withContext` around the decode.
+     */
+    private suspend fun rasterCover(pageId: String, width: Int, height: Int): CoverSnapshot.Cover {
+        return try {
+            val row = dao.rasterRow(pageId) ?: return CoverSnapshot.Cover.Blank
+            val bytes = RasterRows.pngBytes(row)
+            if (bytes == null || !RasterRows.fitsPage(bytes, width, height)) {
+                Log.w(TAG, "page $pageId's picture is not one this page can own; the shelf keeps its card")
+                return CoverSnapshot.Cover.Failed
+            }
+            val bitmap = RasterImage.decode(bytes, width, height) ?: return CoverSnapshot.Cover.Failed
+            val pixels = IntArray(width * height)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+            // Let go of the page before the cover is made out of it. Both alive at once is the
+            // bitmap's eighteen megabytes plus the array's, on the way out of a screen.
+            bitmap.recycle()
+            CoverSnapshot.render(pixels, width, height)
+        } catch (t: Throwable) {
+            // The same discipline as the bake next door, and the same reason: nothing about a
+            // thumbnail may be what takes down the close that is draining the write queue.
+            Log.w(TAG, "the page image could not be made into a cover; the shelf keeps the old one", t)
+            CoverSnapshot.Cover.Failed
+        }
     }
 
     /**

@@ -47,6 +47,17 @@ private const val TAG = "CoverSnapshot"
  * the shelf already had, which is the opposite of what the sentence above promises. A blank page
  * stores nothing because the white frame is the honest picture of it; a failed render stores
  * nothing because the old picture is better than none.
+ *
+ * ## A raster page arrives already drawn
+ *
+ * R3 added the second [render]: a raster book has no marks to bake, it has the page's own pixels,
+ * so that overload starts where this one gets to after the rasterizer and goes down the same road
+ * — shrink by three, WEBP, the same three answers. The one thing it must do first is [overWhite].
+ * A page image is a **layer over the paper**: its unmarked pixels are transparent and the eraser
+ * clears back to transparent rather than painting white. Shrunk and encoded as it stands, a drawing
+ * would come back as grey smoke on the shelf's white card, or as nothing at all, depending on what
+ * the card happened to draw behind it. Compositing over paper white first is what makes the cover a
+ * picture of the page rather than a picture of the ink.
  */
 object CoverSnapshot {
 
@@ -131,6 +142,103 @@ object CoverSnapshot {
         } finally {
             page?.recycle()
             cover?.recycle()
+        }
+    }
+
+    /**
+     * Bake [pixels] — a raster page's own image, ARGB row-major, [pageWidth] to a row — into a
+     * cover: over white, shrunk, encoded.
+     *
+     * [Cover.Blank] when every pixel is transparent, which is a page nobody has drawn on and a page
+     * erased back to nothing alike. Both are blank leaves and the card's white frame is the honest
+     * picture of either; there is deliberately no distinction drawn between "never drawn on" and
+     * "rubbed out", because to the artist looking at the shelf there is none.
+     *
+     * [Cover.Failed] for pixels that are not this page's — a count that does not match the
+     * rectangle — and for anything that goes wrong in the encode. The caller keeps the old cover.
+     *
+     * **IO thread only**, and for the same reason the marks overload is: it allocates a bitmap and
+     * walks every pixel of a page-sized array, twice.
+     */
+    fun render(pixels: IntArray, pageWidth: Int, pageHeight: Int): Cover {
+        if (pageWidth <= 0 || pageHeight <= 0) {
+            Log.w(TAG, "a page with no recorded size ($pageWidth×$pageHeight) cannot be a cover")
+            return Cover.Failed
+        }
+        if (pixels.size != pageWidth * pageHeight) {
+            Log.w(
+                TAG,
+                "a page image of ${pixels.size} pixels is not the ${pageWidth}x$pageHeight page it " +
+                    "was asked for; the shelf keeps the old cover",
+            )
+            return Cover.Failed
+        }
+        // Asked before the composite, because afterwards every pixel is opaque white and a blank
+        // page is indistinguishable from a page drawn all over in white.
+        if (isBlank(pixels)) return Cover.Blank
+        var cover: Bitmap? = null
+        return try {
+            overWhite(pixels)
+            val small = shrink(pixels, pageWidth, pageHeight, SHRINK)
+            val w = ceilDiv(pageWidth, SHRINK)
+            val h = ceilDiv(pageHeight, SHRINK)
+            cover = Bitmap.createBitmap(small, w, h, Bitmap.Config.ARGB_8888)
+            val out = ByteArrayOutputStream()
+            cover.compress(webpFormat(), WEBP_QUALITY, out)
+            Cover.Image(out.toByteArray())
+        } catch (t: Throwable) {
+            // Throwable, for the reason the other overload gives at length: an OutOfMemoryError
+            // escaping here would take down the close that is draining the write queue, and the
+            // artist would lose their last marks to a failure to make a thumbnail of them.
+            Log.w(TAG, "the page image could not be made into a cover; the shelf keeps the old one", t)
+            Cover.Failed
+        } finally {
+            cover?.recycle()
+        }
+    }
+
+    /**
+     * Has nothing at all been drawn on this page? True when every pixel is fully transparent.
+     *
+     * Alpha alone, and nothing about colour: a raster page is ink over paper, so a pixel with any
+     * alpha in it is graphite the hand put there, whatever its colour, and a fully transparent one
+     * is paper. Pure, and tested, because what a mistake here makes is a shelf of white cards for
+     * books that have drawings in them.
+     */
+    fun isBlank(pixels: IntArray): Boolean {
+        for (p in pixels) if ((p ushr 24) != 0) return false
+        return true
+    }
+
+    /**
+     * Composite a page image over paper white, **in place**.
+     *
+     * Straight alpha, per channel: `out = src·a + 255·(1 − a)`, and the result is opaque. Not
+     * premultiplied — `Bitmap.getPixels` hands back straight ARGB whatever the bitmap's own config
+     * is, which is the one thing here that is easy to get subtly wrong and impossible to see
+     * afterwards: every cover uniformly too pale reads as the pencil being light rather than as a
+     * bug.
+     *
+     * In place rather than into a second array, and that is deliberate. The caller's array *is* the
+     * page — eighteen megabytes of it on this panel — and a copy of it taken while a sketchbook is
+     * closing is eighteen megabytes asked for at the exact moment this device is deciding what to
+     * kill. The array belongs to the caller, which has already recycled the bitmap it came out of,
+     * so nothing else is still looking at it.
+     */
+    fun overWhite(pixels: IntArray) {
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            val a = (p ushr 24) and 0xFF
+            if (a == 255) continue
+            if (a == 0) {
+                pixels[i] = PAPER
+                continue
+            }
+            val inv = 255 - a
+            val r = (((p ushr 16) and 0xFF) * a + 255 * inv) / 255
+            val g = (((p ushr 8) and 0xFF) * a + 255 * inv) / 255
+            val b = ((p and 0xFF) * a + 255 * inv) / 255
+            pixels[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
         }
     }
 

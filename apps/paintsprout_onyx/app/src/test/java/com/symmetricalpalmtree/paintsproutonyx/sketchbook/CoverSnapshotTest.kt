@@ -1,16 +1,20 @@
 package com.symmetricalpalmtree.paintsproutonyx.sketchbook
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
  * The arithmetic behind a sketchbook's cover, checked where there is no panel to look at.
  *
- * Only [CoverSnapshot.shrink] can be tested here — the bake either side of it is `Bitmap` and
- * `Canvas`, which do nothing on the JVM. That is the right half to have covered anyway: a wrong
- * bake is a cover that is obviously wrong the moment anyone looks at the shelf, whereas a wrong
- * average is a cover that is slightly too dark down one edge, or a hairline that has quietly gone
- * missing, and nobody looks at a thumbnail closely enough to catch either.
+ * Only the arithmetic can be tested here — [CoverSnapshot.shrink], and from R3 [CoverSnapshot.overWhite]
+ * and [CoverSnapshot.isBlank]. The bake either side of it is `Bitmap` and `Canvas`, which do
+ * nothing on the JVM. That is the right half to have covered anyway: a wrong bake is a cover that
+ * is obviously wrong the moment anyone looks at the shelf, whereas a wrong average is a cover that
+ * is slightly too dark down one edge, or a hairline that has quietly gone missing, and nobody looks
+ * at a thumbnail closely enough to catch either.
  */
 class CoverSnapshotTest {
 
@@ -91,6 +95,64 @@ class CoverSnapshotTest {
         val src = intArrayOf(white, black, white, black)
         val out = CoverSnapshot.shrink(src, 2, 2, 1)
         assertEquals(src.toList(), out.toList())
+    }
+
+    // ── A raster page's cover ────────────────────────────────────────────────
+
+    private val clear = argb(0, 0, 0, 0)
+
+    @Test
+    fun `paper shows through where nothing was drawn`() {
+        // The page image is a layer over the paper, not the paper: unmarked pixels are transparent
+        // and the eraser clears back to transparent. Encoded as it stands, a drawing would come
+        // back as smoke on whatever the card happened to draw behind it.
+        val pixels = intArrayOf(clear)
+        CoverSnapshot.overWhite(pixels)
+        assertEquals(white, pixels[0])
+    }
+
+    @Test
+    fun `graphite that covers the paper comes through as itself`() {
+        val graphite = argb(255, 0x50, 0x50, 0x50)
+        val pixels = intArrayOf(graphite, black)
+        CoverSnapshot.overWhite(pixels)
+        assertEquals(graphite, pixels[0])
+        assertEquals(black, pixels[1])
+    }
+
+    @Test
+    fun `a half-covered pixel is the blend, and it is straight alpha`() {
+        // getPixels hands back straight ARGB whatever the bitmap's own config is. Treating it as
+        // premultiplied would make every cover uniformly paler, which reads as the pencil being
+        // light rather than as a bug — the kind of wrong that never gets found.
+        val pixels = intArrayOf(argb(128, 0, 0, 0))
+        CoverSnapshot.overWhite(pixels)
+        val expected = (0 * 128 + 255 * 127) / 255
+        assertEquals(127, expected)
+        assertEquals(argb(255, expected, expected, expected), pixels[0])
+    }
+
+    @Test
+    fun `a page with nothing on it is blank, and one with a single fleck is not`() {
+        assertTrue(CoverSnapshot.isBlank(IntArray(16) { clear }))
+        val one = IntArray(16) { clear }
+        one[7] = argb(1, 0, 0, 0)
+        assertFalse(
+            "a pixel the hand put there is a drawing, however faint — a blank card for a page with " +
+                "marks on it is the shelf lying about the book",
+            CoverSnapshot.isBlank(one),
+        )
+    }
+
+    @Test
+    fun `a raster page nobody has drawn on has no cover, and never reaches the encoder`() {
+        // Blank is answered before anything Android is touched, which is why this half can be
+        // proved here at all. A page erased back to nothing takes the same road, deliberately:
+        // to the artist looking at the shelf there is no difference between the two.
+        assertSame(
+            CoverSnapshot.Cover.Blank,
+            CoverSnapshot.render(IntArray(4 * 4) { clear }, 4, 4),
+        )
     }
 
     @Test

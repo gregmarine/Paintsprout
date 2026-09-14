@@ -211,6 +211,19 @@ not apply here. Plus:
   (`RasterRows.fitsPage`, exact size from the PNG header) runs before `BitmapFactory`, and a row it
   refuses is soft-deleted, never overwritten. Until R4's picker, the debug menu's "New sketchbooks
   are raster" toggle stamps the flag; release builds make stroke books only.
+- **A raster undo is a swap, and its entry is pixels on a grid.** (R3, g-paper 0.1.29.) One contact
+  — a mark, or a whole eraser sweep — is one `Edit.RasterChanged`, opened at the first
+  `onRasterWillChange` and closed at `onPenLifted`, holding the before-image on a fixed grid of
+  64 px cells (`RasterTiles`) so that the dozens of overlapping batches the engine reports for one
+  scrub read each cell **once**: an entry is then bounded by the page, its tiles are disjoint, and
+  an ordinary mark costs 16–64 KB. `swapPageRaster` puts the tiles on the page and leaves the array
+  holding what was there, so **one entry serves undo and redo**; the stack gained a **48 MB** byte
+  budget beside `MAX`, evicting the oldest entry that costs something and never an id-only one. The
+  replay's one trap: a raster edit must **not** go through `showPage` after the swap — the row still
+  holds the picture as it was, so the reload would undo the undo. And a raster cover is the page's
+  stored PNG composited **over paper white** (the image is a layer, its unmarked pixels transparent)
+  before the usual shrink-by-three and WEBP; `leave()` flushes the page first, being the one exit
+  with no `onPause` in front of it.
 - **Non-goals are enforced, not aspirational.** No layers, no paint, no surfaces, no shape tools,
   no selection, no millimetres or calibration, no zoom/pan/rotate, no export, no backup, no
   extensions. The full list, and which of them are candidate later arcs, is in `ONYX_PLAN.md`.

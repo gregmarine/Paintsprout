@@ -132,6 +132,12 @@ to that page; a per-page history would silently do nothing on the page the artis
 looking at, which reads as a broken button. Entries hold ids, never geometry — the rows are all
 still in the file, stamped rather than deleted.
 
+That last sentence has a fifth kind beside it since R3, and one exception in it: a raster page has
+no rows, so `Edit.RasterChanged` holds pixels and the stack gained a byte budget to bound them. It
+rides the same stack, the same gestures, the same `replay` and the same generation counter — see
+*Taking a raster mark back* below for how, and why it is the one variant that shows no page
+afterwards.
+
 **The store is mutated first, then the page is shown from the store.** g-paper offers `addStrokes`
 and `removeStrokes` for exactly this and they would be faster, but they patch the view independently
 of the rows. The two can then disagree, and the artist finds out when the sketchbook reopens looking
@@ -218,7 +224,7 @@ as the same null a blank page returns, and the caller stored null for either —
 not render, an out-of-memory on a device that runs short of it, cleared the cover the shelf already
 had. Found by the G6 audit while walking the cover path; fixed by making the two answers different.
 
-## Raster pages (R2)
+## Raster pages (R2, R3)
 
 > The raster experiment, `RASTER_PLAN.md`. A book made as a **raster** book keeps its pages as
 > pixels rather than as marks: the pencil composites into one page image at pen-up and the eraser
@@ -279,16 +285,84 @@ DAO's `liveChildIds` now includes the `raster` row) and comes back with it.
 
 **The ledger gains no entry.** A save is a file, not a frame — the same argument G5's cover made.
 
-**What R2 deliberately leaves undone**, and where it goes:
+### Taking a raster mark back (R3)
 
-- **Undo.** A raster mark or erase records **nothing** on the stack: there is no row to hide, and an
-  `Edit.Drew` would replay as a page reload that changed nothing at all — an undo arrow that visibly
-  does not work, which on this panel reads as broken rather than as empty. Page add and delete still
-  record and replay as they always did. **R3** gives the stack an entry that holds the pixels a
-  change covered.
-- **Covers.** `renderCover` in raster mode finds no marks and answers `Blank`, so a raster book's
-  card carries the white frame. Accepted for this phase; **R3** gives `CoverSnapshot` a pixels-in
-  overload that skips the bake.
+**One entry is one contact, and the entry is the pixels that were there.** A raster page has no rows
+to un-stamp — the graphite went into the page image at pen-up and the rubber took pixels off it — so
+`Edit.RasterChanged` carries the before-image itself. It is opened at the first `onRasterWillChange`
+of a contact, fed every rect the engine reports, and closed at `onPenLifted`; a mark and a whole
+eraser sweep are each one entry, because each was one movement of the hand. The page id is captured
+at the *first* change, not at the lifting, for the reason every write here captures it early: a page
+turn in flight moves the pointer. `onStrokeCommitted` still records nothing in raster mode, and the
+`loadingRaster` guard covers the will-change callback as well as the changed one — a page arriving
+on the glass changes every pixel on it, and a before-image of that is the previous leaf.
+
+**The before-image is kept on a fixed grid of 64 px cells** (`RasterTiles`), aligned to the page's
+own top-left corner, and a cell is read once per contact however many times the sweep crosses it.
+This is the part that is not obvious. The engine reports an erase **once per batch** and the batches
+of one slow scrub overlap almost entirely, so a tile per batch would let a minute of scrubbing pile
+up tens of megabytes of near-identical pixels *inside a single entry* — overflowing the budget from
+the inside, where evicting old entries cannot help. On the grid, an entry is bounded by the page
+(~18.4 MB at 1860 × 2480) whatever the hand does, its tiles are **disjoint** so they can be swapped
+back in any order, and an ordinary mark costs one to four cells — 16 to 64 KB, hundreds of marks
+inside the budget. Sixty-four is where both ends are true at once: much larger and a dot in the
+corner of a cell costs a quarter of a megabyte, much smaller and a page-wide sweep is tens of
+thousands of reads while the artist is rubbing. A contact that somehow exceeded the budget on its own
+records **nothing** and says so once in the log — an undo that half-restores a rub would be worse
+than one that admits it cannot, and that is the same overflow stroke books have always accepted at a
+hundred entries.
+
+**One entry serves both directions, because the engine's call is a swap.** `readPageRaster(rect)`
+(g-paper 0.1.29) hands out the before-image as a `RasterPatch`, and `swapPageRaster(patches)` puts
+the pixels onto the page and **leaves the array holding what the page was holding**. So undo swaps
+the tiles in, redo swaps the same tiles again, and the same `Edit` object goes to the other side of
+the stack unchanged — no second copy of a page-sized before-image, which on this device is the
+difference between a history and a dead process. The tile's `IntArray` *is* the patch's array; the
+conversion at the Activity border is a `Rect` and nothing else.
+
+**The replay must not show the page after the swap.** This is the one ordering in R3 that has to be
+right. `applyEdit` answers with a page to show for the four existing variants and with **null** for a
+raster edit, having already done the work: flush (in `replay`, first, as before) → `showPage` only if
+the edit happened on another leaf → `gate.awaitIdle()` → `swapPageRaster` → `rasterDirty = true` and
+schedule the save. A `showPage` *after* the swap would read the page's row, which still holds the
+picture as it was before the undo, and put it straight back on the glass: an undo undone by its own
+page reload, which looks exactly like the arrow not working. The gate is waited on because the swap
+presents a frame and a frame presented under a live contact is withheld — `showPage` waits already,
+but the same-page route is the common one and had not. The generation check, the single-flight
+`busy` flag and the put-it-back-on-failure path are all unchanged.
+
+**The history's budget is bytes as well as count** (`UndoRedoStack`): 48 MB, Greg's answer at R3's
+phase start, which is two and a half page-wide erases or hundreds of marks. `record` evicts while
+the undo side is over budget, and what it evicts is always the oldest entry that actually costs
+something — never an id-only edit, which is free and whose loss would shorten a stroke book's
+history to pay for a raster book's. The newest entry is never the one dropped. The total is kept as
+it goes rather than recounted, so the pen's path is one addition.
+
+### A raster book's cover (R3)
+
+`CoverSnapshot.render(pixels, w, h)` is the second overload: **over white, then shrink by three,
+then WEBP**, joining the marks overload exactly where the rasterizer leaves off. The composite is
+the part that is easy to miss — a page image is a *layer over the paper*, its unmarked pixels
+transparent and its eraser clearing back to transparent, so encoded as it stands a drawing comes back
+as smoke on whatever the card draws behind it. `overWhite` is straight alpha (`out = src·a +
+255·(1−a)`, alpha 255) and works **in place**, because a second copy of a page is eighteen megabytes
+asked for while a sketchbook is closing. A page whose every pixel is transparent is `Blank` — a leaf
+erased back to nothing is a blank leaf, and the card's white frame is the honest picture of it.
+
+`SketchbookSession.renderCover` in raster mode reads `dao.rasterRow(pageId)` **inside the existing
+`writer.perform`**, behind the flushed save, and decodes through the same bounded guard every other
+read of that row uses. No row is `Blank`; a row the guard refuses is `Failed`, which keeps the cover
+the shelf already had — and nothing is tombstoned from here, because this is the way *out* of a
+screen and `loadPageRaster` owns that decision on the way in. `Throwable`, not `Exception`: nothing
+about a thumbnail may be the reason a sketchbook fails to close.
+
+**`leave()` flushes the page before it writes the card.** The back arrow is the one exit that writes
+the card without an `onPause` in front of it — back pauses this screen only *after* `leave` has run
+— and a raster cover is baked from the row, so without the flush a page the artist drew on and then
+backed out of would put the last sitting's picture on the shelf.
+
+**What is still undone**, and where it goes:
+
 - **The mode picker.** Until **R4** there is no way to ask the artist, so the answer comes from a
   preference (`LibraryPrefs.newSketchbooksRaster`) that only the **debug** build's menu can flip.
   A release build makes stroke books only.

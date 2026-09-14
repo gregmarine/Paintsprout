@@ -98,12 +98,14 @@ dependencies {
     // the BOOX SDK and the raw-drawing view. gpaper-ratta is deliberately absent —
     // this app runs on one panel.
     //
-    // Pinned at 0.1.6, the newest published build, so the Onyx build baggage above
-    // is exercised by a real dependency rather than sitting here as untested
-    // boilerplate. It re-pins to 0.1.7 when g-paper's Phase 10 publishes the
-    // textured PENCIL renderer, which is what G3 waits on.
-    implementation("com.symmetricalpalmtree.gpaper:gpaper-core:0.1.26")
-    implementation("com.symmetricalpalmtree.gpaper:gpaper-onyx:0.1.26")
+    // Pinned at 0.1.29, which is the raster undo: `readPageRaster` hands out the
+    // before-image of a change as a `RasterPatch` and `swapPageRaster` puts it
+    // back, leaving the array holding what was there — so one entry on this app's
+    // stack serves both directions. The jump from 0.1.26 carries 0.1.27 and
+    // 0.1.28 as well, whose Onyx changes touch only the lasso tools this app
+    // never arms.
+    implementation("com.symmetricalpalmtree.gpaper:gpaper-core:0.1.29")
+    implementation("com.symmetricalpalmtree.gpaper:gpaper-onyx:0.1.29")
 
     // Room — the ORM over both SQLCipher databases, paintsprout.db and every
     // .soil. ktx is here because index and soil access are coroutine-first from
@@ -146,5 +148,5 @@ dependencies {
     // The mark ↔ row mapping is the one part of the page that can be checked with no tablet in the
     // room, and it speaks g-paper's Stroke on one side. Core only: gpaper-onyx would drag the BOOX
     // SDK onto the JVM test classpath, where none of it can run.
-    testImplementation("com.symmetricalpalmtree.gpaper:gpaper-core:0.1.26")
+    testImplementation("com.symmetricalpalmtree.gpaper:gpaper-core:0.1.29")
 }

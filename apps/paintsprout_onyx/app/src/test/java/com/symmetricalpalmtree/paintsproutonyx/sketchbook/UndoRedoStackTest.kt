@@ -16,6 +16,15 @@ class UndoRedoStackTest {
 
     private fun drew(page: String, mark: String) = Edit.Drew(page, mark)
 
+    /**
+     * A raster entry costing exactly [bytes]. One tile, a strip a pixel high, because nothing here
+     * cares what shape the before-image was — only what it weighs.
+     */
+    private fun raster(page: String, bytes: Long): Edit.RasterChanged {
+        val pixels = (bytes / 4).toInt()
+        return Edit.RasterChanged(page, listOf(RasterTile(0, 0, pixels, 1, IntArray(pixels))))
+    }
+
     @Test
     fun `a fresh stack has nothing to give in either direction`() {
         val stack = UndoRedoStack()
@@ -114,6 +123,90 @@ class UndoRedoStackTest {
         stack.clear()
         assertFalse(stack.canUndo())
         assertFalse(stack.canRedo())
+    }
+
+    // ── The byte budget, which is the raster half ───────────────────────────
+
+    @Test
+    fun `an entry of ids costs nothing and an entry of pixels costs what it holds`() {
+        assertEquals(0L, drew("p1", "a").bytes)
+        assertEquals(400L, raster("p1", 400).bytes)
+    }
+
+    @Test
+    fun `the oldest pixels are the ones let go of`() {
+        val stack = UndoRedoStack(budgetBytes = 1000)
+        stack.record(raster("p1", 400))
+        stack.record(raster("p1", 400))
+        stack.record(raster("p1", 400))
+        assertEquals("only what fits is still held", 800L, stack.undoBytes)
+        val held = generateSequence { stack.popUndo() }.toList()
+        assertEquals(
+            "what is dropped is always the thing furthest from the hand",
+            2,
+            held.size,
+        )
+    }
+
+    @Test
+    fun `a stroke book's history is never shortened to pay for a raster book's`() {
+        val stack = UndoRedoStack(budgetBytes = 1000)
+        stack.record(drew("p1", "a"))
+        stack.record(drew("p1", "b"))
+        stack.record(raster("p1", 800))
+        stack.record(raster("p1", 800))
+        val held = generateSequence { stack.popUndo() }.toList()
+        assertEquals(3, held.size)
+        assertEquals(
+            "an id-only edit is free to hold, and dropping one would send the bill to the wrong hand",
+            listOf(raster("p1", 800).bytes, 0L, 0L),
+            held.map { it.bytes },
+        )
+        assertEquals(drew("p1", "a"), held.last())
+    }
+
+    @Test
+    fun `the newest entry is never the one evicted`() {
+        // Nothing a hand does can get here — a contact's before-image is bounded by the page — but
+        // an arrow that does nothing for the mark just made would read as broken rather than full.
+        val stack = UndoRedoStack(budgetBytes = 100)
+        stack.record(raster("p1", 400))
+        assertTrue(stack.canUndo())
+        assertEquals(400L, stack.undoBytes)
+    }
+
+    @Test
+    fun `an entry that comes back from the redo side is held again`() {
+        val stack = UndoRedoStack(budgetBytes = 1000)
+        stack.record(raster("p1", 400))
+        val undone = stack.popUndo()!!
+        assertEquals("what is off the undo side is not held by it", 0L, stack.undoBytes)
+        stack.pushRedo(undone)
+        stack.pushUndo(stack.popRedo()!!)
+        assertEquals(400L, stack.undoBytes)
+    }
+
+    @Test
+    fun `a redone entry counts towards the budget like any other`() {
+        val stack = UndoRedoStack(budgetBytes = 1000)
+        stack.record(raster("p1", 400))
+        stack.record(raster("p1", 400))
+        stack.pushRedo(stack.popUndo()!!)
+        stack.pushUndo(stack.popRedo()!!)
+        assertEquals("an undo the artist changed their mind about is holding pixels again", 800L, stack.undoBytes)
+        stack.record(raster("p1", 400))
+        assertEquals("and is evicted from like anything else that costs something", 800L, stack.undoBytes)
+    }
+
+    @Test
+    fun `closing the sketchbook lets go of the pixels too`() {
+        val stack = UndoRedoStack(budgetBytes = 1000)
+        stack.record(raster("p1", 400))
+        stack.clear()
+        assertEquals(0L, stack.undoBytes)
+        // And the total is honest afterwards, rather than carrying a debt into the next sitting.
+        stack.record(raster("p2", 400))
+        assertEquals(400L, stack.undoBytes)
     }
 
     @Test

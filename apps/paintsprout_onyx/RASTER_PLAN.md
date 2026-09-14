@@ -7,9 +7,9 @@ unless a standing trap or an arc-1 decision needs checking; its protocol and tra
 at the end so this file is enough. Notesprout's `RESTORE_PLAN.md` and `ENCRYPTION_PLAN.md` are the
 shapes this file copies.
 
-**Status: R2 DONE, R3 NEXT.** Planned with Opus 4.8 on 2026-09-03 · reviewed by Fable 2026-09-06
+**Status: R3 DONE, R4 NEXT.** Planned with Opus 4.8 on 2026-09-03 · reviewed by Fable 2026-09-06
 (amendments A1–A8, § Review amendments) · lifted into the repo 2026-09-06 · R0 ✅ · R1 ✅ · R2 ✅ ·
-R3 ⬜ · R4 ⬜ · R5 ⬜.
+R3 ✅ · R4 ⬜ · R5 ⬜.
 
 **Phase letters:** arc 1 took **G**. This experiment takes **R**.
 
@@ -312,9 +312,10 @@ record nothing on the undo stack until R3; a raster book's cover is `Blank` unti
 the bounded-decode guard refuses is **tombstoned, never overwritten** — the page opens blank and
 the next save makes a fresh row.
 
-### ⬜ R3 — Undo and covers
-**Owner:** Opus on a Fable brief; Fable writes `patchPageRaster` in g-paper if R3 takes that route
-(0.1.27); Fable reads before the walk.
+### ✅ R3 — Undo and covers
+**Owner:** Opus on a Fable brief; Fable wrote the engine call in g-paper (`swapPageRaster`, 0.1.29,
+g-paper commit `d0bc484`, Phase 17 there) and read the host before the walk. Closed 2026-09-14 —
+Outcome under § Ledger.
 
 - D4 and D5 entire.
 - JVM tests: the byte budget evicts oldest-first and never an id-only edit; tile swap is an
@@ -324,8 +325,10 @@ the next save makes a fresh row.
 **Gate:** undo a stroke, undo an erase, redo both, across a page turn; the arrows and both finger
 gestures; a raster book's card on the shelf shows its last page. Haiku walks the gestures with
 `screencap`; Greg's hand on the feel of taking an erase back.
-**Questions to resolve at phase start:** patch via a new engine call or a full `loadPageRaster`
-(default the engine call) · byte budget (default 48 MB).
+**Questions to resolve at phase start:** ~~patch via a new engine call or a full
+`loadPageRaster`~~ **the engine call** — `patchPageRaster` in g-paper 0.1.29 (the pin jump carries
+0.1.27/28, whose Onyx changes touch only the lasso tools this app never arms) · ~~byte budget~~
+**48 MB** (both Greg, 2026-09-14, the defaults).
 
 ### ⬜ R4 — Mode choice and the bake
 **Owner:** Opus on a Fable brief; Sonnet for the picker layout and strings; Fable reads before the
@@ -564,6 +567,52 @@ both R3. The picker is R4. A pencil-only `gfxinfo` minute was not taken.
 
 **Next.** R3, undo and covers — Opus on a Fable brief; Fable writes `patchPageRaster` in g-paper if
 R3 takes the engine route. The device carries the R2 build with the debug toggle ON.
+
+### R3 — Outcome (2026-09-14)
+
+**Landed.** g-paper 0.1.29 (Phase 17 there): `RasterPatch(rect, pixels)`, `readPageRaster(rect)`
+(the before-image as row-major ARGB, a page with no image yet reading as transparent) and
+`swapPageRaster(patches)` — each patch's pixels go onto the page and **the array is left holding
+what was there**, row by row through one reused buffer, so one entry serves undo and redo with no
+second copy of an 18 MB page; on Onyx `epdRepaintHandoff` gained a region and a swap refreshes only
+the patches it touched. Host (Opus on the brief, Fable reviewed): `Edit.RasterChanged(pageId,
+tiles)` with `Edit.bytes`; `RasterTiles` + `RasterEditBuilder` (pure) keep a contact's before-image
+on a fixed grid of **64 px cells, each read once per contact** — the plan's "one tile per batch"
+would have let one slow scrub pile tens of megabytes of overlapping pixels into a single entry and
+overflow the budget from the inside; on the grid an entry is bounded by the page, its tiles are
+disjoint, and a hairline mark costs 16–64 KB. `UndoRedoStack` keeps a running byte total and evicts
+the oldest entry that costs something, never an id-only edit and never the newest. The activity
+opens a builder at the first `onRasterWillChange` (guarded by `loadingRaster`, page captured then)
+and records at `onPenLifted`; `applyEdit`'s raster branch turns the page if the edit was made
+elsewhere, waits on the gate, swaps, dirties, and answers **no page to show** — a `showPage` after
+the swap would reload the row, which still holds the picture as it was, and undo the undo.
+Covers: `CoverSnapshot.render(pixels, w, h)` composites straight alpha **over paper white** (the
+image is a layer, unmarked pixels transparent) before the shrink and WEBP; `renderCover` in raster
+mode reads the row inside its existing `perform`, no row = `Blank`, a refused row = `Failed` and
+nothing tombstoned on the way out; `leave()` now flushes the page first, being the one exit with no
+`onPause` ahead of it. JVM: 187 tests (159 + 16 tiles, 7 stack, 5 cover); g-paper 400.
+
+**Decided at phase start (Greg).** The engine call, and 48 MB — the defaults. The pin jump from
+0.1.26 carries 0.1.27/28, whose Onyx changes touch only the lasso tools this app never arms.
+
+**Measured (Haiku's adb walk, 2026-09-14, R2_raster on the NA5C).** A leaf swiped into, undone and
+redone: the `screencap` after the undo is pixel-identical to the one before the swipe, and the one
+after the redo to the blank leaf (PIL diff, both zero). Sleep and wake through `KEYCODE_SLEEP` /
+`WAKEUP`: the page came back, the card wrote once and then answered *unchanged*. **The raster
+book's card wrote `Image` with the drawn page on the glass** (R2 wrote `Blank`) and `Blank` with the
+fresh leaf showing — both right — and the shelf shows the face drawing on R2_raster's card. No
+`AndroidRuntime`, no "could not be replayed", no skipped patch in the log. `meminfo` with the book
+open: native heap 86 MB, graphics 71 MB, PSS 255 MB. The walk left R2_raster with a blank third
+page. What adb cannot do is draw, so the stroke and erase entries — the swap itself, its regional
+repaint at pen-idle, and the feel of taking a rub back — are the hand's, below.
+
+**The hand** (Greg, the seven-step checklist: a mark undone and redone with only its patch
+refreshing, a sweep taken back as one step, an undo across a page turn, both finger gestures, the
+walk's blank leaf deleted and the delete undone and redone, a page-wide stroke undone, the card on
+the shelf): *"All pass."* Nothing found, nothing tuned.
+
+**Next.** R4, the mode picker and the one-way bake — Opus on a Fable brief, Sonnet for the picker's
+layout and strings. The device carries the R3 build with the debug toggle ON.
 
 ---
 

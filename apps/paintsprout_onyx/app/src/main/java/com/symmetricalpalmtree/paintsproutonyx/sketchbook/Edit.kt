@@ -15,15 +15,28 @@ package com.symmetricalpalmtree.paintsproutonyx.sketchbook
  * A per-page stack would silently do nothing on page four, which reads as a broken button rather
  * than as a rule nobody explained.
  *
- * Nothing here holds geometry. A mark is an id, because the row is still in the file with its
- * points and its stacking position intact — an erase is a stamp, never a deletion, so undo is a
- * matter of un-stamping the row rather than rebuilding something that resembles what was there.
- * That is what keeps a bounded hundred entries cheap enough to keep.
+ * Nothing here holds geometry **except on a raster page**. In a stroke book a mark is an id,
+ * because the row is still in the file with its points and its stacking position intact — an erase
+ * is a stamp, never a deletion, so undo is a matter of un-stamping the row rather than rebuilding
+ * something that resembles what was there. That is what keeps a bounded hundred entries cheap.
+ *
+ * A raster page has no rows. The graphite went into one page image at pen-up and the rubber took
+ * pixels off it, and there is nothing in the file to un-stamp: the only record of what was there a
+ * moment ago is the pixels themselves. So [RasterChanged] carries them, and [bytes] is what lets the
+ * stack bound a history that is no longer free to hold. See [RasterTiles] for why those pixels are
+ * kept on a grid of cells rather than as the rectangles the engine reported.
  */
 sealed class Edit {
 
     /** The page the edit happened on, and the page undo turns back to unless it says otherwise. */
     abstract val pageId: String
+
+    /**
+     * What keeping this entry costs, for the stack's byte budget. Zero for everything that is ids
+     * and nothing else — which is every variant but [RasterChanged], and which is why a stroke
+     * book's history is bounded by count alone exactly as it always was.
+     */
+    open val bytes: Long get() = 0L
 
     /** A mark the pen finished. */
     data class Drew(override val pageId: String, val markId: String) : Edit()
@@ -71,4 +84,26 @@ sealed class Edit {
         val shownAfterDelete: String,
         val replacementMarkIds: List<String> = emptyList(),
     ) : Edit()
+
+    /**
+     * The page image as it was, over the patch of page one contact changed — a mark composited at
+     * pen-up, or a whole eraser sweep from the moment the rubber touched down to the moment it
+     * lifted.
+     *
+     * **One contact is one entry, because it was one movement of the hand.** The engine reports an
+     * erase once per batch and there are dozens of batches in a second of scrubbing; an entry each
+     * would make taking back a rub a matter of tapping the arrow until it stopped.
+     *
+     * **It is its own inverse.** The tiles go onto the page and come back holding what the page was
+     * holding (`swapPageRaster`), so the entry that undid a change is the entry that redoes it, with
+     * no second copy of the pixels and no second shape of call. That is the whole reason this is a
+     * swap in the engine rather than a load: a page-wide erase's before-image is the page, and a
+     * second one of those is eighteen megabytes the device does not have to spare.
+     *
+     * [tiles] are disjoint — see [RasterTiles] — so they can be swapped in any order, which is what
+     * spares the replayer from having to remember which order they were read in.
+     */
+    data class RasterChanged(override val pageId: String, val tiles: List<RasterTile>) : Edit() {
+        override val bytes: Long get() = tiles.sumOf { it.bytes }
+    }
 }

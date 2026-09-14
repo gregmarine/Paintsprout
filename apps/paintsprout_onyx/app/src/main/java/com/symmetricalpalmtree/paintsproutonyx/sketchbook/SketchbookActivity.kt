@@ -15,6 +15,7 @@ import androidx.lifecycle.lifecycleScope
 import com.symmetricalpalmtree.gpaper.core.PageMode
 import com.symmetricalpalmtree.gpaper.core.PaperListener
 import com.symmetricalpalmtree.gpaper.core.PaperView
+import com.symmetricalpalmtree.gpaper.core.RasterPatch
 import com.symmetricalpalmtree.gpaper.core.Tool
 import com.symmetricalpalmtree.gpaper.core.engine.GPaper
 import com.symmetricalpalmtree.gpaper.core.model.Stroke
@@ -111,6 +112,12 @@ private const val TAG = "SketchbookActivity"
  * one of those is an ordering against something already in this file. Put in a helper, the rule that
  * a save must be queued ahead of a page delete becomes a rule split across two files, which is the
  * way it gets reversed by somebody who never saw it.
+ *
+ * R3 again. Taking a raster mark back is four calls in an order — flush, turn the page if the edit
+ * was made on another one, wait for the pen, swap — and the single most important thing about it is
+ * a call that must **not** follow: the page must not be shown again afterwards or the reload undoes
+ * the undo. A rule shaped like "do not add the obvious next line" only survives where the lines it
+ * is about are. What was lifted out is the part that is arithmetic, [RasterTiles], and it is tested.
  */
 class SketchbookActivity : AppCompatActivity() {
 
@@ -164,6 +171,29 @@ class SketchbookActivity : AppCompatActivity() {
 
     /** The debounced save waiting to happen, if one is. Replaced by each new change. */
     private var rasterSave: Job? = null
+
+    /**
+     * The before-image of the contact the pen is making right now, gathered as the engine reports
+     * each patch of page it is about to change — or null between contacts.
+     *
+     * **Opened at the first change and closed at the pen lifting**, because one movement of the
+     * hand is one thing to take back: a mark is one entry, and a rub is one entry however many
+     * batches the engine reported it in. Left open by a screen going away, it is simply dropped —
+     * the drawing is saved by [flushRasterSave], and the history was never meant to outlive the
+     * sitting anyway.
+     */
+    private var rasterEdit: RasterEditBuilder? = null
+
+    /**
+     * The rectangle the page on the glass was recorded in, kept because g-paper does not hand it
+     * back and the undo grid has to be aligned to the same page the engine is.
+     *
+     * Zero is the honest answer for a page that never recorded a size — g-paper's own "fit the
+     * view" — and the reader below falls back to the view exactly as the engine does, so the cells
+     * land on the same squares of the same image either way.
+     */
+    private var pageImageWidth = 0
+    private var pageImageHeight = 0
 
     /**
      * True from the moment the artist asked to leave until the screen has gone.
@@ -374,6 +404,8 @@ class SketchbookActivity : AppCompatActivity() {
         }
 
         s.currentPageId = pageId
+        pageImageWidth = width
+        pageImageHeight = height
         // Every page shown, not only the last one. A screen killed in the background never gets to
         // write anything on the way out, so the pointer has to already be right at every moment.
         s.rememberOpenPage(pageId)
@@ -424,16 +456,17 @@ class SketchbookActivity : AppCompatActivity() {
             // the wrong page.
             val page = s.currentPageId
             if (s.raster) {
-                // **A raster book writes no row for a mark and records no undo entry, and both of
-                // those are deliberate.** The graphite is already in the page image by the time
-                // this fires — the engine composited it at pen-up and dropped the stroke — so there
-                // is nothing here to store: the file hears about this mark when the debounced save
-                // writes the whole page. And there is nothing to take back either. An `Edit.Drew`
-                // holds a row id to hide, a raster page has no such row, and the entry would replay
-                // as a page reload that changed nothing at all — an undo button that visibly does
-                // not work, which on this panel reads as broken rather than as empty. R3 gives the
-                // stack a raster entry that holds the pixels the mark covered; until then the
-                // arrows on a raster book move pages and nothing else.
+                // **A raster book writes no row for a mark, and its undo entry is not written
+                // here.** The graphite is already in the page image by the time this fires — the
+                // engine composited it at pen-up and dropped the stroke — so there is nothing to
+                // store: the file hears about this mark when the debounced save writes the whole
+                // page. Nor is there a row id to hide, which is what an `Edit.Drew` is made of.
+                //
+                // The entry does exist now (R3), and it is recorded at [onPenLifted] instead,
+                // because what it holds is the pixels this change covered and those were read a
+                // moment *before* this, at [onRasterWillChange]. One contact is one entry: the
+                // SDK can deliver several batches — several commits — for a single stroke of the
+                // hand, and an entry each would make taking back one mark two taps.
                 //
                 // `updatedAt` and the sitting's edit count still move — in `saveRaster`, where the
                 // picture actually reaches the file, rather than here.
@@ -462,18 +495,81 @@ class SketchbookActivity : AppCompatActivity() {
         }
 
         /**
+         * The page image is **about to** change — the one moment the pixels that are there can
+         * still be read, and so the one moment an undo entry can be made of them.
+         *
+         * The rect is fed to the open contact's builder, which decides how much of it actually
+         * needs reading: the grid keeps a cell once and an eraser sweep crosses the same cells
+         * dozens of times. See [RasterTiles] for why the before-image is kept that way and not as
+         * the rectangles arriving here.
+         *
+         * **The page is captured at the first change of a contact, not at the pen lifting**, which
+         * is the same rule a stroke book's `onStrokeCommitted` follows: a page turn in flight moves
+         * the pointer, and an entry filed against the leaf the artist is about to be looking at is
+         * an undo that would rub out somebody else's drawing.
+         *
+         * The page's own size is used where it has one, and the view's where it does not, because
+         * that is exactly what the engine does — a grid aligned to a different rectangle than the
+         * image would read cells that are half in the wrong place.
+         */
+        override fun onRasterWillChange(rect: Rect) {
+            // The file talking, not the hand. A page arriving on the glass changes every pixel on
+            // it, and a "before-image" of that is the previous leaf: eighteen megabytes recorded as
+            // something the artist did, on every single page turn.
+            if (loadingRaster) return
+            val s = session ?: return
+            val view = paper.asView()
+            val width = if (pageImageWidth > 0) pageImageWidth else view.width
+            val height = if (pageImageHeight > 0) pageImageHeight else view.height
+            val builder = rasterEdit
+                ?: RasterEditBuilder(s.currentPageId, width, height).also { rasterEdit = it }
+            builder.touch(rect.left, rect.top, rect.right, rect.bottom) { cell ->
+                // The engine's array, straight into the tile — no copy. It goes back to the engine
+                // as it stands, and the swap leaves it holding the other side of the edit.
+                paper.readPageRaster(
+                    Rect(cell.left, cell.top, cell.left + cell.width, cell.top + cell.height),
+                )?.pixels
+            }
+        }
+
+        /**
          * The page image changed — a mark composited at pen-up, or one batch of an eraser sweep.
          *
-         * This is a raster page's only news that anything happened, so it is what schedules the
-         * save. The rect is not read: one image is written whole, and there is nothing this screen
-         * could do with knowing which part of it moved. R3 will want the *before* side of this
-         * bracket, which is where the undo images come from.
+         * This is a raster page's news that anything happened, so it is what schedules the save.
+         * The rect is not read: one image is written whole, and there is nothing this screen could
+         * do with knowing which part of it moved. The *before* side of the same bracket is where
+         * the undo entry comes from.
          */
         override fun onRasterChanged(rect: Rect) {
             // The file talking, not the hand — a page arriving on the glass is not a change to save.
             if (loadingRaster) return
             rasterDirty = true
             scheduleRasterSave()
+        }
+
+        /**
+         * The pen left the paper: one movement of the hand is over, so the entry for it is written
+         * down.
+         *
+         * Everything before this was gathering. A stroke book has nothing open here and falls
+         * straight out — its entries are made at the commit, where the id it needs arrives.
+         *
+         * **A contact too big to take back records nothing, and says so once.** It cannot happen
+         * with the page-aligned grid — a contact's before-image is bounded by the page and the page
+         * is well under the budget — but if it ever did, an arrow that half-restores a sweep would
+         * be worse than an arrow that does nothing, and a history that overflows is a thing the
+         * stroke books have always accepted at a hundred entries.
+         */
+        override fun onPenLifted() {
+            val builder = rasterEdit ?: return
+            rasterEdit = null
+            if (builder.tooBig) {
+                Log.w(TAG, "that contact covered more than the history can hold; it cannot be taken back")
+                return
+            }
+            val edit = builder.build() ?: return
+            stack.record(edit)
+            refreshChrome()
         }
     }
 
@@ -704,6 +800,14 @@ class SketchbookActivity : AppCompatActivity() {
      * it is redone. Flushed first, the drawing goes down with the leaf and comes back with it, which
      * is also what the artist means: a page taken back and put back again is the page they drew on.
      * Same argument as [deletePage], reached by the other door.
+     *
+     * **A raster edit shows no page afterwards, and that is the one thing about this to get right.**
+     * Its pixels go onto the paper by a swap, and [showPage] run after that swap would read the
+     * page's row — which still holds the picture as it was *before* the undo, since the flush that
+     * saves the swapped page has not happened yet — and put it straight back on the glass. An undo
+     * undone by its own page reload, and one that would look like the arrow simply not working. So
+     * [applyEdit] hands back no page to show for that variant, having already put the artist where
+     * they need to be.
      */
     private fun replay(undoing: Boolean) {
         if (busy) return
@@ -718,7 +822,7 @@ class SketchbookActivity : AppCompatActivity() {
                 if (edit is Edit.AddedPage || edit is Edit.DeletedPage) {
                     runCatching { repo.setPageCount(sketchbookId, s.livePageCount()) }
                 }
-                showPage(target)
+                if (target != null) showPage(target)
                 if (stack.generation == generation) {
                     if (undoing) stack.pushRedo(replayed) else stack.pushUndo(replayed)
                 }
@@ -748,8 +852,32 @@ class SketchbookActivity : AppCompatActivity() {
      * still on the page, and a redo that put the leaf back blank would have quietly turned an undo
      * into a delete. So the ids the store hands back travel with the entry to the redo side, the way
      * a page delete records its marks at the moment it happens.
+     *
+     * **A raster edit answers with no page at all**, and is the one variant that touches the paper
+     * itself rather than only the store. There are no rows to stamp — the drawing is pixels — so
+     * "change the file and show the page from it" has nothing to change; what takes the change back
+     * is swapping the before-image onto the page, and the page is then already right. Saying "show
+     * page X" afterwards would reload X from a row that still holds the picture as it was before
+     * the swap, which is an undo that undoes itself. So the swap happens here and the caller is
+     * told there is nothing left to show.
+     *
+     * Three things about that swap are load-bearing:
+     *
+     * - **The page turn comes first.** An edit made on another leaf goes through [showPage], the
+     *   same route a page add or delete takes, which flushes the outgoing page and loads the
+     *   incoming one through the writer — so the image the swap lands on is the current one.
+     * - **The gate is waited on.** The swap presents a frame, and a frame presented while the pen
+     *   is on the glass is withheld by the ink pipeline and simply never appears. [showPage] has
+     *   already waited when the page changed; the same-page route has not, and that is the common
+     *   one.
+     * - **The tiles come back holding the other side.** `swapPageRaster` writes the page's pixels
+     *   into the arrays it was handed, so the entry that undid the change is the entry that redoes
+     *   it — which is why the same [Edit] object goes to the other side of the stack, unchanged.
+     *
+     * And the page is dirty afterwards: a patched page is a changed page, so the debounced save
+     * follows exactly as it would after a mark.
      */
-    private suspend fun applyEdit(s: SketchbookSession, edit: Edit, undoing: Boolean): Pair<String, Edit> =
+    private suspend fun applyEdit(s: SketchbookSession, edit: Edit, undoing: Boolean): Pair<String?, Edit> =
         when (edit) {
             is Edit.Drew -> {
                 if (undoing) s.hideMarks(listOf(edit.markId)) else s.restoreMarks(listOf(edit.markId))
@@ -774,6 +902,21 @@ class SketchbookActivity : AppCompatActivity() {
                 s.deletePage(edit.pageId)
                 edit.replacementPageId?.let { s.restorePage(it, edit.replacementMarkIds) }
                 edit.shownAfterDelete to edit
+            }
+            is Edit.RasterChanged -> {
+                if (edit.pageId != s.currentPageId) showPage(edit.pageId)
+                gate.awaitIdle()
+                paper.swapPageRaster(
+                    edit.tiles.map {
+                        RasterPatch(
+                            Rect(it.left, it.top, it.left + it.width, it.top + it.height),
+                            it.pixels,
+                        )
+                    },
+                )
+                rasterDirty = true
+                scheduleRasterSave()
+                null to edit
             }
         }
 
@@ -1013,6 +1156,11 @@ class SketchbookActivity : AppCompatActivity() {
         if (leaving) return
         leaving = true
         lifecycleScope.launch {
+            // The page's picture, before the card is made out of it. This is the one exit that
+            // writes the card without an `onPause` in front of it — back pauses the screen *after*
+            // this has run — and the cover of a raster book is baked from the row, so a page the
+            // artist drew on and then backed out of would put last sitting's picture on the shelf.
+            flushRasterSave()
             session?.let { updateShelfCard(it) }
             finish()
         }
