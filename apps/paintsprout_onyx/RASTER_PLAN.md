@@ -330,7 +330,7 @@ gestures; a raster book's card on the shelf shows its last page. Haiku walks the
 0.1.27/28, whose Onyx changes touch only the lasso tools this app never arms) · ~~byte budget~~
 **48 MB** (both Greg, 2026-09-14, the defaults).
 
-### ✅ R4 — Mode choice and the bake
+### ✅ R4 — Mode choice and the bake (commit fe1defc)
 **Owner:** Opus on a Fable brief; Sonnet for the picker layout and strings; Fable reads before the
 walk.
 
