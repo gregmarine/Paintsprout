@@ -187,12 +187,7 @@ suspend fun bakeSketchbook(
             pageCount = plan.pages.size,
             now = now,
         )
-        // A Blank or a Failed cover stores nothing at all, exactly as the sketchbook screen does it:
-        // the card's white frame is the honest picture of a book with nothing drawn in it, and a
-        // render that fell over is not a reason to put a wrong picture on the shelf.
-        val image = cover as? CoverSnapshot.Cover.Image
-        if (image != null) repo.setCover(newId, image.bytes)
-        BakeOutcome.Made(newId, name)
+        cover
     } catch (t: Throwable) {
         // Throwable rather than Exception, and the difference is the one failure with a real chance
         // of happening: an OutOfMemoryError on a page-sized bitmap. `CoverSnapshot` catches it for
@@ -202,6 +197,18 @@ suspend fun bakeSketchbook(
         runCatching { opened?.seal(file) }
         discardHalfMadeSketchbook(context, newId, file)
         throw t
+    }.let { cover ->
+        // **After the try, on purpose.** The card is on the shelf the instant the index row lands,
+        // and from then on a failure must not discard the file — that would be a card that opens
+        // onto nothing, the one thing the ordering above exists to prevent. A cover that will not
+        // write is a copy with a white card, which the next open remakes. A Blank or a Failed
+        // cover stores nothing at all, exactly as the sketchbook screen does it.
+        val image = cover as? CoverSnapshot.Cover.Image
+        if (image != null) {
+            runCatching { repo.setCover(newId, image.bytes) }
+                .onFailure { Log.w(TAG, "the copy's cover could not be written; the shelf shows a white card", it) }
+        }
+        BakeOutcome.Made(newId, name)
     }
 }
 

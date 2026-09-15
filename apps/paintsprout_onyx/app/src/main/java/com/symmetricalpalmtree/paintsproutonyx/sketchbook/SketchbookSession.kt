@@ -199,6 +199,14 @@ class SketchbookSession private constructor(
             val page = dao.byId(pageId)
             val width = pageDimension(page?.width)
             val height = pageDimension(page?.height)
+            if (width <= 0 || height <= 0) {
+                // A page with no recorded size is a file this app did not write. The guard cannot
+                // say whether the picture is this page's — there is no rectangle to hold it against
+                // — and a guard that cannot decide must not shelve: the drawing is left where it is,
+                // the page opens blank, and a later build with a better answer still finds it.
+                Log.w(TAG, "page $pageId records no size; its picture is left alone and not shown")
+                return@withContext null
+            }
             if (bytes == null || !RasterRows.fitsPage(bytes, width, height)) {
                 Log.e(
                     TAG,
@@ -238,12 +246,22 @@ class SketchbookSession private constructor(
     fun saveRaster(pageId: String, copy: Bitmap) {
         writer.submit {
             try {
+                // A leaf torn out while this was queued must not get a picture. The delete flushes
+                // the page first, but the pen is not stopped by a dialog, and a mark landing in the
+                // moment between that flush and the tombstone dirties the page again; the turn away
+                // from it then files a save against a dead leaf, where nothing would ever tombstone
+                // it and an undo of the delete would bring back two pictures for one page.
+                if (dao.byId(pageId)?.deletedAt != null) {
+                    Log.w(TAG, "page $pageId was thrown away while its picture was queued; not saved")
+                    return@submit
+                }
                 val png = RasterImage.encode(copy, pageId)
                 val now = System.currentTimeMillis()
-                // The live row's id, so the picture is replaced where it sits. A page saved for the
-                // first time gets a fresh one — see RasterRows.toRow for why one row per page and
-                // not one per save.
-                val id = dao.rasterRow(pageId)?.id ?: UUID.randomUUID().toString()
+                // The live row's id, so the picture is replaced where it sits — read as an id and not
+                // as a row, since the row carries the previous whole-page PNG and this queue is
+                // the one every other write waits behind. A page saved for the first time gets a
+                // fresh one; see RasterRows.toRow for why one row per page and not one per save.
+                val id = dao.rasterRowId(pageId) ?: UUID.randomUUID().toString()
                 dao.upsert(RasterRows.toRow(pageId, png, id, now))
                 touchSketchbook(now)
             } finally {

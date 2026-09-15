@@ -38,8 +38,13 @@ class SoilWriter(scope: CoroutineScope) {
         for (task in queue) {
             try {
                 task()
-            } catch (e: Exception) {
-                Log.e(TAG, "a write to the sketchbook failed and was dropped", e)
+            } catch (t: Throwable) {
+                // Throwable since R2, when the queue took on the PNG encode of a page-sized bitmap.
+                // An OutOfMemoryError there is an Error, and an Error escaping this loop ends the
+                // pump: every later write is accepted onto a channel nobody drains, every `perform`
+                // waits for ever, and the close never folds the log back into the file. One failed
+                // write is dropped with a line in the log; the queue goes on.
+                Log.e(TAG, "a write to the sketchbook failed and was dropped", t)
             }
         }
     }

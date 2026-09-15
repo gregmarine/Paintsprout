@@ -70,9 +70,13 @@ object RasterImage {
         val options = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
         val bitmap = try {
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
-        } catch (e: Exception) {
-            // Includes the one that matters on this device: not enough memory for the page.
-            Log.e(TAG, "a stored page image passed the guard and would not decode", e)
+        } catch (t: Throwable) {
+            // Throwable, not Exception, because the one that matters on this device — not enough
+            // memory for the page — is an Error, and for two releases this caught everything but
+            // it. A null here opens the leaf blank and shelves nothing: the guard passed, so the
+            // picture is this page's, and a decode that failed for want of memory is not a reason
+            // to put a good drawing on the shelf.
+            Log.e(TAG, "a stored page image passed the guard and would not decode", t)
             null
         }
         if (bitmap == null) Log.e(TAG, "a stored page image decoded to nothing")

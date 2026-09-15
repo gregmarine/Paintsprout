@@ -85,15 +85,21 @@ object BakeCommand {
         onMade: () -> Unit,
     ) {
         if (running) return
+        // Armed only once the dialog is actually up. A window that has gone by the time the
+        // confirm's button fires makes `show` throw, and a flag set before that throw would be
+        // set for the life of the process — every later Bake on every shelf silently refused.
+        val dialog = try {
+            Dialogs.style(
+                AlertDialog.Builder(activity)
+                    .setTitle(R.string.bake_progress_title)
+                    .setMessage(activity.getString(R.string.bake_progress_page, 1, s.pageCount ?: 1))
+                    .setCancelable(false)
+                    .create()
+            ).also { it.show() }
+        } catch (e: Exception) {
+            return
+        }
         running = true
-        val dialog = Dialogs.style(
-            AlertDialog.Builder(activity)
-                .setTitle(R.string.bake_progress_title)
-                .setMessage(activity.getString(R.string.bake_progress_page, 1, s.pageCount ?: 1))
-                .setCancelable(false)
-                .create()
-        )
-        dialog.show()
         val appContext = activity.applicationContext
         PaintsproutApplication.scope.launch {
             val outcome = runCatching {

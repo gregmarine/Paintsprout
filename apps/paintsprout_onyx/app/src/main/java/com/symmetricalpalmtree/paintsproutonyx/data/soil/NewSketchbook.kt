@@ -127,10 +127,12 @@ suspend fun createSketchbook(
             pageCount = 1,
             now = now,
         )
-    } catch (e: Exception) {
+    } catch (t: Throwable) {
+        // Throwable, to match the bake next door: an Error escaping here would leave the file in
+        // the Garden with no card and nothing to ever clear it up.
         runCatching { opened?.seal(file) }
         discardHalfMadeSketchbook(context, sketchbookId, file)
-        throw e
+        throw t
     }
     sketchbookId
 }

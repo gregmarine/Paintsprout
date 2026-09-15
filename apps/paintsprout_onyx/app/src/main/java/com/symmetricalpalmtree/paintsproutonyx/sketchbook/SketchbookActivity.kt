@@ -381,6 +381,12 @@ class SketchbookActivity : AppCompatActivity() {
         val pages = s.livePages().map { it.id }
 
         gate.awaitIdle()
+        // A contact that never got its pen-up — the panel slept mid-sweep, the raw pipeline closed
+        // under the pen — leaves a half-gathered undo entry tagged with the leaf being left. Carried
+        // across the turn it would go on collecting the *next* leaf's cells under the old page's id,
+        // and an undo of it would stamp one page's before-image onto the other. What was gathered is
+        // one movement of the hand that cannot be taken back now; that is the honest loss.
+        if (pageId != s.currentPageId) rasterEdit = null
         // The leaf being left, written down before it is dropped. Nothing to do on a stroke page, or
         // on a raster page nothing has happened to.
         flushRasterSave()
@@ -636,8 +642,30 @@ class SketchbookActivity : AppCompatActivity() {
         val s = session ?: return
         val pageId = s.currentPageId
         rasterDirty = false
-        val copy = paper.getPageRaster() ?: return
+        // The copy is a page-sized allocation taken inside a lifecycle callback, on a device that
+        // runs short of exactly that. A failure to take it must not be a crash on the way out of
+        // the screen, and must not be a change quietly forgotten: the page stays dirty for the next
+        // exit to try again. Throwable, because the failure that happens here is an Error.
+        val copy = try {
+            paper.getPageRaster()
+        } catch (t: Throwable) {
+            rasterDirty = true
+            Log.e(TAG, "the page could not be copied for saving; it stays dirty and will be tried again", t)
+            return
+        } ?: return
         s.saveRaster(pageId, copy)
+    }
+
+    /**
+     * Return a popped entry to the undo side under the [newer] entries recorded since it was taken —
+     * every record moves the generation by exactly one, so the count is the difference. The redo
+     * side stays as the record left it (empty: a record clears it).
+     */
+    private fun putBackBeneath(edit: Edit, newer: Int) {
+        val above = ArrayList<Edit>(newer)
+        repeat(newer) { stack.popUndo()?.let { above.add(it) } }
+        stack.pushUndo(edit)
+        for (e in above.asReversed()) stack.pushUndo(e)
     }
 
     // ── Turning pages ────────────────────────────────────────────────────────
@@ -818,7 +846,7 @@ class SketchbookActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 flushRasterSave()
-                val (target, replayed) = applyEdit(s, edit, undoing)
+                val (target, replayed) = applyEdit(s, edit, undoing, generation)
                 if (edit is Edit.AddedPage || edit is Edit.DeletedPage) {
                     runCatching { repo.setPageCount(sketchbookId, s.livePageCount()) }
                 }
@@ -877,7 +905,12 @@ class SketchbookActivity : AppCompatActivity() {
      * And the page is dirty afterwards: a patched page is a changed page, so the debounced save
      * follows exactly as it would after a mark.
      */
-    private suspend fun applyEdit(s: SketchbookSession, edit: Edit, undoing: Boolean): Pair<String?, Edit> =
+    private suspend fun applyEdit(
+        s: SketchbookSession,
+        edit: Edit,
+        undoing: Boolean,
+        generation: Int,
+    ): Pair<String?, Edit> =
         when (edit) {
             is Edit.Drew -> {
                 if (undoing) s.hideMarks(listOf(edit.markId)) else s.restoreMarks(listOf(edit.markId))
@@ -906,16 +939,31 @@ class SketchbookActivity : AppCompatActivity() {
             is Edit.RasterChanged -> {
                 if (edit.pageId != s.currentPageId) showPage(edit.pageId)
                 gate.awaitIdle()
-                paper.swapPageRaster(
-                    edit.tiles.map {
-                        RasterPatch(
-                            Rect(it.left, it.top, it.left + it.width, it.top + it.height),
-                            it.pixels,
-                        )
-                    },
-                )
-                rasterDirty = true
-                scheduleRasterSave()
+                // **A mark that landed while this waited makes the swap wrong, so it is not made.**
+                // The wait is the pen on the glass, and the pen on the glass is the artist drawing —
+                // over the very cells this entry is about to put back, as likely as not. A stroke
+                // book survives that: its replay writes rows and re-reads the page, so both marks
+                // come back right. Pixels do not: the swap would stamp the before-image over the new
+                // mark's cells, and the new mark's own entry would then hold the undone mark inside
+                // its before-image. So the entry goes back where it was — *beneath* what landed
+                // since, which is the order the history is true in — and the arrow simply has to be
+                // tapped again, which now takes the new mark first. (The arc-2 code review found
+                // this; the stroke-book race it was copied from only ever lost a redo.)
+                if (stack.generation != generation) {
+                    putBackBeneath(edit, stack.generation - generation)
+                    Log.w(TAG, "a mark landed while the undo waited for the pen; the undo was put back")
+                } else {
+                    paper.swapPageRaster(
+                        edit.tiles.map {
+                            RasterPatch(
+                                Rect(it.left, it.top, it.left + it.width, it.top + it.height),
+                                it.pixels,
+                            )
+                        },
+                    )
+                    rasterDirty = true
+                    scheduleRasterSave()
+                }
                 null to edit
             }
         }

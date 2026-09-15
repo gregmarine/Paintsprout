@@ -99,6 +99,13 @@ interface SoilDao {
     )
     suspend fun rasterRow(pageId: String): SoilObjectEntity?
 
+    /** The id of that row and nothing else — for a save that replaces it and has no use for its blob. */
+    @Query(
+        "SELECT id FROM sketchbook WHERE parentId = :pageId AND type = 'raster' " +
+            "AND deletedAt IS NULL LIMIT 1"
+    )
+    suspend fun rasterRowId(pageId: String): String?
+
     @Query("UPDATE sketchbook SET deletedAt = :at, updatedAt = :at WHERE id IN (:ids) AND deletedAt IS NULL")
     suspend fun softDelete(ids: List<String>, at: Long)
 

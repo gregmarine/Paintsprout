@@ -1391,8 +1391,77 @@ unreported pressure the middle lift).
 **Next:** unplanned. The R-range `/code-review` is owed before the arc-2 freeze; the remaining
 candidates (paper tooth under the raster, side-of-lead shading, colour on Kaleido) are unscheduled.
 
+#### ✅ The arc-2 code review (2026-09-14)
+
+Run by Greg's call after E1 closed, over the host range `d9167a4..817ed1a` (R0–E1) with g-paper
+Phases 13, 14, 17 and 18 read alongside; eight finder angles, verified by Fable against the code
+before anything was changed. **Fixed in this pass** (host commit below; g-paper 0.1.31 `f2bcc2e`):
+
+- **A raster undo that waited for the pen while a new mark landed** swapped the before-image over
+  the new mark's cells and left the new entry holding the undone mark. Now `applyEdit` re-checks the
+  stack's generation after `awaitIdle` and, if it moved, puts the entry back *beneath* the newer
+  ones (`putBackBeneath`) and does nothing; the arrow is tapped again. Stroke books never had the
+  bug — their replay re-reads rows.
+- **A page thrown away while a save was queued** could get a fresh live picture row under a dead
+  leaf (the pen is not stopped by the confirm; a mark between the flush and the tombstone dirtied
+  it, and the turn away saved it). `saveRaster` now refuses a page whose row is deleted.
+- **A half-gathered undo entry carried across a page turn** (a contact whose pen-up never came:
+  panel asleep mid-sweep) would collect the next leaf's cells under the old page's id. `showPage`
+  drops `rasterEdit` on a page change.
+- **`OutOfMemoryError` is an `Error`**, and three catches written for it caught `Exception`:
+  `RasterImage.decode` (a page-turn crash instead of a blank leaf), the `SoilWriter` pump (a dead
+  queue: every later `perform` waits for ever, the close never folds the log), and
+  `createSketchbook` (an orphan file). All three catch `Throwable`; `flushRasterSave` guards its
+  page-sized copy the same way and keeps the page dirty on failure.
+- **The bake's `setCover` sat inside the try after the index row**, so a cover that failed to write
+  deleted the file and left the card — the exact lie the ordering exists to prevent. Moved after the
+  try, best-effort.
+- **`BakeCommand.running` armed before `show()`**: a window gone by the time the confirm fired
+  would have left every later Bake silently refused. Armed only once the dialog is up.
+- **A page with no recorded size had its picture tombstoned on every open** (the guard cannot
+  judge without a rectangle). Now left alone and not shown, with a log line.
+- **`saveRaster` read the whole previous PNG to learn one id** on the queue every other write waits
+  behind; a `rasterRowId` query reads the id.
+- **A rubbed-out leaf never read as blank**: a lift is a ratio and never reaches zero, so ghosts of
+  alpha 1–2 lingered and the cover showed a smudge. g-paper 0.1.31 lets a pixel go below alpha 3.
+- **Docs and rules that contradicted the R3 exception**: the "`showPage` is the only thing that
+  changes what the paper shows" rule and "the DB is the source of truth" now state the raster
+  exception; `docs/sketchbook.md` said "default Strokes".
+
+**Recorded, not fixed — candidates for a later phase**, in rough order of worth:
+1. **Per-segment dirty rects for a composited stroke** (g-paper): the pen-up composite reports the
+   stroke's whole bounding box, so a corner-to-corner hairline makes the host read every 64 px
+   cell of the page (~18 MB) on the main thread inside the pen-up callback, and two such strokes
+   fill the 48 MB budget. The eraser already reports per batch; the composite should too.
+2. **`loadingRaster` is a host workaround for an engine inconsistency**: `swapPageRaster` fires
+   nothing (host-made change) but `loadPageRaster` fires the will-change/changed pair; it holds
+   only because the callbacks run synchronously. A g-paper phase makes the load silent and the
+   flag goes.
+3. **Mirror the raster flag in the index row** (`SketchbookFlags`, beside `paperKind` and the
+   cover): removes "Bake offered on every card", the *Already raster* dialog, and gives the shelf
+   a mode it can show. Greg decided "no mirror" in R2; worth re-asking now that the shelf wants it.
+4. **One make-a-`.soil` shell** for `createSketchbook` and `bakeSketchbook` (they already diverged
+   once, on the catch), one `readMarks`, one cover-encode tail in `CoverSnapshot`, a consuming
+   `CoverSnapshot.render(Bitmap)`; `RasterBake.digest` could use `RawKeyDerivation.toHex`.
+5. **`Edit.markIds` / `restorePage(markIds)` now carry the raster row's id** under a mark-named
+   field since `liveChildIds` widened; rename to `childIds`.
+6. **The flush-before-store-change rule is enforced by hand at six sites**; owning it in the
+   session would make it one line.
+7. Smaller: `scheduleRasterSave` allocates a coroutine per erase batch; `BakeCommand` pins the
+   shelf's window for the bake's length; `rasterCover` holds bitmap + array (~36 MB) on the way
+   out; the page row is read three times per turn; `UndoRedoStack.undoBytes` is a hand-kept
+   total; `RasterEditBuilder.tooBig` is a belt the grid makes unreachable; commit `fe1defc`'s
+   subject is 127 characters.
+8. **The open-path byte flip** (R4 finding): every `SoilDatabase.open` rewrites page 1 twice before
+   any read — the verify open and Room's open, a journal-mode WAL→DELETE→WAL flip. Benign; verify
+   with the WAL flag or accept and say so.
+
+**Dismissed:** "the raster undo entry lags one contact because the SDK's pen-up list arrives after
+the end callback" — g-paper documents the end callback firing after the batches, and R3's hand
+undid the last mark drawn.
+
 *(Later arc-2 candidates, unscheduled and unplanned: paper tooth under the raster; side-of-lead
-shading; colour on Kaleido; the code review and freeze.)*
+shading; colour on Kaleido; the freeze.)*
 
 ## Appendix — build & install
 
