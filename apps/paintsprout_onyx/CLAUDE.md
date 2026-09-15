@@ -4,10 +4,11 @@
 ("Paintsprout Onyx Dev" in debug) · Plan/status: `ONYX_PLAN.md` — read it whole at every phase
 start; it holds the working protocol, model recipe, locked decisions, non-goals, standing traps
 and phase statuses. Arc 1 is closed; arc 2 is "Raster" (§ Phases — Arc 2 there), decided by the
-raster experiment whose full record is the standalone `RASTER_PLAN.md`. Arc 3 "Paper" (a toothed
-warm sheet under the pencil, its own layer beneath the ink) is planned and next; arc 4 "Coloured
-pencils" (a tin of thirteen, multiply layering) follows it — both planned 2026-09-14, § Phases —
-Arc 3 and Arc 4 there.**
+raster experiment whose full record is the standalone `RASTER_PLAN.md`. Arcs 3 "Paper" and 4
+"Coloured pencils" were planned 2026-09-14 and **abandoned 2026-09-15** — arc 4's C1 was built,
+measured and withdrawn whole; both repos are back at g-paper 0.1.31. Nothing is in flight; the app
+stands at the end of arc 2. Do not reopen either arc unless Greg asks for it by name, and ask him
+what the goal is before planning anything new.**
 
 A from-scratch, **BOOX-only** rebuild of Paintsprout, asking one question: what does g-paper on an
 Onyx e-ink panel give us for Paintsprout? Arc 1 is a graphite pencil, a rubber eraser, white paper

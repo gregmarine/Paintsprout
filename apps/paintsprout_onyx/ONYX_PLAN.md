@@ -7,8 +7,12 @@
 **Arc 1 is closed. Arc 2 "Raster" is built through E1 and reviewed — § Phases — Arc 2 below.** The
 raster experiment that decided it (R0–R5, verdict **yes** on 2026-09-14) is recorded whole in the
 standalone `RASTER_PLAN.md`: its ledger is the primary record of what each phase found and is not
-copied here. **Arc 3 "Paper" is planned and next (P1); arc 4 "Coloured pencils" follows it** —
-both planned with Greg on 2026-09-14, § Phases — Arc 3 and § Phases — Arc 4 below.
+copied here. **Arcs 3 "Paper" and 4 "Coloured pencils" are ABANDONED (Greg, 2026-09-15).** Both
+were planned on 2026-09-14; arc 3 was pinned the same day before a line of code, and arc 4's C1
+was built, installed and measured on 2026-09-14/15 and then withdrawn whole — engine and host
+reverted to g-paper 0.1.31, nothing merged, nothing published. Their sections stay below as a
+record only. **The app stands where arc 2 left it: the hairline pencil, the rubbing eraser, stroke
+and raster books.** Nothing is in flight; what comes next is Greg's call, with a clear goal first.
 
 A from-scratch, **BOOX-only** rebuild of Paintsprout, in the spirit of the Notesprout Paper and
 Notesprout SN experiments. It asks one question: **what does g-paper on an Onyx e-ink panel give
@@ -1469,7 +1473,7 @@ the end of that sequence, and nothing remains of it.)*
 
 ---
 
-## Phases — Arc 3 "Paper"
+## Phases — Arc 3 "Paper" — ❌ ABANDONED (pinned 2026-09-14, abandoned with arc 4 on 2026-09-15)
 
 **Planned with Greg on 2026-09-14, the day E1 closed**, in one sitting with the colour arc that
 follows it. Paper goes first so that the coloured leads are tuned once, against the sheet they will
@@ -1670,7 +1674,16 @@ planned for this arc**; one runs only if Greg asks for it.
 
 ---
 
-## Phases — Arc 4 "Coloured pencils"
+## Phases — Arc 4 "Coloured pencils" — ❌ ABANDONED (2026-09-15)
+
+**Withdrawn by Greg on 2026-09-15 during C1's device gate**: *"I've gotten lost on what we are
+trying to achieve right now and I don't want to keep going down a rabbit hole without clear
+direction."* C1 had been built as g-paper Phase 21 / 0.1.34 (a per-stroke `saveLayer` restored
+with `BlendMode.MULTIPLY`, a page-level ink layer, `InkComposite` as the pure reference), passed
+its JVM tests and the offline proof, measured on the panel (crossings within three levels of the
+reference, a corner-to-corner raster composite at 56 ms, "no slower" in the hand) — and was then
+reverted in both repos and dropped from mavenLocal. Not merged, not published, not kept. The text
+below is the plan as it was, for the record.
 
 **Planned with Greg on 2026-09-14**, after arc 3 and to run after it. Arc 1's verdict left one
 question open on purpose — "whether [the Kaleido] stays fine under colour" — and this is the arc
