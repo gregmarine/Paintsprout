@@ -7,9 +7,9 @@ unless a standing trap or an arc-1 decision needs checking; its protocol and tra
 at the end so this file is enough. Notesprout's `RESTORE_PLAN.md` and `ENCRYPTION_PLAN.md` are the
 shapes this file copies.
 
-**Status: R4 DONE, R5 NEXT.** Planned with Opus 4.8 on 2026-09-03 · reviewed by Fable 2026-09-06
+**Status: EXPERIMENT COMPLETE — the verdict is YES; arc 2 is raster.** Planned with Opus 4.8 on 2026-09-03 · reviewed by Fable 2026-09-06
 (amendments A1–A8, § Review amendments) · lifted into the repo 2026-09-06 · R0 ✅ · R1 ✅ · R2 ✅ ·
-R3 ✅ · R4 ✅ · R5 ⬜.
+R3 ✅ · R4 ✅ · R5 ✅.
 
 **Phase letters:** arc 1 took **G**. This experiment takes **R**.
 
@@ -345,7 +345,7 @@ shelf and in the hand; the picker reads right at arm's length on the panel.
 **Questions to resolve at phase start:** copy or in place (default copy, A7) · default mode in the
 picker (default strokes) · whether the bake offers to delete the original afterwards (default no).
 
-### ⬜ R5 — The verdict
+### ✅ R5 — The verdict
 **Owner:** Greg. Fable writes it down, with him.
 
 Draw with a raster book the way arc 1 was judged — an evening of real sketching, then a day with
@@ -676,6 +676,24 @@ with Home pressed mid-count; Back out of the New screen): *"Tests pass."* Nothin
 tuned.
 
 **Next.** R5, the verdict — Greg's, written down with Fable. The device carries the R4 build.
+
+### R5 — The verdict (2026-09-14)
+
+Greg drew in a four-page raster book, *RasterSketching*, on the R4 build, the afternoon after R4
+closed. First word after the sitting: *"Sketching feels pretty good."* Then, the same day, the
+verdict in his words:
+
+> **"That's the verdict... raster rocks!"**
+
+**Yes.** A raster page feels truer than strokes for this pencil. The experiment becomes **arc 2**.
+What the plan asks for next, in order, each its own session: lift the design (§ Decisions, A1–A8,
+D1–D6) into `ONYX_PLAN.md` as arc 2; a `/code-review` over the whole R range (commits 5eb3731 →
+bb9f606 on `onyx`, plus g-paper 0.1.25–0.1.29) — the review the experiment deliberately skipped;
+freeze; then open the gated follow-on, the **rubbing eraser**, as arc 2's first phase. The things
+the verdict was asked to carry alongside it — what the hard eraser is missing, the Kaleido on
+composited graphite at 1×, what a real book costs, what strokes still do better — were not itemised
+in this sitting and are the first questions of the rubbing-eraser phase's brief. The open-path
+byte-flip finding (R4 outcome) goes to the code review's list.
 
 ---
 

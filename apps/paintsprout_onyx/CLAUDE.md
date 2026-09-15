@@ -3,7 +3,8 @@
 **Branch `onyx` · Package `com.symmetricalpalmtree.paintsproutonyx` · Label "Paintsprout Onyx"
 ("Paintsprout Onyx Dev" in debug) · Plan/status: `ONYX_PLAN.md` — read it whole at every phase
 start; it holds the working protocol, model recipe, locked decisions, non-goals, standing traps
-and phase statuses. Arc 1 is closed; the current work is the raster experiment — for it read the
+and phase statuses. Arc 1 is closed; the raster experiment closed **yes** on 2026-09-14 and is arc 2 —
+until its design is lifted into `ONYX_PLAN.md` read the
 standalone `RASTER_PLAN.md` instead, which summarises the protocol and traps.**
 
 A from-scratch, **BOOX-only** rebuild of Paintsprout, asking one question: what does g-paper on an

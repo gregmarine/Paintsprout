@@ -231,6 +231,11 @@ had. Found by the G6 audit while walking the cover path; fixed by making the two
 > rubs pixels off it. Which kind of book it is was decided when it was made — bit 0 of the sketchbook
 > row's `flags` — and is read once at `SketchbookSession.open`. Stroke books are unchanged in every
 > respect, and everything below is the raster branch only.
+>
+> **The experiment closed YES on 2026-09-14** — Greg's verdict, after a sitting in a four-page
+> raster book: *"raster rocks!"* Raster is arc 2. The formalisation (lifting the design into
+> `ONYX_PLAN.md`, a code review over the R range, then the rubbing eraser) follows; until it lands
+> `RASTER_PLAN.md` § Ledger is where the experiment's findings live.
 
 **The mode is set before the first page and never again.** `paper.pageMode = PageMode.RASTER` goes in
 between the session opening and the first `showPage`, because setting it drops the view's content —
