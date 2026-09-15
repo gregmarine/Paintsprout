@@ -17,12 +17,13 @@ consideration" list of things held back by that philosophy.
 
 ## Repository layout
 
-Monorepo with two apps:
+Monorepo with three apps:
 
 | Path | State |
 |---|---|
 | `apps/paintsprout_flutter` | The original Flutter implementation. **Frozen reference** — do not develop here. Last touched at the monorepo restructure. |
 | `apps/paintsprout_android` | The live app. Kotlin, Android **View system** (XML + viewBinding, no Compose), AGSL shaders. |
+| `apps/paintsprout_onyx` | Paintsprout Onyx, the BOOX e-ink rebuild on g-paper. Own Gradle root. Arcs 1–2 done (pencil, rubbing eraser, stroke and raster sketchbooks); merged to `main` 2026-09-15 with nothing in flight. |
 
 Kotlin sources and doc comments cite the Flutter files they were ported from
 (`drawing_canvas.dart`, `stroke.dart`, `surface.dart`, `tools.dart`). Those

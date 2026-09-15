@@ -1,4 +1,4 @@
-# RASTER_PLAN.md — The raster experiment (Paintsprout Onyx, branch `onyx`)
+# RASTER_PLAN.md — The raster experiment (Paintsprout Onyx, developed on branch `onyx`, now on `main`)
 
 **Standalone plan for a raster drawing mode beside strokes.** This file is the cross-session
 memory for the experiment: read it whole at every phase start, together with the repo-root

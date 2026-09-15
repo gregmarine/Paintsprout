@@ -1,6 +1,6 @@
 # ONYX_PLAN.md — Paintsprout Onyx
 
-**Branch:** `onyx` · **Location:** `apps/paintsprout_onyx/` · **Package:** `com.symmetricalpalmtree.paintsproutonyx`
+**Branch:** `main` (developed on `onyx`, merged 2026-09-15) · **Location:** `apps/paintsprout_onyx/` · **Package:** `com.symmetricalpalmtree.paintsproutonyx`
 **Label:** Paintsprout Onyx (debug: "Paintsprout Onyx Dev") · **Version:** `0.1.0-onyx`
 **Device:** BOOX NoteAir5C (NA5C) `92c16533` — **the only device anything installs to.**
 **This file is the cross-session memory for the effort. Read it first, whole, at every phase start.**
@@ -57,7 +57,7 @@ references — no app code is copied from either.** Build boilerplate (the Gradl
 
 | Decision | Answer |
 |---|---|
-| Identity | Branch `onyx`; `apps/paintsprout_onyx/` with its **own Gradle root**; package `com.symmetricalpalmtree.paintsproutonyx` (debug suffix `.dev`); label "Paintsprout Onyx" / "Paintsprout Onyx Dev" |
+| Identity | Developed on branch `onyx`, merged to `main` 2026-09-15; `apps/paintsprout_onyx/` with its **own Gradle root**; package `com.symmetricalpalmtree.paintsproutonyx` (debug suffix `.dev`); label "Paintsprout Onyx" / "Paintsprout Onyx Dev" |
 | Device fleet | **NA5C only** (`92c16533`). Kaleido colour panel — see the standing traps. |
 | Rebuild depth | **Fresh code.** The Wacom app and both Notesprout rebuilds are reading references; no file copying (Gradle wrapper exempt). |
 | Engine | g-paper from mavenLocal: `gpaper-core` + `gpaper-onyx` **only**. No `gpaper-ratta`. `OnyxEngine.register(this)` from `Application.onCreate`; `GPaper.create(this)` (generic fall-through = desk testing off-device). Pin **0.1.7** once g-paper Phase 10 publishes it. |

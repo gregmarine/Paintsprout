@@ -1,6 +1,6 @@
 # Paintsprout Onyx — Claude Code instructions (apps/paintsprout_onyx)
 
-**Branch `onyx` · Package `com.symmetricalpalmtree.paintsproutonyx` · Label "Paintsprout Onyx"
+**On `main` (the `onyx` branch was merged and deleted 2026-09-15) · Package `com.symmetricalpalmtree.paintsproutonyx` · Label "Paintsprout Onyx"
 ("Paintsprout Onyx Dev" in debug) · Plan/status: `ONYX_PLAN.md` — read it whole at every phase
 start; it holds the working protocol, model recipe, locked decisions, non-goals, standing traps
 and phase statuses. Arc 1 is closed; arc 2 is "Raster" (§ Phases — Arc 2 there), decided by the
