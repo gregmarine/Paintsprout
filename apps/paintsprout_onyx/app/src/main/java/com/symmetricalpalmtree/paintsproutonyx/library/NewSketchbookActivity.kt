@@ -124,11 +124,14 @@ class NewSketchbookActivity : AppCompatActivity() {
                     // sketchbook by inheritance from a choice made weeks ago about a different one.
                     //
                     // Which is also why nothing here remembers the last answer between visits. The
-                    // radio is checked in the layout, at Strokes, every single time the screen
-                    // opens: the artist who wants a raster book says so on purpose, and the artist
-                    // who made one last Tuesday and is not thinking about it today gets the known
-                    // thing back. A default that drifted to match the last visit would be exactly
-                    // the inheritance the paragraph above refuses, wearing the word "convenient".
+                    // radio is checked in the layout, at Raster, every single time the screen
+                    // opens — Raster because the experiment's verdict made it the book the artist
+                    // reaches for (it was Strokes for the experiment's one afternoon, when strokes
+                    // were the known thing). The artist who wants a stroke book says so on purpose,
+                    // and the artist who made one last Tuesday and is not thinking about it today
+                    // gets the usual thing back. A default that drifted to match the last visit
+                    // would be exactly the inheritance the paragraph above refuses, wearing the
+                    // word "convenient".
                     raster = binding.modeRaster.isChecked,
                 )
                 setResult(

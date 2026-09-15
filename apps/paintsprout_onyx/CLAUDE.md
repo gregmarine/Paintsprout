@@ -3,9 +3,8 @@
 **Branch `onyx` · Package `com.symmetricalpalmtree.paintsproutonyx` · Label "Paintsprout Onyx"
 ("Paintsprout Onyx Dev" in debug) · Plan/status: `ONYX_PLAN.md` — read it whole at every phase
 start; it holds the working protocol, model recipe, locked decisions, non-goals, standing traps
-and phase statuses. Arc 1 is closed; the raster experiment closed **yes** on 2026-09-14 and is arc 2 —
-until its design is lifted into `ONYX_PLAN.md` read the
-standalone `RASTER_PLAN.md` instead, which summarises the protocol and traps.**
+and phase statuses. Arc 1 is closed; arc 2 is "Raster" (§ Phases — Arc 2 there), decided by the
+raster experiment whose full record is the standalone `RASTER_PLAN.md`.**
 
 A from-scratch, **BOOX-only** rebuild of Paintsprout, asking one question: what does g-paper on an
 Onyx e-ink panel give us for Paintsprout? Arc 1 is a graphite pencil, a rubber eraser, white paper
@@ -211,7 +210,8 @@ not apply here. Plus:
   **before** the store change so the image is tombstoned with its page. The bounded-decode guard
   (`RasterRows.fitsPage`, exact size from the PNG header) runs before `BitmapFactory`, and a row it
   refuses is soft-deleted, never overwritten. Since R4 the choice is the second question on the New
-  sketchbook screen, default Strokes, asked every time and remembered nowhere.
+  sketchbook screen, asked every time and remembered nowhere — **default Raster** since the verdict
+  (it was Strokes for the experiment's one afternoon), Strokes the second row.
 - **A raster undo is a swap, and its entry is pixels on a grid.** (R3, g-paper 0.1.29.) One contact
   — a mark, or a whole eraser sweep — is one `Edit.RasterChanged`, opened at the first
   `onRasterWillChange` and closed at `onPenLifted`, holding the before-image on a fixed grid of

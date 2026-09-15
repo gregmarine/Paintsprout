@@ -4,8 +4,9 @@
 **Label:** Paintsprout Onyx (debug: "Paintsprout Onyx Dev") · **Version:** `0.1.0-onyx`
 **Device:** BOOX NoteAir5C (NA5C) `92c16533` — **the only device anything installs to.**
 **This file is the cross-session memory for the effort. Read it first, whole, at every phase start.**
-**Arc 1 is closed. The next work is the raster experiment — read the standalone
-`RASTER_PLAN.md` for it, not this file** (its protocol and traps are summarised there).
+**Arc 1 is closed. Arc 2 is "Raster" — § Phases — Arc 2 below.** The raster experiment that
+decided it (R0–R5, verdict **yes** on 2026-09-14) is recorded whole in the standalone
+`RASTER_PLAN.md`: its ledger is the primary record of what each phase found and is not copied here.
 
 A from-scratch, **BOOX-only** rebuild of Paintsprout, in the spirit of the Notesprout Paper and
 Notesprout SN experiments. It asks one question: **what does g-paper on an Onyx e-ink panel give
@@ -1273,7 +1274,102 @@ pencil the artist wants to draw with — and that is the answer arc 1 was built 
 
 **What came next (2026-09-03/06):** not an arc — a **raster experiment**, planned with Opus and
 reviewed by Fable, in the standalone `RASTER_PLAN.md`: a per-book raster mode beside strokes with
-a pixel eraser, formalised as arc 2 only if its own verdict says a raster page feels truer.
+a pixel eraser, formalised as arc 2 only if its own verdict says a raster page feels truer. **It
+did** (2026-09-14, Greg: *"raster rocks!"*), and arc 2 is below.
+
+---
+
+## Phases — Arc 2 "Raster"
+
+**Lifted from `RASTER_PLAN.md` on 2026-09-14, the day the experiment closed yes.** That file stays
+as the experiment's record — decisions with their reasoning, review amendments A1–A8, design
+D1–D6, and a ledger with what every phase measured and what the hand said. This section is the
+binding summary and the home of arc 2's own phases. Where the two disagree, this file wins; where
+this file is silent, that one speaks.
+
+### What arc 2 is
+
+A **raster page** beside the stroke page: a sketchbook is stamped at creation as *Strokes* (marks
+the artist can take back whole) or *Raster* (graphite they rub off), and never changes mode. Raster
+is the **default** since the verdict; Strokes stays as the second choice. A stroke book can be
+**baked** into a raster copy beside it, one way, never in place. Both modes share g-paper's
+firmware live ink, palm gate, EPD handoff and the approved arc-1 pencil bake; they diverge only
+after pen-up — persist, erase, undo, cover. Raster ink is still arc-1 graphite: the hairline lead,
+`#505050`, pressure carrying tone. This is a storage-and-eraser change, not a paint feature; arc 1's
+non-goals stand (no layers, no paint, no surfaces, no zoom, no export…) except where a later arc-2
+phase lifts one by name.
+
+### The decisions that bind (Greg, 2026-09-03; Fable's amendments 2026-09-06 — argued in `RASTER_PLAN.md`)
+
+1. **Dual-mode, runtime, per-book;** the mode in bit 0 of the sketchbook row's `flags`, read once at
+   `SketchbookSession.open`, mirrored nowhere (not the index, not the meta row).
+2. **Hybrid in g-paper:** `PageMode.RASTER` is a first-class page mode of the engine, never a
+   host-side surface. Engine gaps are g-paper phases (`PLAN.md` there, `GPAPER_VERSION` bump,
+   `publishToMavenLocal`, three pins here).
+3. **The raster is an alpha layer over the paper.** Unmarked pixels transparent; the eraser clears
+   **to transparent**, never white, so paper tooth can one day sit under it.
+4. **One image per page, on its own `raster` child row at `order = -1`**, PNG, overwritten in place
+   on save (copy-and-submit through the serial `SoilWriter`, encoded on the queue; the guard
+   `RasterRows.fitsPage` runs before any decode and a refused row is tombstoned, never overwritten).
+5. **Undo is in-session and bounded by bytes** (48 MB beside the 100-entry cap): one contact = one
+   `Edit.RasterChanged` holding the before-image on a 64 px cell grid, each cell read once per
+   contact; `swapPageRaster` leaves the array holding what was there, so one entry serves both
+   directions; a raster replay must **not** `showPage` after the swap.
+6. **A cover is the stored page composited over paper white**, then the G5 shrink-by-three.
+7. **The bake is a copy.** Source opened, read, sealed before any bitmap; no write of any kind to its
+   rows or index row; transparent page bitmap; one bitmap alive at a time; index row last, discard
+   on `Throwable`; folder path from the index. `RasterBake` pure, `BakeSketchbook` Android.
+8. **The hard pixel eraser was first**, shown live per batch as far as the panel allows (R1). The
+   **rubbing eraser** is arc 2's first phase, gated behind the verdict and now open.
+
+### Experiment phases, closed (details and numbers in `RASTER_PLAN.md` § Ledger)
+
+| Phase | What | Closed | Commits |
+|---|---|---|---|
+| R0 | The raster page in g-paper (0.1.25): `PageMode.RASTER`, composite-and-drop at pen-up, `getPageRaster`/`loadPageRaster`, will-change/changed callbacks | 2026-09-06 | g-paper `5c66992`; host on `onyx` |
+| R1 | The pixel eraser in g-paper (0.1.26): the sweep clears the raster to transparent, regional repaint per batch; the SDK's pen-up list dropped when the contact streamed (reaches stroke mode too) | 2026-09-06 | g-paper `855f483`; host `01d40bd` |
+| R2 | Persistence in the host: flags bit, `raster` row, 3 s debounce, save on pause, read through the writer | 2026-09-14 | `e9ddc36` |
+| R3 | Undo (swap, 64 px grid, 48 MB) and covers (over white) — g-paper 0.1.29 | 2026-09-14 | g-paper `d0bc484`; host `aabb355` |
+| R4 | The mode picker and the one-way bake | 2026-09-14 | `fe1defc` |
+| R5 | The verdict: *"raster rocks!"* | 2026-09-14 | `359cf19` |
+
+**Findings that outlive the experiment:** the software rasteriser lays the hairline ~40 % paler than
+the panel's hardware bake and Greg preferred the paler tone (R0); a fast eraser sweep's chord back
+to the start came from the SDK re-delivering the whole contact at pen-up (R1); a slow scrub reports
+dozens of overlapping batches, which is why the before-image lives on a grid (R3); and **every
+`SoilDatabase.open` rewrites page 1 of the file twice before any read** — the key verification's raw
+open and Room's open, consistent with a WAL→DELETE→WAL journal-mode flip — pre-existing since G1,
+rows untouched, recorded for the arc-2 code review (R4).
+
+### Arc-2 phases
+
+Phase letters: **E**. The arc-1 recipe binds (one phase per session; the phase-start wizard; Fable
+plans, writes engine phases and every walk; Opus builds host phases on a Fable brief; Sonnet
+layouts, strings, docs; Haiku adb walks; the user's short numbered checklist for the hand). The
+`/code-review` over the whole R range is **owed and deferred by Greg's call on 2026-09-14**; it
+runs before arc 2 freezes, not before E1.
+
+#### ⬜ E1 — The rubbing eraser
+**Owner:** Fable (a g-paper phase: the partial-erase compositing model), then a host pin.
+
+A real eraser rubs graphite off the tooth; it does not cut a hole. The sweep **lightens** what it
+crosses progressively — alpha reduced per pass, pressure-weighted — rather than clearing it, so a
+light pass softens a line and a few firm passes take it out. The hard eraser proved the pipeline
+(R1) so this is tuned against a known thing, not the Phase 10/11 mistake again. Everything the R1
+eraser has stays: the corridor along the sweep, the regional repaint per batch, the R3 grid undo
+(a rub is a `RasterChanged` like any other contact).
+
+**Questions to resolve at phase start:** how much one pass lifts, and how pressure scales it ·
+whether the corridor's edge is hard or feathered · whether the hard eraser stays reachable at all
+· the verdict's un-itemised notes (what the hard eraser was missing in the hand, the Kaleido at 1×,
+storage, what strokes still do better) as the phase's opening brief.
+
+**Gate:** the hand — a line softened in one pass and gone in a few; a page of shading lightened
+evenly; the eraser end of the pen rubs; undo takes a rub back whole; `screencap` before/after a
+single pass shows the corridor's alpha reduced by the agreed fraction and nothing outside it moved.
+
+*(Later arc-2 candidates, unscheduled and unplanned: paper tooth under the raster; side-of-lead
+shading; colour on Kaleido; the code review and freeze.)*
 
 ## Appendix — build & install
 

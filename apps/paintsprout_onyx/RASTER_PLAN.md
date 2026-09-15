@@ -7,7 +7,7 @@ unless a standing trap or an arc-1 decision needs checking; its protocol and tra
 at the end so this file is enough. Notesprout's `RESTORE_PLAN.md` and `ENCRYPTION_PLAN.md` are the
 shapes this file copies.
 
-**Status: EXPERIMENT COMPLETE — the verdict is YES; arc 2 is raster.** Planned with Opus 4.8 on 2026-09-03 · reviewed by Fable 2026-09-06
+**Status: EXPERIMENT COMPLETE — the verdict is YES; arc 2 is raster. Lifted into `ONYX_PLAN.md` § Phases — Arc 2 on 2026-09-14; this file is the record, that one is binding. Since the lift, Raster is the picker's default (Greg's call).** Planned with Opus 4.8 on 2026-09-03 · reviewed by Fable 2026-09-06
 (amendments A1–A8, § Review amendments) · lifted into the repo 2026-09-06 · R0 ✅ · R1 ✅ · R2 ✅ ·
 R3 ✅ · R4 ✅ · R5 ✅.
 

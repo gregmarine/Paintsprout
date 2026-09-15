@@ -11,6 +11,8 @@
   permanent once made (see `NewSketchbook.kt`'s KDoc on `raster`) — a choice
   that cannot be changed later has to be asked at the one moment it can still
   be answered, not tucked into a debug menu or inferred from a default.
+  Raster is listed first and checked, since the experiment's verdict made it
+  the kind of book the artist reaches for; Strokes stays as the second row.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/root"
@@ -99,28 +101,12 @@
             android:orientation="vertical">
 
             <androidx.appcompat.widget.AppCompatRadioButton
-                android:id="@+id/modeStrokes"
+                android:id="@+id/modeRaster"
                 style="@style/Widget.Paintsprout.RadioButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:minHeight="48dp"
                 android:checked="true"
-                android:text="@string/new_sketchbook_mode_strokes" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:text="@string/new_sketchbook_mode_strokes_hint"
-                android:textAppearance="@style/TextAppearance.Paintsprout.Hint" />
-
-            <androidx.appcompat.widget.AppCompatRadioButton
-                android:id="@+id/modeRaster"
-                style="@style/Widget.Paintsprout.RadioButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:minHeight="48dp"
                 android:text="@string/new_sketchbook_mode_raster" />
 
             <TextView
@@ -128,6 +114,22 @@
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
                 android:text="@string/new_sketchbook_mode_raster_hint"
+                android:textAppearance="@style/TextAppearance.Paintsprout.Hint" />
+
+            <androidx.appcompat.widget.AppCompatRadioButton
+                android:id="@+id/modeStrokes"
+                style="@style/Widget.Paintsprout.RadioButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:minHeight="48dp"
+                android:text="@string/new_sketchbook_mode_strokes" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/new_sketchbook_mode_strokes_hint"
                 android:textAppearance="@style/TextAppearance.Paintsprout.Hint" />
 
         </RadioGroup>

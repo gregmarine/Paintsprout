@@ -278,9 +278,10 @@ against the original first and simply dismisses if unchanged — no duplicate ch
 call, no stamp moved.
 
 **The second question, since R4: what kind of pages.** Below the name field and its rule line sits
-a `RadioGroup` of two rows, Strokes and Raster, each with a one-line description underneath it
+a `RadioGroup` of two rows, Raster and Strokes, each with a one-line description underneath it
 rather than a mechanism word — "Marks you can take back whole" and "Graphite you rub off" are what
-an artist reaches for; "vector" and "bitmap" are not. Strokes is checked by default and nothing
+an artist reaches for; "vector" and "bitmap" are not. Raster is checked by default — since the experiment's
+verdict on 2026-09-14; it was Strokes for the one afternoon before it — and nothing
 remembers which the artist picked last time: a sketchbook's mode is permanent the instant it is
 made (pixels do not turn back into strokes — `NewSketchbook.kt`'s KDoc on `raster` is where that is
 argued in full), and a choice that cannot be undone has to be asked in front of the person making
