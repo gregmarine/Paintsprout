@@ -4,9 +4,11 @@
 **Label:** Paintsprout Onyx (debug: "Paintsprout Onyx Dev") · **Version:** `0.1.0-onyx`
 **Device:** BOOX NoteAir5C (NA5C) `92c16533` — **the only device anything installs to.**
 **This file is the cross-session memory for the effort. Read it first, whole, at every phase start.**
-**Arc 1 is closed. Arc 2 is "Raster" — § Phases — Arc 2 below.** The raster experiment that
-decided it (R0–R5, verdict **yes** on 2026-09-14) is recorded whole in the standalone
-`RASTER_PLAN.md`: its ledger is the primary record of what each phase found and is not copied here.
+**Arc 1 is closed. Arc 2 "Raster" is built through E1 and reviewed — § Phases — Arc 2 below.** The
+raster experiment that decided it (R0–R5, verdict **yes** on 2026-09-14) is recorded whole in the
+standalone `RASTER_PLAN.md`: its ledger is the primary record of what each phase found and is not
+copied here. **Arc 3 "Paper" is planned and next (P1); arc 4 "Coloured pencils" follows it** —
+both planned with Greg on 2026-09-14, § Phases — Arc 3 and § Phases — Arc 4 below.
 
 A from-scratch, **BOOX-only** rebuild of Paintsprout, in the spirit of the Notesprout Paper and
 Notesprout SN experiments. It asks one question: **what does g-paper on an Onyx e-ink panel give
@@ -1388,8 +1390,8 @@ The `screencap` half of the gate was not taken — the hand answered the questio
 ask. Left open: whether the pen's eraser end reports pressure (unmeasured; the guard makes an
 unreported pressure the middle lift).
 
-**Next:** unplanned. The R-range `/code-review` is owed before the arc-2 freeze; the remaining
-candidates (paper tooth under the raster, side-of-lead shading, colour on Kaleido) are unscheduled.
+**Next:** the R-range `/code-review` ran (below). Paper tooth and colour on Kaleido became arcs 3
+and 4 on 2026-09-14; side-of-lead shading stays the one unscheduled candidate.
 
 #### ✅ The arc-2 code review (2026-09-14)
 
@@ -1460,8 +1462,395 @@ before anything was changed. **Fixed in this pass** (host commit below; g-paper 
 the end callback" — g-paper documents the end callback firing after the batches, and R3's hand
 undid the last mark drawn.
 
-*(Later arc-2 candidates, unscheduled and unplanned: paper tooth under the raster; side-of-lead
-shading; colour on Kaleido; the freeze.)*
+*(Of the later candidates, paper tooth is arc 3 and colour on Kaleido is arc 4, both below.
+Side-of-lead shading — the per-model tilt phase in g-paper — is the one still unscheduled. Arc 2
+is closed: lifted, reviewed and built through E1; the "freeze" the raster plan named was only
+the end of that sequence, and nothing remains of it.)*
+
+---
+
+## Phases — Arc 3 "Paper"
+
+**Planned with Greg on 2026-09-14, the day E1 closed**, in one sitting with the colour arc that
+follows it. Paper goes first so that the coloured leads are tuned once, against the sheet they will
+actually be drawn on, rather than on white and then again.
+
+### What arc 3 is
+
+A sheet of warm, toothed sketch paper under the pencil, in both kinds of book. The paper is a
+**layer of its own beneath the ink** — g-paper's template slot — so nothing the rubber does can
+reach it. The pencil's flecks land where the sheet's crests are: a light touch skims the crests,
+pressing fills the valleys. The rubber takes the crests first and leaves a ghost in the valleys
+until a firm scrub. **One recipe drives what is seen and what is felt.** Sketchbooks already on the
+shelf were made on blank white and stay that way for life; every new sketchbook is made on the
+paper. One paper this arc; a second surface is a later arc and brings the picker with it.
+
+This lifts arc 1's "no surfaces, no tooth field" non-goal by name. It does not lift any other.
+
+### The decisions that bind (Greg, 2026-09-14)
+
+1. **Both kinds of book.** Tooth reaches the raster page and the stroke page alike; both share the
+   arc-1 bake, so both share the sheet.
+2. **Felt and seen, and the paper is its own layer.** A page-space tooth field the grain samples,
+   *and* a visible fibre texture — drawn beneath the ink, never part of it, so the eraser cannot
+   touch it. Arc 1 kept the paper plain because two grain systems would fight over the panel's few
+   greys; that fear is now a risk to measure (P4), not a reason to stop.
+3. **Warm off-white, like the Wacom app's Paper** (`#F6F1E7`, fibre). It draws on the Kaleido colour
+   layer; what that costs is measured on the panel, with a neutral sheet one constant away.
+4. **Stamped at creation.** `paperKind` on the index row, written when the book is made and never
+   again. Existing books keep `BLANK`; new books get `PAPER`; **no question on the New sketchbook
+   screen** — with one paper there is nothing to choose, and the question arrives with the second
+   surface.
+5. **One field for both.** The fibre you see is the tooth the pencil catches on. The Wacom app keeps
+   its visual tile and its tooth as two unrelated noise fields; here a mark sits *in* the paper.
+6. **Tooth API in g-paper, recipe in the host.** g-paper gains a generic page-space tooth field that
+   the grain and the rubber sample — an engine phase, under the standing rule. Paintsprout owns the
+   recipe: what *this* paper is, generated as one seeded field and handed in as both a template
+   bitmap and a tooth field. Nothing Paintsprout lives in the engine.
+7. **The rubber reads the tooth.** Valleys keep a ghost until a firm scrub. A change to g-paper's
+   `RasterRub`, gated so a blank book rubs exactly as E1 did.
+8. **Covers over the paper**, not white — the card is a photograph of the real page.
+
+### The design
+
+**The engine's tooth field.** `core/model/ToothField(texels: ByteArray, width, height, pitchPx)`
+with `at(x, y)` — 0 a valley, 1 a crest, nearest texel, wrapping — and a precomputed table of
+`E[t^b]` so the grain can normalise against the sheet it was given. Page-space at 2 px per texel is
+930 × 1240 on the NA5C, about 1.15 MB; wrapping keeps a tile legal for any host that wants one.
+`PaperView.setToothField(ToothField?)` sits beside `setTemplate`, and the Onyx override wraps it in
+the EPD handoff for the same reason: it changes the bake of everything on the page.
+`StrokeRenderer.draw`, `StrokeRasterizer.draw` and `GraphiteGrain.of` all take the field as a
+defaulted parameter, so **null is today, byte for byte**, at every one of the five call sites.
+
+**How the grain reads it: place is the paper's, tone is the pencil's.** Today every fleck's
+position comes from a hash of the stroke's own id, station and lane — two strokes crossing the same
+spot of the sheet never share a peak, because there is no sheet. In `deposit` and `tap` the fleck's
+jittered position is computed *before* the coverage gate (a pure reorder), the tooth is read there,
+and the existing hash draw gates on `cover × catch`, where `catch = t^bias / E[t^bias]` and
+`bias = TOOTH_BIAS × (1 − press)`: a feather touch sees `t³` and lands on crests only; full pressure
+sees `t⁰` and floods. The division by the sheet's mean is the point — **the tooth redistributes
+where graphite lands, never how much**, so the approved pressure→darkness ramp does not move
+because paper arrived. That is the arc-1 discipline (a correction aimed at one axis stays flat on
+the others) applied before the fact rather than after. Darkness stays on the hash. Stations, lanes,
+jitter and the fleck cap are untouched, so a live prefix still matches the committed whole.
+
+**How the rubber reads it.** One factor in `rubBatch`: `shelter = 1 − valleyShelter × (1 − t) ×
+(1 − pressure)`, default 0.7. A light pass takes the crests and leaves a ghost that *is* the
+tooth's pattern in negative; a firm scrub takes everything, as E1's numbers promise. Pass mask,
+reversal, seams, the alpha floor, the host's 64 px undo grid: unchanged.
+
+**The host's recipe** (new package `paper/`). `PaperRecipe` is pure Kotlin and JVM-tested: one
+field from a **constant seed** through a ten-line xorshift — never `kotlin.random`, whose bits may
+change under a Kotlin bump and re-roll every sheet ever made. Fine white noise at one texel (the
+tooth's high frequency), two octaves of value noise for blotch, a few thousand short faint fibres,
+rank-normalised to a flat [0, 1]. **Two px per texel is about 0.17 mm** — fine cartridge paper;
+cold-press at 0.3–0.5 mm is a later surface. A recipe once shipped is never edited under its name:
+a stroke book re-renders from rows, so a changed recipe under an old name would move every fleck on
+an old drawing. `PaperField.toTooth()` wraps the **same array**. `PaperSheet` turns the field into
+the template: RGB_565, generated straight at page size (1860 × 2480, about 9 MB) so the engine's
+stretch is 1:1, warm base with brightness `1 + AMP × (2t − 1)`, `AMP` starting at 0.06; Kaleido
+shows 4096 colours, so more than 565 is wasted. One sheet per process, generated on IO, cached on
+the application, dropped on `onTrimMemory`. **One global seed**: a pad is one stock, covers and
+bakes agree by construction, and there is nothing to persist but a name.
+
+**Persistence.** The `.soil` gets one `paper` row — the family shape that has sat unused since G1
+(`TYPE_PAPER`, `text = "PAPER"`, no blob: the sheet is code) — and each page row's `refId`, which
+the schema already documents as "this page's paper", points at it. `SketchbookSession.open` reads
+it beside the sketchbook row, once, the way it reads the raster flag; `addPage` copies it onto new
+leaves. The index's `paperKind` is the shelf's mirror, written at creation only. An old book has no
+row and reads `BLANK`: null field, no template, the same bytes as yesterday.
+
+**Wiring.** The sheet and field are set **once, inside the first `showPage`**, between
+`clearForContentSwap` and `setPageSize` — the documented sequence — in the same synchronous run as
+the swap, so the EPD handoff coalesces into the refresh the open already pays; later turns set
+nothing, and page turns cost what they cost today. Live ink stays the firmware's line over the
+template; the pen-up pop grows by the tooth's gaps, which is a finding for P4 to write down. The
+bake gives the copy its own paper row and passes the field to `StrokeRasterizer`, or the copy
+would lose the look it was drawn with. Covers composite over the paper's **base colour** rather
+than white: at a third scale a ±6 % texture on 2 px texels averages to ±2 %, below the eye, and the
+close is the path already flagged for memory; the real sheet is one argument away if the card
+shows a difference. The blank card for a paper book draws the same flat colour. `Edit`, the undo
+grid and the gestures are untouched.
+
+### P1 — The tooth in the engine (g-paper Phase 19 → 0.1.32) ⬜
+**Owner:** Fable — the engine seam and the determinism contract. Sonnet for `docs/api.md`,
+`host-responsibilities.md` and g-paper's `CLAUDE.md`, **including the stale claims found while
+planning**: `CLAUDE.md` still says `LEVELS` is 3, `docs/api.md` still describes `CHARCOAL_V2` and
+the 1.3× divide, `integration-guide.md` still pins 0.1.22.
+
+The field, the sampling in `deposit` and `tap`, the defaulted parameter through all five call
+sites, `setToothField` with its Onyx override; and **a JVM preview writer** in the test source set
+(`java.awt.image` to `build/previews/*.png`, a disc per fleck, behind a system property so it
+never slows the suite) rendering BLANK against a sine field and a white-noise field at five
+pressures on the hairline and on a 6 px lead — the offline-PNG habit that caught the first tin's
+flaws finally gets a home. Publish; re-pin the host's three coordinates with no host change.
+
+**Tests:** a **null-field golden** — a checksum of the grain arrays for three fixed strokes, so
+that changing today's bytes is a deliberate act; the same field twice identical; a different field
+different; the prefix stable with a field; crests catch more than valleys at light pressure and
+equally at full; mean coverage within 3 % of BLANK at every pressure; fleck width unchanged; the
+wrap and pitch arithmetic of `at()`.
+
+**Gate:** suite green; the previews looked at *at 1×*; and a `screencap` of an existing drawing on
+the NA5C **identical** before and after the pin — the on-device proof that BLANK did not move.
+
+**Questions to resolve at phase start:**
+1. Preserve mean coverage (recommended), or let paper physically lighten a light touch?
+2. Nearest texel or bilinear sampling? (Recommend nearest; the jitter already breaks the grid.)
+3. Should darkness read the tooth as well as place? (Recommend no.)
+
+### P2 — The sheet in the host ⬜
+**Owner:** Opus on a Fable brief; Fable writes the schema bits (the paper row, the refIds, the
+session read); Sonnet strings, `docs/sketchbook.md` § Paper and `docs/data.md`; Haiku the walk.
+
+`PaperRecipe`, `PaperField`, `PaperSheet`, the cache; the paper row and `paperKind = "PAPER"` at
+creation; the read at open; the set-once in `showPage`; the bake copy's paper; `overGround` and
+the field in `CoverSnapshot`; a **debug-menu toggle for the visual alone** — warm, neutral grey,
+off — so that P4 can measure the Kaleido tint cost without a rebuild (the tooth is untouched by
+it); and a host JVM preview writing the sheet at 1× and grain-on-sheet PNGs, **looked at before the
+panel sees them**.
+
+**Tests:** the recipe's checksum pinned; a flat histogram after normalisation; field and visual
+dimensions; 565 packing; xorshift vectors; the paper row and refIds round-tripping through
+`RasterBake.plan`; `overGround`; the `SketchbookMeta` field.
+
+**Gate:** tests green; the walk — a new book opens on the warm sheet (`screencap`), an arc-1 or
+arc-2 book is byte-identical, a bake copy shows the sheet and its cover does too, a force-stop and
+relaunch, `dumpsys meminfo` up by about 10 MB and no more, generation under 300 ms in the log, a
+page turn unchanged, and `gfxinfo` after a reset in the shape of G6's 26 frames.
+
+**Questions to resolve at phase start:**
+1. The `.soil` paper row as the truth with the index as mirror (recommended), or the index alone?
+   The raster flag is deliberately *not* mirrored (R2), so this is a conscious difference: the shelf
+   never needed to know a book's mode, and it does need to know its paper to draw a blank card.
+2. Which of three sheet previews — the texel, fibre and blotch weightings at 1× — is the starting
+   recipe?
+3. Covers over the flat base colour (recommended) or over the textured sheet?
+
+### P3 — The rubber learns the tooth (g-paper Phase 20 → 0.1.33) ⬜
+**Owner:** Fable; the host pin.
+
+The shelter factor in `rubBatch`, `RasterRubbing.valleyShelter`, and `eraseRasterAlong` passing the
+view's field and the batch pressure it already has; docs. **Tests:** a null-field golden on a fixed
+batch; a valley lifts less than a crest at light pressure and equally at firm; shelter compounds
+correctly across passes; seams are still lifted once.
+
+**Gate:** suite green; the hand — one light pass over a hairline on paper leaves a tooth-patterned
+ghost, a firm scrub takes it out, undo takes the rub back whole, and a BLANK book rubs exactly as
+E1 did.
+
+**Questions to resolve at phase start:** the `valleyShelter` default (recommend 0.7).
+
+### P4 — The sitting, and the verdict ⬜
+**Owner:** Fable orchestrates; Greg's hand; Haiku for screencaps and `gfxinfo`.
+
+Tuning one number at a time, and a PNG first for anything that changes the grain: the visual's
+`AMP` (6, 10, 14 %), **warm against neutral first** — it decides whether the visual lives on the
+colour layer at all — then texel pitch, `TOOTH_BIAS`, `valleyShelter`. The measures: threshold-free
+ink mass per unit length, BLANK against PAPER at matched pressures from `screencap`ed bakes (the
+ramp must not have moved); a photograph for the live-against-bake pop; pen-up timing in stroke
+mode on a full page; `gfxinfo`. Then the arc's outcome here and its rules into both `CLAUDE.md`s. **No `/code-review` is
+planned for this arc**; one runs only if Greg asks for it.
+
+**Gate:** the verdict — "paper is felt and seen", in Greg's words.
+
+### Risks, and where each is caught
+- **The Kaleido tint cost** — P2's toggle; P4 compares warm and neutral first; neutral is one
+  constant away.
+- **Dither of a faint texture** — ±6 % of 246 is about one of the panel's sixteen greys; 2 px
+  texels keep it above the dither cell; `AMP` candidates in P4. Only the panel answers this.
+- **Tooth and grain fighting for greys** — the arc-1 fear. The tooth only moves flecks; the visual
+  is a separate faint layer. If they fight, `AMP` drops first and the tooth stays.
+- **Memory** — about 1 MB of field and 9 MB of sheet, once per process; covers never load the
+  sheet; `onTrimMemory` drops the cache.
+- **Pen-up re-record time** in stroke mode — measured in P1 and P2. If it shows, the fix is
+  g-paper's per-segment dirty rects (the arc-2 review's first candidate), never a host workaround.
+- **Old drawings changing** — guarded three ways: the null-field goldens, the `screencap` gate, and
+  recipe names that are never reused.
+
+---
+
+## Phases — Arc 4 "Coloured pencils"
+
+**Planned with Greg on 2026-09-14**, after arc 3 and to run after it. Arc 1's verdict left one
+question open on purpose — "whether [the Kaleido] stays fine under colour" — and this is the arc
+that asks it.
+
+### What arc 4 is
+
+The tin grows from one pencil to thirteen: graphite first, then twelve artist colours, every one
+the approved hairline with a different colour in it. Colour laid over colour builds the way wax
+does — blue over yellow reads green, any colour over graphite goes dark — and that one composite
+applies to graphite too. Live ink is the firmware's line in the lead's colour; the bake adds grain
+at pen-up as it does today. The tin's rows carry a swatch of each lead's colour, the one place
+colour appears in this app's chrome. A picker for any colour is a later arc.
+
+This lifts arc 1's "greyscale graphite only" by name. It does not lift "no paint".
+
+### The decisions that bind (Greg, 2026-09-14)
+
+1. **A tin of fixed leads now; a picker later.** Real pencils come in a tin; you pick one up.
+2. **One tin, graphite is lead #1**, plus **twelve colours in an artist set** — named after real
+   pencil pigments, proposed below and edited by Greg at C2's start.
+3. **Every coloured lead is the graphite pencil tinted**: the same 1.2 px hairline, the same
+   pressure→coverage→darkness model, no tilt.
+4. **Layering multiplies, as wax does, and it applies to every lead, graphite included** — one
+   composite for the app. Graphite crossings will read a little differently from the reference;
+   the hand judges.
+5. **The tin's rows show a swatch beside the name.** Recorded as the one exception to "no colour
+   in chrome": the swatch is the tool, not the chrome.
+
+### The design
+
+**Multiply happens once per stroke, never per fleck.** `drawPencil` lays flecks up to 1.6 px on a
+0.8 px pitch, so at the dark end a pixel is covered about four times. Multiplying a colour with
+itself gives `c²`: `#505050` (0.31) becomes 0.10 after one self-overlap and near black after four —
+exactly the "reads as a fine pen" that G3 lightened the ink to escape. So each stroke renders as it
+does today, SRC_OVER, *inside a layer* over its own dirty rect (`width + 2 px`, the rule the raster
+dirty rect already uses), and the layer restores with multiply. **A single stroke on blank paper is
+then byte-identical to today**, because multiply onto nothing is the source — a testable invariant,
+so C1 cannot move the approved pencil by itself. Only crossings change, which is what was asked for.
+
+**Multiply lives inside the ink, and ink meets paper by SRC_OVER in every mode.** Today the raster
+page is a transparent layer blitted over the paper, while a stroke book draws its marks straight
+over white and the template. Under multiply the stroke page would tint every mark by arc 3's warm
+sheet and its fibre and the raster page would not. So the stroke branch of `drawCommittedContent`
+and `StrokeRasterizer` open one page-level transparent ink layer, restored SRC_OVER onto the paper;
+in raster mode the page raster *is* that layer and only the per-stroke layer is needed. Covers and
+bakes already draw onto transparent bitmaps.
+
+**A view setting, not a change to `PENCIL`.** `InkLayering { OVER, MULTIPLY }` on the view,
+default `OVER` — the `pageMode` precedent: a host that never sets it gets the engine unchanged, and
+Notesprout's pencils do not move. `StrokeRasterizer.draw` takes the same. All five renderer call
+sites go through one helper so they cannot disagree, and a pure `InkComposite` (straight-ARGB
+`over` and `multiply` by Skia's formula) is the JVM reference the device is judged against.
+
+**The recorded fallback, if the layer cost fails C1's gate:** per-fleck `DARKEN`, no layers.
+`min(c, c) = c`, so graphite is untouched and blue over yellow still greens per channel — but the
+same colour laid twice never deepens, which is not what wax does. The one genuine trade-off, and
+Greg decides it only if the measurement forces it.
+
+**The tin stores true colour.** `Lead(widthPx, argb)`, thirteen entries, `GRAPHITE(1.2f,
+0xFF505050)` first — the constant and its comment move here from `SketchbookActivity`.
+`byName` maps the stored `HAIRLINE` (every device has it in its prefs) and any unknown name to
+graphite. A mark row stores the lead it was drawn with; retuning the tin changes new marks only.
+Values are tuned by eye on the panel *within pencil-pigment range* and never oversaturated to fight
+the Kaleido wash: the file's colours also feed covers and any later export, and a panel deficit
+baked into every row cannot be undone.
+
+**Live ink: true colour armed, measured, grey as the fallback.** `penColor` becomes the lead's
+colour; the Onyx engine already re-arms `setStrokeColor` on every set. Whether the NA5C firmware
+draws its plain line *in* colour, in the right hue, and whether a 1.2 px coloured line reads as a
+line or as speckle on the colour layer's half resolution, is **measured with a camera in C2**. If
+it reads wrong, the engine gains a live-colour policy (engine-side; the host never touches
+`TouchHelper`) that arms the lead's luminance grey live with colour arriving at pen-up — the pop
+becomes hue, never size. A preview that lies about width is the one that matters; colour sits
+between width and texture.
+
+**The sheet.** `ActionSheetDialog` gains a row form whose icon column holds a filled circle of the
+lead's colour with a 1 dp ink ring, and the lead in hand carries the tick at the trailing end; the
+24 dp column is unchanged so the shelf's sheets are untouched. Thirteen rows fit the panel in one
+column. `colors.xml` records the exception, and the values live in `Lead`, never there.
+
+**Nothing in the host assumes grey** — verified: the blank test is alpha-only, the cover composite
+is per-channel, cover and page decodes are ARGB, the rubber lifts alpha only, the undo grid is
+ARGB ints, and every mark row already carries its colour through `InkColorCodec`, which G1 wrote
+for exactly this day. No migration anywhere. One soft spot, recorded: covers are WEBP, whose
+chroma subsampling blurs a coloured hairline — hidden under the shrink-by-three. Old stroke books
+re-render under multiply; raster pages keep the pixels they have.
+
+### C1 — The ink layer composites by multiply (g-paper Phase 21 → 0.1.34) ⬜
+**Owner:** Fable — the engine seam and the review; Sonnet docs; the demo gains a layering toggle
+beside its colour cycle so the generic engine on a desk shows blue over yellow.
+
+`InkLayering`, `PaperView.inkLayering` (setting it re-records), the layered helper through all
+five sites, the page-level ink layer in `drawCommittedContent` and `StrokeRasterizer`,
+`InkComposite`; `docs/api.md` § Ink layering; `host-responsibilities.md` (set it in three places —
+view, covers, bake); a `CLAUDE.md` rule ("multiply is once per stroke inside the ink layer;
+per-fleck multiply blackens the hairline"); `PLAN.md`.
+
+**Tests:** `InkCompositeTest` — a transparent destination yields the source; grey over grey is
+`c²`; blue over yellow is green; commutative; alpha equals SRC_OVER's. The whole suite green.
+
+**Gate:** tests; an **offline PNG proof** — two graphite hairline crossings at light and firm
+pressure under OVER and MULTIPLY side by side at 1× and 4×, blue over yellow in both orders, and a
+single stroke on blank byte-identical under both; the device — one fixture page drawn by hand
+(graphite crossings, blue over yellow both ways, the same colour laid twice) in a stroke book and
+again baked to raster, screencapped, the crossing pixels matching `InkComposite` within the known
+GPU/CPU tone gap, and the R3 undo of a crossing stroke pixel-exact (the layer never leaves its
+dirty rect); and **cost** — `gfxinfo` over a minute of stroke-page sketching against G6's 26
+frames, plus a timing around `compositeIntoRaster` for a corner-to-corner hairline. "No slower in
+the hand" is Greg's word. If it fails, DARKEN goes to him before C2.
+
+**Questions to resolve at phase start:**
+1. Confirm a view setting over a `PENCIL`-level change.
+2. Confirm "ink over paper is SRC_OVER, never multiply", now that the warm sheet exists.
+3. Confirm DARKEN as the only fallback, and that it is measurement-gated, not taste-gated.
+
+### C2 — The tin of thirteen, the swatch sheet, colour live ⬜
+**Owner:** Opus on a Fable brief; Sonnet strings, drawables and `docs/`; Haiku the walk; Fable
+reviews and does the live-colour measurement with Greg.
+
+`Lead` rewritten; `SketchbookActivity` sets colour and width per lead and `inkLayering =
+MULTIPLY` beside `pageMode`; thirteen labels; covers and the bake pass `MULTIPLY` to
+`StrokeRasterizer`; three pins; `lead_hairline` becomes `lead_graphite` "Graphite" and twelve
+names join it, the sheet still titled "Pencil"; `docs/sketchbook.md` § The tin, `docs/data.md`,
+the `CLAUDE.md` pencil rule rewritten. **The measurement:** each lead drawn live at 1.2 px,
+photographed before pen-up and screencapped after; recorded per lead.
+
+**Tests:** `LeadTest` — thirteen entries, graphite first, all 1.2 px, all opaque, no two equal,
+none paper-white, `HAIRLINE`/`FINE`/`MEDIUM`/`BROAD`/null all read as graphite, `InkColorCodec`
+round-trips every value.
+
+**Gate:** tests; the walk — the sheet opens, thirteen rows with swatches screencapped, a finger
+tap picks a lead, the pick survives a relaunch, old prefs holding `HAIRLINE` open on graphite, a
+coloured committed mark is screencap-visible in both kinds of book, its cover shows colour on the
+shelf, undo and redo of a coloured mark, the rubber lifts colour paler rather than greyer. Greg's
+checklist: a coloured mark live (camera), the pen-up pop, the tin's rows legible at arm's length.
+
+**Questions to resolve at phase start:**
+1. **The twelve, proposed** — artist pigment names at mid saturation (multiply of pure primaries is
+   black), to be tuned in C3: Cadmium Yellow `#E8C83A`, Cadmium Orange `#E07B2A`, Cadmium Red
+   `#C8352E`, Alizarin Crimson `#B8365F`, Dioxazine Violet `#6E4B9E`, Ultramarine `#2F5FA6`,
+   Cerulean `#5AA0D8`, Viridian `#2E8A7A`, Sap Green `#3E8A3E`, Permanent Green Light `#8DB84A`,
+   Burnt Sienna `#7A4B2A`, Yellow Ochre `#B58A3C`.
+2. Is black a lead? Proposed **no**: graphite is the dark lead, and a black would be ink.
+3. Label form — names only, no "(0.10 mm)", now that every lead is one width.
+4. The live fallback policy if the camera says no.
+
+### C3 — The sitting: the tin tuned on Kaleido, and the verdict ⬜
+**Owner:** Greg's hand and eye; Fable drives, moves `Lead` values between rounds, records; Sonnet
+the outcome and docs.
+
+An evening's drawing on the arc-3 sheet that layers colour over graphite and colour over colour.
+Between rounds only the tin's values move — a rebuild, no engine change — and each round's page is
+screencapped and photographed. Three questions: does a coloured hairline read as pencil on this
+panel; are the twelve distinguishable from each other and from graphite at arm's length; does
+multiply read as wax. Old marks keep their values, so a retune shows only on new marks — the C1
+fixture page is redrawn each round, not reloaded. Then the arc's outcome beside arc 1's verdict,
+the final tin with one sentence per lead on what moved and why, and both `CLAUDE.md`s. **No
+`/code-review` is planned for this arc**; one runs only if Greg asks for it.
+
+**Gate:** Greg's verdict on "what did the Kaleido cost under colour".
+
+**Questions to resolve at phase start:**
+1. **The broad-point question.** If C2's photograph showed a 1.2 px coloured line reading as grey
+   speckle (a Kaleido colour cell is about 2 × 2 mono px), do coloured leads get a broader point —
+   say 2.4 px, one colour cell — while graphite stays 1.2? That breaks decision 3 and is Greg's
+   call with the photograph in front of him; the default is one width, and the sitting says.
+2. Tune within pigment range, or accept the wash?
+
+### Risks, and where each is caught
+- **Kaleido halving colour resolution under a hairline** — measured in C2, decided in C3.
+- **Live colour against baked colour** — the pop is hue and tone, never size; the grey-live
+  fallback is an engine option.
+- **Multiply changing the approved graphite** — single strokes provably unchanged; crossings
+  darken by `c²`, which was accepted in advance; the sitting judges.
+- **Per-stroke layers slowing pen-up** — measured in C1; DARKEN is the recorded fallback.
+- **An sRGB tin against the panel's gamut** — true colour stored, tuned by eye within pigment
+  range; oversaturating to defeat the wash is the trap the `Lead` comment names.
+- **Memory** — no new page-sized allocation that persists; the per-stroke layer is transient and
+  bounded by the stroke's rect.
 
 ## Appendix — build & install
 
