@@ -1243,16 +1243,20 @@ class SketchbookActivity : AppCompatActivity() {
         private const val GRAPHITE = 0xFF505050.toInt()
 
         /**
-         * How near the sweep has to pass for a mark to come out, in px.
+         * The rubber's radius, in px — and in a stroke book, how near the sweep has to pass for a
+         * mark to come out.
          *
-         * Arc 1 erases whole marks rather than rubbing pixels away, so this is not "how much rubber
-         * is on the paper" — a larger radius does not take *more* off a mark, it takes marks that
-         * were not aimed at. Which is exactly why there is no size control for it: there is no
-         * setting here an artist would want, and offering one would promise a rubbing eraser this is
-         * not. About a millimetre and a half on this panel: enough to pick one line out of a cluster,
-         * forgiving enough to sweep with.
+         * It was 18 px, a millimetre and a half, chosen for arc 1's stroke eraser, where a larger
+         * radius does not take *more* off a mark but takes marks that were not aimed at. On a
+         * raster page the same number is the width of the rubber itself, and the first afternoon
+         * of drawing on one said it plainly: *the impacted area was too large* (E1's opening
+         * brief). So it came down to a millimetre — a 2 mm rubber, about the corner of a block
+         * eraser — for both kinds of book, because two radii for one tool would make the pen's
+         * eraser end feel like a different object depending on which book is open. The firmware
+         * cursor follows it (`2 · radius`, set by the engine). Still no size control: the number is
+         * the artist's to judge by hand, not to dial, and E1's checklist is where it is judged.
          */
-        private const val ERASER_RADIUS_PX = 18f
+        private const val ERASER_RADIUS_PX = 12f
 
         fun intent(context: Context, sketchbookId: String): Intent =
             Intent(context, SketchbookActivity::class.java)

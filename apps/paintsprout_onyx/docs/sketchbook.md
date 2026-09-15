@@ -343,6 +343,21 @@ something — never an id-only edit, which is free and whose loss would shorten 
 history to pay for a raster book's. The newest entry is never the one dropped. The total is kept as
 it goes rather than recounted, so the pen's path is one addition.
 
+### The rubbing eraser (E1)
+
+Until E1 the raster eraser cut a hole: g-paper 0.1.26 stroked the sweep onto the page in `CLEAR`,
+and one pass took everything within the radius. The artist's notes after the experiment's verdict
+were exact — it cut holes rather than lightened, its edge showed, and it was too large. g-paper
+0.1.30 replaces the clear with a **lift**: within the radius, one pass scales the alpha by a
+pressure-weighted fraction (`PaperView.rasterRubbing`: a quarter at a light touch, three fifths
+firm), the outer half of the radius feathered from full lift to none. Within one pass a pixel is
+lifted **once**, however many frame-batches cross it — the seams between batches would otherwise
+bead — and a reversal of travel starts a new pass, so rubbing back and forth keeps lifting. Nothing
+the host hears changed: the same will-change / changed pair per batch, the same regional repaint, so
+the R3 grid undo takes a rub back whole exactly as before. The rubber replaces the hard eraser —
+there is no clearing mode left to arm — and the host's `ERASER_RADIUS_PX` came down from 18 px to
+12 px, a 2 mm rubber, for both kinds of book.
+
 ### A raster book's cover (R3)
 
 `CoverSnapshot.render(pixels, w, h)` is the second overload: **over white, then shrink by three,

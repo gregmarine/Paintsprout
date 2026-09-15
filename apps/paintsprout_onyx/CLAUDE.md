@@ -239,6 +239,13 @@ not apply here. Plus:
   Android half, the drawing a device walk proves. The copy's folder comes from the index
   (`repo.ancestry`), never the source's meta row — that row is written once at creation and never
   refreshed, so a book moved since would leave a copy claiming to live somewhere it never has.
+- **The raster eraser rubs; it does not clear.** (E1, g-paper 0.1.30.) One pass lifts a
+  pressure-weighted fraction of the alpha under it (`PaperView.rasterRubbing`, defaults a quarter
+  light to three fifths firm, half the radius feathered), once per pixel per pass, again on each
+  reversal of travel. The engine's `CLEAR` path is gone and must not come back as a host-side
+  "hard eraser": Greg chose one rubber, and a firm scrub takes a line out in a few passes. The
+  radius is 12 px (a 2 mm rubber) for both kinds of book, judged by hand, never dialled. What the
+  host hears per batch is unchanged, so the R3 undo grid needs nothing.
 - **Non-goals are enforced, not aspirational.** No layers, no paint, no surfaces, no shape tools,
   no selection, no millimetres or calibration, no zoom/pan/rotate, no export, no backup, no
   extensions. The full list, and which of them are candidate later arcs, is in `ONYX_PLAN.md`.

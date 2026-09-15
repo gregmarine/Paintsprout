@@ -1349,7 +1349,7 @@ layouts, strings, docs; Haiku adb walks; the user's short numbered checklist for
 `/code-review` over the whole R range is **owed and deferred by Greg's call on 2026-09-14**; it
 runs before arc 2 freezes, not before E1.
 
-#### ⬜ E1 — The rubbing eraser
+#### 🧪 E1 — The rubbing eraser
 **Owner:** Fable (a g-paper phase: the partial-erase compositing model), then a host pin.
 
 A real eraser rubs graphite off the tooth; it does not cut a hole. The sweep **lightens** what it
@@ -1359,10 +1359,23 @@ light pass softens a line and a few firm passes take it out. The hard eraser pro
 eraser has stays: the corridor along the sweep, the regional repaint per batch, the R3 grid undo
 (a rub is a `RasterChanged` like any other contact).
 
-**Questions to resolve at phase start:** how much one pass lifts, and how pressure scales it ·
-whether the corridor's edge is hard or feathered · whether the hard eraser stays reachable at all
-· the verdict's un-itemised notes (what the hard eraser was missing in the hand, the Kaleido at 1×,
-storage, what strokes still do better) as the phase's opening brief.
+**Decided at phase start (Greg, 2026-09-14):** one pass lifts **pressure-weighted, about a quarter
+at a light touch to about 60 % firm**, and dwell counts (rubbing back and forth in one contact keeps
+lifting); the corridor's edge is **feathered**; **the rubber replaces the hard eraser** — no second
+tool. His notes from the sitting, the phase's opening brief: the hard eraser *cut holes rather than
+lightened*; *the corridor's edge showed*; and **the rubber is too large** — "the impacted area was
+too large, I'd like to make it smaller" (the host's `ERASER_RADIUS_PX` is 18 px, a 3 mm rubber; this
+phase brings it down and the hand judges the number).
+
+**What landed (2026-09-14, awaiting the hand):** g-paper **0.1.30**, Phase 18 there —
+`RasterRubbing(liftLight = 0.25, liftFirm = 0.60, feather = 0.5)` on `PaperView.rasterRubbing`;
+pure `geometry/RasterRub` (coverage profile, pressure→lift, reversal, `rubBatch` raising a
+page-sized byte **pass mask** and scaling alpha by `(1 − new) / (1 − old)`; 13 JVM tests, 213
+green); `eraseRasterAlong` is now read-rub-write on the batch rect with the batch's mean pressure,
+the `CLEAR` paint gone; `beginEraseSweep` drops the pass. Host: three pins to 0.1.30,
+`ERASER_RADIUS_PX` **18 → 12 px** (a 2 mm rubber, both kinds of book), `docs/sketchbook.md` § The
+rubbing eraser, a `CLAUDE.md` rule. No host logic changed — the per-batch calls the undo grid rides
+on are the same.
 
 **Gate:** the hand — a line softened in one pass and gone in a few; a page of shading lightened
 evenly; the eraser end of the pen rubs; undo takes a rub back whole; `screencap` before/after a
