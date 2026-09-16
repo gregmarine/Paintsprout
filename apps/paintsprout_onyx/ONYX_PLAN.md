@@ -1435,14 +1435,17 @@ before anything was changed. **Fixed in this pass** (host commit below; g-paper 
   exception; `docs/sketchbook.md` said "default Strokes".
 
 **Recorded, not fixed — candidates for a later phase**, in rough order of worth:
-1. **Per-segment dirty rects for a composited stroke** (g-paper): the pen-up composite reports the
-   stroke's whole bounding box, so a corner-to-corner hairline makes the host read every 64 px
-   cell of the page (~18 MB) on the main thread inside the pen-up callback, and two such strokes
-   fill the 48 MB budget. The eraser already reports per batch; the composite should too.
-2. **`loadingRaster` is a host workaround for an engine inconsistency**: `swapPageRaster` fires
-   nothing (host-made change) but `loadPageRaster` fires the will-change/changed pair; it holds
-   only because the callbacks run synchronously. A g-paper phase makes the load silent and the
-   flag goes.
+1. ~~**Per-segment dirty rects for a composited stroke** (g-paper)~~ — **done in g-paper 0.1.33
+   (Phase 20, 2026-09-15, opened by Notesprout SN's arc 43 K6):** a composited mark announces
+   itself as runs of ≤ 256 px span (`RasterDirty.along`, at most 64 rects, the closing point
+   shared between runs so coverage holds), all will-changes before the composite and all
+   changeds after. This host still consumes 0.1.31; the pin jump is its own decision, and the
+   64 px-grid builder here already accepts several will-changes per contact (the eraser made it
+   so), so nothing changes on the host side when it moves.
+2. ~~**`loadingRaster` is a host workaround for an engine inconsistency**~~ — **done in g-paper
+   0.1.33 (same phase):** `loadPageRaster` is silent, like `swapPageRaster`. This host's
+   `SketchbookActivity.loadingRaster` becomes dead the moment it re-pins (the flag keeps
+   compiling and guards nothing); drop it with the pin jump.
 3. **Mirror the raster flag in the index row** (`SketchbookFlags`, beside `paperKind` and the
    cover): removes "Bake offered on every card", the *Already raster* dialog, and gives the shelf
    a mode it can show. Greg decided "no mirror" in R2; worth re-asking now that the shelf wants it.
